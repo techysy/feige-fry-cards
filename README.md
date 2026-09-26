@@ -82,8 +82,9 @@ webhook/skill 形态 + zcode-feishu-bridge 的 CardKit 流式卡核心抽出来�
 - **M2 ZCode 接入** ✅（2026-09-26 完成）：以 skill/hook 形式接入 ZCode，会话收尾自动
   发摘要战报卡（Stop hook，默认关）；`.zcode-plugin/` 清单、`hooks/`、`skills/feige/`
   就位，与现有 bridge 守护进程并存切换（见下文「安装与启用」）。
-- **M3 Claude Code / Codex 接入**：Claude Code 的 Stop hook、Codex 的 notify 机制，
-  验证"agent 无关"成立。
+- **M3 Claude Code / Codex 接入** ✅（2026-09-26 完成）：`adapters/claude-code/stop_notify.py`
+  （Stop hook + transcript 统计）与 `adapters/codex/notify.py`（notify 事件 → teaser 卡），
+  直接 import feige.py 调 `send_report()`，验证"agent 无关"成立（见「各 agent 安装」）。
 - **M4 多渠道**：钉钉 webhook、Telegram Bot；群路由配置（项目 → 多群 fanout）。
 
 ## CLI 用法
@@ -170,6 +171,61 @@ hook 在 **ZCode 进程内环境**运行，拿到的是 ZCode **启动时**的�
 `setx` / 改注册表对已在运行的 ZCode 无效（同 M1 联调的 230002 排错）。
 在插件 Settings 里填凭据更可靠——hook 会把 `ZCODE_USER_CONFIG_*` 注入 feige 子进程
 （真实环境变量优先）。验证配置时请显式传最新值。
+
+## 各 agent 安装（Claude Code / Codex）
+
+适配器在 `adapters/`，纯 Python、直接 import feige.py（不走 subprocess）。**全部默认关闭**：
+`FEIGE_HOOK_NOTIFY=1` 才启用；`FEIGE_DRY_RUN=1` 时把卡片 JSON 打到 stdout 不发网络。
+提取口径与 ZCode hook 一致（≤300 字 teaser + 统计脚注，拿不到的字段自动省略，绝不硬编）。
+
+### Claude Code（Stop hook）
+
+贴到 `~/.claude/settings.json`（自行合并到已有内容，路径按实际仓库位置改）：
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python F:/Files/GitHub Files/feige-fry-cards/adapters/claude-code/stop_notify.py"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+hook 从 payload 的 `transcript_path` 解析转录：assistant 行按 `content[].type` 取
+text（teaser）/ thinking（💭）/ tool_use（🔧），模型取 `message.model`，上下文水位 =
+最后一条 assistant 的 `input_tokens + cache_read_input_tokens`（只报绝对值，不猜窗口），
+⏱️ 取首末 timestamp；`isSidechain` 子代理行跳过。schema 已拿本机真实转录验证。
+
+### Codex CLI（notify）
+
+`~/.codex/config.toml` 顶层加/改：
+
+```toml
+notify = ["python", "F:/Files/GitHub Files/feige-fry-cards/adapters/codex/notify.py"]
+```
+
+事件 JSON 经**最后一个 argv** 传入（本机 codex.exe 二进制实证字段：`type` /
+`thread-id` / `turn-id` / `cwd` / `client` / `input-messages` /
+`last-assistant-message`）。只在 `type=="agent-turn-complete"` 时发卡；Codex notify 不给
+token/工具统计，卡片只带 teaser + 项目 + 模型（config.toml 顶层 `model = "..."`，
+读不到就省略）。
+
+**注意**：Codex 只有**一条** notify 命令——已有 `notify = [...]`（如 computer-use）的
+用户需自行写一个包装脚本同时调两边。
+
+### 陈旧环境变量提醒（三个 agent 同样适用）
+
+hook/notify 都跑在 **agent 进程的环境快照**里：`setx` 或新改的系统环境变量对已在运行的
+agent 无效。ZCode 插件走 userConfig 注入兜底；Claude Code / Codex 没有插件配置层——
+改完凭据**重启 agent 会话**再验证，排错时先按「联调排错」节核对环境。
 
 ## 联调排错
 
