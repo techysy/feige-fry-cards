@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import feige  # noqa: E402
 
 REPO = Path(__file__).resolve().parent
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 _CSS = """
 body{font-family:"Microsoft YaHei",system-ui,sans-serif;max-width:860px;margin:0 auto;padding:12px;color:#24292f;background:#f6f8fa}
@@ -297,41 +297,46 @@ def handle_test_post(body: bytes) -> bytes:
 
 # ── 页面：接入状态自检 ────────────────────────────────────────────────────────
 
-def page_adapters() -> bytes:
-    home = Path.home()
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def page_adapters(home: Path | None = None) -> bytes:
+    """三家的接入方式都读各自真实的安装记录（插件优先，手动配置兜底），只读不写。"""
+    home = home or Path.home()
     rows = []
+    plugin = "feige-fry-cards"
 
-    hooks_json = REPO / "hooks" / "hooks.json"
-    z_ok = hooks_json.is_file() and "stop-notify" in hooks_json.read_text(
-        encoding="utf-8", errors="replace")
-    rows.append(("ZCode（本仓插件 Stop hook）",
-                 "hooks/hooks.json 已注册 stop-notify.mjs；在 ZCode 插件市场添加本仓库目录即接入"
-                 if z_ok else "hooks/hooks.json 缺失或未注册 stop-notify",
-                 z_ok, "README「安装与启用（ZCode 插件）」"))
+    z_ok = plugin in _read(home / ".zcode" / "cli" / "plugins" / "installed_plugins.json")
+    rows.append(("ZCode", "已安装 feige-fry-cards 插件" if z_ok
+                 else "未安装插件（ZCode 插件市场添加本仓库目录后安装）",
+                 z_ok, "README「插件安装 → ZCode」"))
 
-    claude_cfg = home / ".claude" / "settings.json"
-    c_note, c_ok = "~/.claude/settings.json 不存在", False
-    if claude_cfg.is_file():
-        text = claude_cfg.read_text(encoding="utf-8", errors="replace")
-        c_ok = "feige-fry-cards" in text or "stop_notify.py" in text
-        c_note = ("已检测到 feige Stop hook 片段" if c_ok
-                  else "未检测到 feige Stop hook 片段（按 README 贴入 hooks.Stop）")
-    rows.append(("Claude Code", c_note, c_ok, "README「各 agent 安装 → Claude Code」"))
+    c_plugin = plugin in _read(home / ".claude" / "plugins" / "installed_plugins.json")
+    settings = _read(home / ".claude" / "settings.json")
+    c_manual = "stop_notify.py" in settings or "hooks/stop.py" in settings
+    c_note = ("已安装 feige-fry-cards 插件" if c_plugin
+              else "已手动配置 Stop hook" if c_manual
+              else "未接入（/plugin marketplace add 本仓库目录后安装）")
+    rows.append(("Claude Code", c_note, c_plugin or c_manual, "README「插件安装 → Claude Code」"))
 
-    codex_cfg = home / ".codex" / "config.toml"
-    x_note, x_ok = "~/.codex/config.toml 不存在", False
-    if codex_cfg.is_file():
-        toml = codex_cfg.read_text(encoding="utf-8", errors="replace")
-        notify = next((ln.strip() for ln in toml.splitlines()
-                       if ln.strip().startswith("notify")), "")
-        if "feige-fry-cards" in notify or "feige" in notify.replace("\\", "/"):
-            x_note, x_ok = f"notify 已指向 feige：{esc(notify[:80])}", True
-        elif notify:
-            x_note = (f"notify 已被占用：{esc(notify[:80])}——Codex 只有一条 notify 命令，"
-                      f"含 codex-computer-use 需自行写包装脚本合并")
-        else:
-            x_note = "config.toml 无 notify 行（按 README 添加）"
-    rows.append(("Codex CLI", x_note, x_ok, "README「各 agent 安装 → Codex CLI」"))
+    toml = _read(home / ".codex" / "config.toml")
+    notify = next((ln.strip() for ln in toml.splitlines() if ln.strip().startswith("notify")), "")
+    x_plugin = f'"{plugin}@' in toml
+    x_notify = "feige" in notify.replace("\\", "/")
+    if x_plugin:
+        x_note = "已安装 feige-fry-cards 插件"
+    elif x_notify:
+        x_note = f"notify 已指向 feige：{esc(notify[:80])}"
+    elif notify:
+        x_note = (f"未接入；notify 已被占用：{esc(notify[:80])}——推荐装插件（与 notify 互不干扰），"
+                  f"或用 notify.py 包装链把原命令接在后面")
+    else:
+        x_note = "未接入（codex plugin marketplace add 本仓库目录后安装）"
+    rows.append(("Codex CLI", x_note, x_plugin or x_notify, "README「插件安装 → Codex」"))
 
     body = "<div class='card'><table><tr><th>agent</th><th>状态</th><th>说明 / 指引</th></tr>"
     for name, note, ok, guide in rows:

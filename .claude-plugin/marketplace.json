@@ -1,0 +1,15 @@
+{
+  "name": "feige-fry-cards",
+  "description": "🕊️ fry-cards 家族·飞鸽：agent 收尾战报卡插件",
+  "owner": {
+    "name": "techysy"
+  },
+  "plugins": [
+    {
+      "name": "feige-fry-cards",
+      "source": "./",
+      "description": "🕊️ 飞鸽卡片：agent 无关的结果汇报——每轮收尾摘要战报卡直发飞书 / 钉钉 / Telegram 群。Agent-agnostic result reporter.",
+      "version": "0.6.0"
+    }
+  ]
+}

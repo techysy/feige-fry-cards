@@ -388,5 +388,149 @@ class SignE2ETest(E2EBase):
         self.assertIn("sign=", self.handler.got[0][0])
 
 
+# ── 插件：统一 Stop hook 分发 + 插件设置映射 + Codex notify 包装链 ─────────────
+
+def _load_module(path: Path, name: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class DetectHostTest(unittest.TestCase):
+    stop = _load_module(REPO / "hooks" / "stop.py", "feige_stop_hook")
+
+    def test_hosts(self):
+        d = self.stop.detect_host
+        self.assertEqual(d({}, env={"ZCODE_SESSION_ID": "z"}), "zcode")
+        self.assertEqual(d({"turn_id": "t", "session_id": "s"}, env={}), "codex")
+        self.assertEqual(d({"transcript_path": r"C:\Users\u\.codex\sessions\r.jsonl"}, env={}), "codex")
+        self.assertEqual(d({"transcript_path": "/home/u/.claude/projects/x.jsonl"}, env={}), "claude-code")
+
+
+class ClaudeTranscriptTest(unittest.TestCase):
+    def test_context_counts_cache_creation(self):
+        """真机实测发现：首轮几乎全是 cache_creation，漏算时上下文显示成个位数。"""
+        mod = _load_module(REPO / "adapters" / "claude-code" / "stop_notify.py", "feige_cc_t")
+        with tempfile.TemporaryDirectory() as d:
+            entry = {"type": "assistant", "timestamp": "2026-09-26T00:00:00Z",
+                     "message": {"model": "m", "content": [{"type": "text", "text": "hi"}],
+                                 "usage": {"input_tokens": 10, "cache_creation_input_tokens": 20000,
+                                           "cache_read_input_tokens": 5000}}}
+            path = Path(d, "t.jsonl")
+            path.write_text(json.dumps(entry), encoding="utf-8")
+            self.assertEqual(mod.summarize_transcript(str(path))["context"], "25.0k")
+
+
+class AdaptersPageTest(unittest.TestCase):
+    def test_detects_plugin_installs(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            for rel in (".zcode/cli/plugins/installed_plugins.json", ".claude/plugins/installed_plugins.json"):
+                (home / rel).parent.mkdir(parents=True)
+                (home / rel).write_text('{"plugins": {"feige-fry-cards@feige-fry-cards": {}}}', encoding="utf-8")
+            (home / ".codex").mkdir()
+            (home / ".codex" / "config.toml").write_text(
+                'notify = ["x.exe"]\n[plugins."feige-fry-cards@feige-fry-cards"]\nenabled = true\n',
+                encoding="utf-8")
+            html_ = webui.page_adapters(home).decode("utf-8")
+        self.assertEqual(html_.count("已安装 feige-fry-cards 插件"), 3)
+        self.assertNotIn("未接入", html_)
+
+
+class PluginOptionsTest(unittest.TestCase):
+    def test_mapping_real_env_wins(self):
+        sys.path.insert(0, str(REPO / "adapters"))
+        import common
+        env = {"CLAUDE_PLUGIN_OPTION_HOOK_NOTIFY": "true",
+               "CLAUDE_PLUGIN_OPTION_WEBHOOK_URL": "https://plugin/hook",
+               "ZCODE_USER_CONFIG_APP_ID": "cli_z",
+               "FEISHU_NOTIFY_CHAT_ID": "oc_real", "CLAUDE_PLUGIN_OPTION_NOTIFY_CHAT_ID": "oc_plugin"}
+        common.apply_plugin_options(env)
+        self.assertEqual(env["FEIGE_HOOK_NOTIFY"], "true")
+        self.assertEqual(env["FEISHU_CARD_WEBHOOK"], "https://plugin/hook")
+        self.assertEqual(env["FEISHU_APP_ID"], "cli_z")
+        self.assertEqual(env["FEISHU_NOTIFY_CHAT_ID"], "oc_real")
+
+
+class PluginHookE2ETest(E2EBase):
+    """hooks/stop.py 真进程：各宿主 payload → 本地假 webhook 收到卡；stdout 必须为空。"""
+
+    def run_stop(self, payload, extra_env=None):
+        env = {**self.env, **(extra_env or {})}
+        return subprocess.run([sys.executable, str(REPO / "hooks" / "stop.py")],
+                              input=json.dumps(payload, ensure_ascii=False), capture_output=True,
+                              env=env, encoding="utf-8", timeout=60)
+
+    def test_claude_code_via_plugin_options(self):
+        """只填插件设置（CLAUDE_PLUGIN_OPTION_*），不设任何 FEIGE_/FEISHU_ 环境变量。"""
+        del self.env["FEIGE_HOOK_NOTIFY"]
+        r = self.run_stop({"session_id": "s", "cwd": "/x/demo", "hook_event_name": "Stop",
+                           "transcript_path": self.transcript("claude 插件战报")},
+                          {"CLAUDE_PLUGIN_OPTION_HOOK_NOTIFY": "true",
+                           "CLAUDE_PLUGIN_OPTION_WEBHOOK_URL": self.url + "/hook"})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        got = self.wait_for(1)
+        self.assertIn("claude 插件战报", json.dumps(got[0][1], ensure_ascii=False))
+        self.assertIn("Claude Code", json.dumps(got[0][1], ensure_ascii=False))
+
+    def test_codex_plugin_hook(self):
+        self.env["FEISHU_CARD_WEBHOOK"] = self.url + "/hook"
+        r = self.run_stop({"session_id": "s", "turn_id": "t1", "cwd": "/x/demo", "model": "gpt-9",
+                           "hook_event_name": "Stop", "stop_hook_active": False,
+                           "transcript_path": None, "last_assistant_message": "codex 插件战报"})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        card = json.dumps(self.wait_for(1)[0][1], ensure_ascii=False)
+        self.assertIn("codex 插件战报", card)
+        self.assertIn("gpt-9", card)
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_zcode_dispatch(self):
+        self.env["FEISHU_CARD_WEBHOOK"] = self.url + "/hook"
+        entry = {"type": "model_io", "model": {"modelId": "glm-x"}, "completedAt": "2026-09-26T00:00:00Z",
+                 "response": {"finishReason": "stop", "text": "zcode 插件战报"}}
+        Path(self.tmp.name, "model-io-sess_q.jsonl").write_text(json.dumps(entry, ensure_ascii=False),
+                                                                encoding="utf-8")
+        r = self.run_stop({"session_id": "q"}, {"ZCODE_SESSION_ID": "q", "ROLLOUT_DIR": self.tmp.name})
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertIn("zcode 插件战报", json.dumps(self.wait_for(1)[0][1], ensure_ascii=False))
+
+    def test_disabled_is_silent(self):
+        del self.env["FEIGE_HOOK_NOTIFY"]
+        self.env["FEISHU_CARD_WEBHOOK"] = self.url + "/hook"
+        r = self.run_stop({"turn_id": "t", "last_assistant_message": "x"})
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        time.sleep(1.5)
+        self.assertEqual(self.handler.got, [])
+
+
+class CodexNotifyChainTest(E2EBase):
+    def test_chained_notify_runs_and_exit_code_passes_through(self):
+        """包装链：原 notify 收到「原参数 + 事件 JSON」，飞鸽照发卡，退出码透传。"""
+        self.env["FEISHU_CARD_WEBHOOK"] = self.url + "/hook"
+        marker = Path(self.tmp.name, "chained.json")
+        chained = [sys.executable, "-c",
+                   "import sys,json,pathlib;pathlib.Path(sys.argv[1]).write_text("
+                   "json.dumps(sys.argv[2:]),encoding='utf-8');sys.exit(3)", str(marker), "turn-ended"]
+        event = json.dumps({"type": "agent-turn-complete", "thread-id": "th", "cwd": "/x/demo",
+                            "last-assistant-message": "链式 notify"}, ensure_ascii=False)
+        r = subprocess.run([sys.executable, str(REPO / "adapters" / "codex" / "notify.py"), *chained, event],
+                           capture_output=True, env=self.env, encoding="utf-8", timeout=60)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), ["turn-ended", event])
+        self.assertIn("链式 notify", json.dumps(self.wait_for(1)[0][1], ensure_ascii=False))
+
+    def test_chain_runs_even_when_feige_disabled(self):
+        del self.env["FEIGE_HOOK_NOTIFY"]
+        marker = Path(self.tmp.name, "ran")
+        chained = [sys.executable, "-c", "import sys,pathlib;pathlib.Path(sys.argv[1]).touch()", str(marker)]
+        r = subprocess.run([sys.executable, str(REPO / "adapters" / "codex" / "notify.py"), *chained,
+                            '{"type": "agent-turn-complete"}'],
+                           capture_output=True, env=self.env, encoding="utf-8", timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(marker.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

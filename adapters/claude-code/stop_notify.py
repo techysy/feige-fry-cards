@@ -13,7 +13,7 @@ transcript schema 已拿本机真实转录（~/.claude/projects/**）验证：
 - message.content 数组按 part.type 分：text（teaser 来源，取最后一条）/
   thinking（💭 计数）/ tool_use（🔧 计数）；
 - 模型 message.model；上下文水位 = 最后一条 assistant 的
-  message.usage.input_tokens + cache_read_input_tokens；
+  message.usage.input_tokens + cache_creation_input_tokens + cache_read_input_tokens；
 - ⏱️ = 全文件首末 timestamp 之差。
 
 开关与 fail-open 约定见 adapters/common.py（FEIGE_HOOK_NOTIFY=1 启用，默认关）。
@@ -82,8 +82,10 @@ def summarize_transcript(path: str) -> dict | None:
                 thinking_turns += 1
             usage = msg.get("usage") or {}
             try:
-                used = int(usage.get("input_tokens") or 0) + int(
-                    usage.get("cache_read_input_tokens") or 0)
+                # 三段都算上下文：未缓存输入 + 本轮新写缓存 + 命中缓存（漏掉 creation 的话
+                # 首轮几乎全是新写缓存，水位会显示成个位数）
+                used = sum(int(usage.get(k) or 0) for k in (
+                    "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
                 ctx = used or ctx  # 最后一条 assistant 的水位 ≈ 当前上下文
             except (TypeError, ValueError):
                 pass
@@ -111,8 +113,9 @@ def summarize_transcript(path: str) -> dict | None:
     }
 
 
-def main() -> None:
-    payload = read_payload()
+def main(payload: dict | None = None) -> None:
+    """payload 缺省从 stdin 读；hooks/stop.py 分发时直接传入（stdin 已被它读走）。"""
+    payload = read_payload() if payload is None else payload
     project = project_label(str(payload.get("cwd") or ""))
     transcript = str(payload.get("transcript_path") or "")
     if not transcript or not Path(transcript).is_file():

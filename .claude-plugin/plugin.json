@@ -1,0 +1,71 @@
+{
+  "name": "feige-fry-cards",
+  "version": "0.6.0",
+  "description": "🕊️ 飞鸽卡片：agent 无关的结果汇报插件。每轮收尾把摘要战报卡（标题 + ≤300 字摘要 + 模型/💭/🔧/上下文/⏱️ 统计脚注）直发飞书 / 钉钉 / Telegram 群。同一插件可装进 Claude Code、Codex、ZCode。Stop hook 默认关，在插件设置里打开 hook_notify。",
+  "author": {
+    "name": "techysy"
+  },
+  "repository": "https://github.com/techysy/feige-fry-cards",
+  "keywords": [
+    "feishu",
+    "lark",
+    "dingtalk",
+    "telegram",
+    "card",
+    "notification",
+    "report",
+    "fry-cards"
+  ],
+  "userConfig": {
+    "hook_notify": {
+      "type": "boolean",
+      "title": "Stop hook 战报 / Send report cards",
+      "description": "每轮收尾自动发摘要战报卡（默认关）。Send a summary card when a turn finishes (off by default).",
+      "default": false
+    },
+    "webhook_url": {
+      "type": "string",
+      "title": "飞书 webhook / Feishu webhook URL",
+      "description": "自定义机器人 webhook（https://open.feishu.cn/open-apis/bot/v2/hook/xxx），填了就不需要应用凭据。Custom-bot webhook; takes precedence over app credentials.",
+      "sensitive": true
+    },
+    "webhook_secret": {
+      "type": "string",
+      "title": "webhook 签名密钥 / Webhook signing secret",
+      "description": "机器人开了「签名校验」才需要。Only needed when signature verification is enabled on the bot.",
+      "sensitive": true
+    },
+    "app_id": {
+      "type": "string",
+      "title": "飞书 App ID / Feishu App ID",
+      "description": "CardKit 通道应用凭据（cli_ 开头），不用 webhook 时填。Feishu app credential for the CardKit channel."
+    },
+    "app_secret": {
+      "type": "string",
+      "title": "飞书 App Secret / Feishu App Secret",
+      "description": "飞书应用密钥。Feishu app secret.",
+      "sensitive": true
+    },
+    "notify_chat_id": {
+      "type": "string",
+      "title": "接收群 / Notify chat id",
+      "description": "CardKit 通道的目标群（oc_ 开头），应用机器人须已在群里。Target chat oc_xxx; the app bot must be in the group."
+    },
+    "base_url": {
+      "type": "string",
+      "title": "飞书域名 / Feishu base URL",
+      "description": "默认 https://open.feishu.cn，Lark 国际版填 https://open.larksuite.com。Default https://open.feishu.cn."
+    },
+    "debounce_seconds": {
+      "type": "number",
+      "title": "收尾去抖秒数 / Debounce seconds",
+      "description": "同一会话 N 秒内又收尾就只发最后一张，0 = 每轮都发（默认）。Only send the last card when turns finish within N seconds; 0 = every turn.",
+      "default": 0
+    },
+    "routes_file": {
+      "type": "file",
+      "title": "群路由文件 / Routes file",
+      "description": "项目 → 多群 fanout 的 JSON（默认 ~/.feige-routes.json），钉钉 / Telegram 走这里配置。Project-to-groups routing JSON."
+    }
+  }
+}

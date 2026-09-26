@@ -1,16 +1,13 @@
 {
-  "description": "feige-fry-cards: post a summary report card to Feishu when a ZCode task finishes. Enable via plugin userConfig hook_notify=true or env FEIGE_HOOK_NOTIFY=1 (default off).",
+  "description": "feige-fry-cards: post a summary report card when an agent turn finishes. One entry for all hosts (Claude Code / Codex / ZCode / Mirasim-hosted sessions); hooks/stop.py detects the host. Off by default: enable via plugin setting hook_notify or env FEIGE_HOOK_NOTIFY=1.",
   "hooks": {
     "Stop": [
       {
         "hooks": [
           {
-            "type": "process",
-            "command": "node",
-            "args": [
-              "${ZCODE_PLUGIN_ROOT}/hooks/stop-notify.mjs"
-            ],
-            "timeoutMs": 10000,
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.py\"",
+            "timeout": 30,
             "statusMessage": "feige: sending report card…"
           }
         ]

@@ -41,7 +41,8 @@ webhook（一次性整卡）；否则有 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` �
 （建卡 → 按引用发群，目标群 `FEISHU_NOTIFY_CHAT_ID` 或 `--chat-id`）。
 机器人开了签名校验就配 `FEISHU_WEBHOOK_SECRET`。正文超长会按渠道上限自动截断，
 但仍应自己先提炼。
-也可在插件 Settings 里填（hook 注入为 ZCODE_USER_CONFIG_*）。
+也可在插件设置里填（ZCode 注入为 ZCODE_USER_CONFIG_*，Claude Code 注入为
+CLAUDE_PLUGIN_OPTION_*，Stop hook 会自动映射；手动调 CLI 时仍以环境变量为准）。
 
 发送失败时：读 stderr 里打码后的错误，告诉用户该配哪个变量（webhook URL /
 app 凭据 / chat id），不要猜 chat id、不要重试轰炸。`--dry-run` 先预览卡片 JSON
@@ -49,6 +50,6 @@ app 凭据 / chat id），不要猜 chat id、不要重试轰炸。`--dry-run` �
 
 ## Stop hook 自动战报
 
-插件带 Stop hook（默认关）：`FEIGE_HOOK_NOTIFY=1` 或插件 Settings 打开 hook_notify 后，
-每个任务收尾自动从 rollout 日志提取本会话摘要与统计发卡——日常靠它即可，
-本技能用于“现在主动发一张”的场景。
+插件带 Stop hook（默认关，Claude Code / Codex / ZCode 通用）：`FEIGE_HOOK_NOTIFY=1` 或插件
+设置打开 hook_notify 后，每轮收尾自动提取本会话摘要与统计发卡——日常靠它即可，
+本技能用于“现在主动发一张”的场景；hook 已开时别再为同一结果重复发卡。

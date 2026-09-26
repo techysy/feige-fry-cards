@@ -82,15 +82,15 @@ export FEISHU_APP_ID=... FEISHU_APP_SECRET=... FEISHU_NOTIFY_CHAT_ID=oc_...
 python feige.py send --title "hello" --body "**feige 上线**" \
        --project demo --model kimi-k3 --elapsed 0m30s --dry-run   # 先看载荷,去掉 --dry-run 真发
 
-# 2. 接入你的 agent，收尾自动发
-#    ZCode / Claude Code / Codex → 见「安装与启用」「各 agent 安装」
+# 2. 把本仓库当插件装进你的 agent，收尾自动发（Claude Code 示例，其余见「插件安装」）
+#    /plugin marketplace add <本仓库路径>   →   /plugin install feige-fry-cards@feige-fry-cards
 
 # 3. 打开设置页（渠道状态、群路由编辑、卡片预览、接入自检）
 python webui.py            # → http://127.0.0.1:8787
 ```
 
 完整说明：[CLI 用法](#cli-用法) · [渠道矩阵](#渠道矩阵) · [群路由](#群路由项目--多目标-fanout) ·
-[安装与启用（ZCode）](#安装与启用zcode-插件) · [各 agent 安装](#各-agent-安装claude-code--codex) ·
+[插件安装](#插件安装一份插件四个宿主) ·
 [WebUI 设置页](#webui-设置页) · [联调排错](#联调排错)
 
 ## 里程碑
@@ -103,15 +103,18 @@ python webui.py            # → http://127.0.0.1:8787
   就位，与现有 bridge 守护进程并存切换（见下文「安装与启用」）。
 - **M3 Claude Code / Codex 接入** ✅（2026-09-26 完成）：`adapters/claude-code/stop_notify.py`
   （Stop hook + transcript 统计）与 `adapters/codex/notify.py`（notify 事件 → teaser 卡），
-  直接 import feige.py 调 `send_report()`，验证"agent 无关"成立（见「各 agent 安装」）。
+  直接 import feige.py 调 `send_report()`，验证"agent 无关"成立（见「插件安装」）。
 - **M4 多渠道 + 群路由** ✅（2026-09-26 完成）：新增 `dingtalk-webhook`（钉钉 markdown
   消息）与 `telegram`（Bot API 纯文本）两个渠道，渠道注册表扩至 4 个；`--route` 按
   路由文件做项目 → 多目标 fanout（见「渠道矩阵」「群路由」）。
 
 - **M5 独立设置 WebUI** ✅（2026-09-26 完成）：`webui.py`（纯标准库 `http.server`，
   只绑 127.0.0.1），总览/群路由编辑/卡片预览/测试发送/接入自检五页（见「WebUI 设置页」）。
+- **M6 一份插件四个宿主** ✅（2026-09-26 完成）：`.claude-plugin/` 清单 + 统一 Stop hook
+  `hooks/stop.py`（识别 ZCode / Codex / Claude Code 后分发），Claude Code、Codex、ZCode 都按
+  插件安装，Mirasim 托管会话随之覆盖；Claude Code 已实机验证（见「插件安装」）。
 
-**当前状态**：五个里程碑全部完成。feige 已从 ZCode 专属脚本演进为可用的跨 agent
+**当前状态**：六个里程碑全部完成。feige 已从 ZCode 专属脚本演进为可用的跨 agent
 多渠道汇报核心 + 本地设置界面；后续方向：各渠道的群路由实测联通、tail 守护模式
 （`feige.py` 已留好 CardKit 生命周期 import 口）。
 
@@ -255,32 +258,117 @@ python webui.py [--port 8787]   # 打开 http://127.0.0.1:8787
 **飞鸽 Feige**：飞鸽传书，谐音飞书之"飞"；CLI 命令 `feige`。
 仓库名按家族惯例对齐为 `feige-fry-cards`。
 
-## 安装与启用（ZCode 插件）
+## 插件安装（一份插件，四个宿主）
 
-仓库即插件，目录结构对齐家族规范：
+仓库即插件。四个宿主都自动加载插件根目录的 `hooks/hooks.json`，且都认 Claude 标准
+`type: "command"` + `${CLAUDE_PLUGIN_ROOT}`（ZCode / Codex 的兼容层均已从本机二进制
+实证），所以只挂**一个** Stop hook：`hooks/stop.py`，由它识别宿主再分发：
 
 ```
 feige-fry-cards/
-├── .zcode-plugin/{plugin,marketplace}.json   # 插件清单（userConfig: 凭据/hook 开关等）
-├── hooks/{hooks.json,stop-notify.mjs}        # Stop hook：收尾自动发战报卡
-├── skills/feige/SKILL.md                     # 让模型主动调 feige send
-└── feige.py                                  # 核心 + CLI（M1）
+├── .claude-plugin/{plugin,marketplace}.json  # Claude Code / Codex 读（Mirasim 复用两者的插件缓存）
+├── .zcode-plugin/{plugin,marketplace}.json   # ZCode 读
+├── hooks/hooks.json                          # 唯一 Stop hook → python hooks/stop.py
+├── hooks/stop.py                             # 宿主识别 + 分发
+├── hooks/stop-notify.mjs                     # ZCode rollout 解析
+├── adapters/{claude-code,codex}/             # Claude transcript / Codex payload 解析
+├── skills/feige/SKILL.md                     # 让模型主动调 feige send（各宿主都会加载）
+└── feige.py                                  # 核心 + CLI
 ```
 
-1. **发现**：在 ZCode 插件市场里添加本目录（`.zcode-plugin/marketplace.json` 指向 `.`），
-   安装 feige-fry-cards 插件。
-2. **凭据**：插件 Settings 里填 webhook_url（推荐，最简单）或 app_id/app_secret +
-   notify_chat_id；也可只配系统环境变量（`FEISHU_CARD_WEBHOOK` 等），真实环境变量优先于
-   Settings。
-3. **打开 Stop hook 战报**（默认关）：插件 Settings 打开 `hook_notify`，或设环境变量
-   `FEIGE_HOOK_NOTIFY=1`。之后每个任务收尾自动发卡：hook 从
-   `~/.zcode/cli/rollout/model-io-sess_*.jsonl` 定位本会话（payload.session_id 命中文件名，
-   否则取 mtime 最新兜底），解析最后一条 `finishReason=="stop"` 行做 ≤300 字摘要，
-   统计全会话的 💭/🔧/上下文水位/⏱️，调用 `feige.py send --status ok --route …`（detached +
-   unref，绝不阻塞 ZCode；任何异常 exit 0；后台发送的 stderr 落 `FEIGE_LOG_FILE`）。
-   解释器依次探测 `python`、`py -3`。
-4. **调试**：`FEIGE_DRY_RUN=1` 时 hook 改为同步执行并把 feige 命令与卡片 JSON 打到
-   stderr，不发网络；测试可用 `ROLLOUT_DIR=<目录>` 覆盖日志目录。
+| 宿主 | 识别依据 | 数据来源 |
+|------|---------|---------|
+| ZCode | 环境变量 `ZCODE_SESSION_ID` / `ZCODE_PLUGIN_ROOT` | `~/.zcode/cli/rollout` 会话日志（交给 `stop-notify.mjs`） |
+| Codex | payload 带 `turn_id`（Codex 扩展字段）或转录在 `.codex/` 下 | payload 的 `last_assistant_message` + `model` |
+| Claude Code | 其余 | payload 的 `transcript_path` 转录 |
+
+**通用约定**：Stop hook **默认关**，在插件设置里打开 `hook_notify`（或环境变量
+`FEIGE_HOOK_NOTIFY=1`）；凭据填插件设置或环境变量，**真实环境变量优先**。前台只解析
+（毫秒级），发送交给后台 `feige.py send --route` 子进程，hook 立刻返回，网络再慢也不卡
+agent（后台 stderr 落 `FEIGE_LOG_FILE`）。`FEIGE_DRY_RUN=1` 时把载荷 JSON 打到 stderr
+不发网络（stdout 永远为空——宿主会把 Stop hook 的 stdout 当 hook 输出 JSON 解析）。
+依赖：`python` 在 PATH 上（ZCode 另需 `node`）。
+
+### Claude Code
+
+```
+/plugin marketplace add F:/Files/GitHub Files/feige-fry-cards
+/plugin install feige-fry-cards@feige-fry-cards
+```
+
+启用时会提示填插件设置：`hook_notify`、`webhook_url`（或 `app_id` / `app_secret` /
+`notify_chat_id`）、`webhook_secret`、`debounce_seconds`、`routes_file`。标了 sensitive
+的密钥存系统钥匙串，不进 `settings.json`。**已实机验证**：`claude -p … --plugin-dir <本仓库>`
+收尾即收到卡（标题 / 正文 / 模型 / 💭 / 上下文 / ⏱️ 齐全）。
+
+### Codex（≥0.15x 插件系统）
+
+```bash
+codex plugin marketplace add "F:/Files/GitHub Files/feige-fry-cards"
+codex plugin add feige-fry-cards@feige-fry-cards
+```
+
+Codex 读本仓的 `.claude-plugin/marketplace.json`。它没有插件设置页，凭据与开关走环境变量
+（`FEIGE_HOOK_NOTIFY=1`、`FEISHU_CARD_WEBHOOK` 等）。插件 hook 与 `notify` **互不干扰**，
+已被 codex-computer-use 占用的 notify 不用动。Stop payload 字段（`session_id` / `turn_id` /
+`model` / `last_assistant_message` …）已从 codex.exe 内置 schema 核对；**尚未在已登录的
+Codex 里实跑**（本机 Codex CLI 未登录），首次安装后建议 `FEIGE_DRY_RUN=1` 看一眼 stderr。
+
+### ZCode
+
+在 ZCode 插件市场里添加本目录（`.zcode-plugin/marketplace.json` 指向 `.`），安装
+feige-fry-cards。插件 Settings 填 webhook_url（推荐）或 app_id/app_secret + notify_chat_id，
+打开 `hook_notify`。hook 从 `~/.zcode/cli/rollout/model-io-sess_*.jsonl` 定位本会话
+（payload.session_id 命中文件名，否则取 mtime 最新兜底），解析最后一条
+`finishReason=="stop"` 行做 ≤300 字摘要，统计全会话的 💭/🔧/上下文水位/⏱️。
+调试：`FEIGE_DRY_RUN=1` 把 feige 命令与卡片 JSON 打到 stderr；`ROLLOUT_DIR=<目录>` 覆盖日志目录。
+
+### Mirasim
+
+Mirasim 的插件入口用的是同一套 Claude 格式（`.claude-plugin/plugin.json`、
+`hooks/hooks.json`、`${CLAUDE_PLUGIN_ROOT}`），并读取 Claude Code / Codex 的插件缓存，
+所以装进上面任一宿主后，Mirasim 托管的对应会话同样会触发。**注意**：Mirasim 自己的飞书
+官方渠道已经在推会话状态卡；两者都开时同一个群会收到两份，建议 feige 走单独的汇报群，
+或只给 Mirasim 托管之外的裸跑 agent 开 feige（这也是 feige 的主场，见「立项背景」）。
+
+### 收尾去抖（防刷屏）
+
+各宿主的收尾事件（Stop / `agent-turn-complete`）都是**每轮回复结束**触发，不是
+整个会话结束——来回聊 10 轮就是 10 张卡。设 `FEIGE_DEBOUNCE_SECONDS=N`（或插件设置
+`debounce_seconds`）后，同一会话在 N 秒内又收尾，前一张就放弃，只发安静下来后的最后一张；
+统计本就是全会话累计，最后一张信息最全。代价是卡片晚 N 秒到。建议值：连续交互为主设
+`90`；长任务丢下就走、要第一时间知道的保持默认 `0`。
+
+### 手动接入（不装插件）
+
+**Claude Code**：贴到 `~/.claude/settings.json`（路径按实际仓库位置改）：
+
+```json
+{ "hooks": { "Stop": [ { "hooks": [ { "type": "command",
+  "command": "python \"F:/Files/GitHub Files/feige-fry-cards/hooks/stop.py\"" } ] } ] } }
+```
+
+转录解析口径：assistant 行按 `content[].type` 取 text（teaser）/ thinking（💭）/
+tool_use（🔧），模型取 `message.model`，上下文水位 = 最后一条 assistant 的
+`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`（只报绝对值，不猜窗口），
+⏱️ 取首末 timestamp；`isSidechain` 子代理行跳过。
+
+**Codex（legacy notify）**：`~/.codex/config.toml` 顶层：
+
+```toml
+notify = ["python", "F:/Files/GitHub Files/feige-fry-cards/adapters/codex/notify.py"]
+```
+
+已有 notify（如 codex-computer-use）时用**包装链**——把原命令原样接在后面，两边都跑：
+
+```toml
+notify = ["python", "F:/Files/GitHub Files/feige-fry-cards/adapters/codex/notify.py",
+          "<原命令>", "<原参数>…"]
+```
+
+notify.py 先以「原参数 + 事件 JSON」启动原命令（行为与直接配置一致），再发飞鸽卡，最后
+透传原命令的退出码；飞鸽关闭或失败都不影响原命令。notify 事件字段为 kebab-case（`type` /
+`thread-id` / `cwd` / `last-assistant-message` …），只在 `agent-turn-complete` 时发卡。
 
 ### 与 zcode-feishu-bridge 的关系
 
@@ -289,77 +377,12 @@ feige Stop hook 是**收尾战报**（任务结束一张摘要卡）。可以并
 大群），也可以只开其一。注意若同时开，**同一个群会收到两张口径不同的卡**，建议 bridge
 走专属小群、feige 走汇报群。
 
-### hook 环境变量的坑（联调实录）
+### 陈旧环境变量提醒（所有宿主同样适用）
 
-hook 在 **ZCode 进程内环境**运行，拿到的是 ZCode **启动时**的环境快照：
-`setx` / 改注册表对已在运行的 ZCode 无效（同 M1 联调的 230002 排错）。
-在插件 Settings 里填凭据更可靠——hook 会把 `ZCODE_USER_CONFIG_*` 注入 feige 子进程
-（真实环境变量优先）。验证配置时请显式传最新值。
-
-## 各 agent 安装（Claude Code / Codex）
-
-适配器在 `adapters/`，纯 Python：前台只解析转录/事件（毫秒级），发送交给 detached 的
-`feige.py send --route` 子进程，hook 立刻返回——网络再慢也不卡 agent（stderr 落
-`FEIGE_LOG_FILE`）。**全部默认关闭**：`FEIGE_HOOK_NOTIFY=1` 才启用；`FEIGE_DRY_RUN=1`
-时同步把载荷 JSON 打到 stdout 不发网络。提取口径与 ZCode hook 一致（≤300 字 teaser +
-统计脚注，拿不到的字段自动省略，绝不硬编）。
-
-### 收尾去抖（防刷屏）
-
-三个 agent 的收尾事件（Stop / `agent-turn-complete`）都是**每轮回复结束**触发，不是
-整个会话结束——来回聊 10 轮就是 10 张卡。设 `FEIGE_DEBOUNCE_SECONDS=N` 后，同一会话
-（ZCode/Claude Code 按 session id，Codex 按 thread-id）在 N 秒内又收尾，前一张就放弃，
-只发安静下来后的最后一张；统计本就是全会话累计，最后一张信息最全。代价是卡片晚 N 秒到。
-建议值：连续交互为主设 `90`；长任务丢下就走、要第一时间知道的保持默认 `0`。
-
-### Claude Code（Stop hook）
-
-贴到 `~/.claude/settings.json`（自行合并到已有内容，路径按实际仓库位置改）：
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python F:/Files/GitHub Files/feige-fry-cards/adapters/claude-code/stop_notify.py"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-hook 从 payload 的 `transcript_path` 解析转录：assistant 行按 `content[].type` 取
-text（teaser）/ thinking（💭）/ tool_use（🔧），模型取 `message.model`，上下文水位 =
-最后一条 assistant 的 `input_tokens + cache_read_input_tokens`（只报绝对值，不猜窗口），
-⏱️ 取首末 timestamp；`isSidechain` 子代理行跳过。schema 已拿本机真实转录验证。
-
-### Codex CLI（notify）
-
-`~/.codex/config.toml` 顶层加/改：
-
-```toml
-notify = ["python", "F:/Files/GitHub Files/feige-fry-cards/adapters/codex/notify.py"]
-```
-
-事件 JSON 经**最后一个 argv** 传入（本机 codex.exe 二进制实证字段：`type` /
-`thread-id` / `turn-id` / `cwd` / `client` / `input-messages` /
-`last-assistant-message`）。只在 `type=="agent-turn-complete"` 时发卡；Codex notify 不给
-token/工具统计，卡片只带 teaser + 项目 + 模型（config.toml 顶层 `model = "..."`，
-读不到就省略）。
-
-**注意**：Codex 只有**一条** notify 命令——已有 `notify = [...]`（如 computer-use）的
-用户需自行写一个包装脚本同时调两边。
-
-### 陈旧环境变量提醒（三个 agent 同样适用）
-
-hook/notify 都跑在 **agent 进程的环境快照**里：`setx` 或新改的系统环境变量对已在运行的
-agent 无效。ZCode 插件走 userConfig 注入兜底；Claude Code / Codex 没有插件配置层——
-改完凭据**重启 agent 会话**再验证，排错时先按「联调排错」节核对环境。
+hook 跑在 **agent 进程启动时的环境快照**里：`setx` 或新改的系统环境变量对已在运行的
+agent 无效（同 M1 联调的 230002 排错）。插件设置页填的值更可靠（ZCode 注入为
+`ZCODE_USER_CONFIG_*`、Claude Code 注入为 `CLAUDE_PLUGIN_OPTION_*`，feige 自动映射）；
+Codex 没有设置页——改完凭据**重启 agent 会话**再验证。
 
 ## 测试
 

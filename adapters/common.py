@@ -2,7 +2,8 @@
 
 约定（与 M2 ZCode hook 一致）：
 - FEIGE_HOOK_NOTIFY=1 才启用，默认关闭；
-- FEIGE_DRY_RUN=1 把卡片 JSON 打到 stdout，不发网络；
+- FEIGE_DRY_RUN=1 把卡片 JSON 打到 stderr，不发网络；
+- 插件 userConfig（CLAUDE_PLUGIN_OPTION_* / ZCODE_USER_CONFIG_*）映射为 feige 环境变量；
 - 正式发送走后台子进程（feige.py send --route），hook 立刻返回；
 - FEIGE_DEBOUNCE_SECONDS>0 时同会话连续收尾只发最后一张（见 feige.debounce_wait）；
 - 全部 fail-open：任何异常 → stderr 打日志 → exit 0，绝不拖死 agent。
@@ -32,6 +33,38 @@ def log(msg: str) -> None:
         print(f"[feige] {msg}", file=sys.stderr, flush=True)
     except (ValueError, OSError):
         pass
+
+
+# 插件 userConfig → feige 环境变量。Claude Code 注入为 CLAUDE_PLUGIN_OPTION_<KEY>，
+# ZCode 注入为 ZCODE_USER_CONFIG_<KEY>；键名与 .claude-plugin / .zcode-plugin 清单一致。
+PLUGIN_OPTION_PREFIXES = ("CLAUDE_PLUGIN_OPTION_", "ZCODE_USER_CONFIG_")
+PLUGIN_OPTION_ENV = {
+    "HOOK_NOTIFY": "FEIGE_HOOK_NOTIFY",
+    "WEBHOOK_URL": "FEISHU_CARD_WEBHOOK",
+    "WEBHOOK_SECRET": "FEISHU_WEBHOOK_SECRET",
+    "APP_ID": "FEISHU_APP_ID",
+    "APP_SECRET": "FEISHU_APP_SECRET",
+    "BASE_URL": "FEISHU_BASE_URL",
+    "NOTIFY_CHAT_ID": "FEISHU_NOTIFY_CHAT_ID",
+    "DEBOUNCE_SECONDS": "FEIGE_DEBOUNCE_SECONDS",
+    "ROUTES_FILE": "FEIGE_ROUTES_FILE",
+}
+
+
+def apply_plugin_options(env=None) -> None:
+    """把插件设置页填的值落到 feige 环境变量上；真实环境变量优先，不覆盖。
+
+    子进程（后台发送）继承 os.environ，所以这里改一次全链路生效。
+    """
+    env = os.environ if env is None else env
+    for key, target in PLUGIN_OPTION_ENV.items():
+        if (env.get(target) or "").strip():
+            continue
+        for prefix in PLUGIN_OPTION_PREFIXES:
+            value = (env.get(prefix + key) or "").strip()
+            if value:
+                env[target] = value
+                break
 
 
 def hook_enabled() -> bool:
@@ -139,7 +172,7 @@ def spawn_detached(argv: list[str]) -> None:
 
 
 def send_card(title: str, body: str, stats: dict, agent: str, session: str = "") -> None:
-    """统一发送：dry-run 或无处可发时把载荷 JSON 打 stdout，否则后台发送；失败只落日志。
+    """统一发送：dry-run 或无处可发时把载荷 JSON 打 stderr，否则后台发送；失败只落日志。
 
     走 --route：有路由文件按项目 fanout，没有则退化为默认单渠道。session 用作
     去抖键（FEIGE_DEBOUNCE_SECONDS>0 时，同会话连续收尾只发最后一张）。
@@ -154,7 +187,8 @@ def send_card(title: str, body: str, stats: dict, agent: str, session: str = "")
         _, detail = feige.send_routed(title, body, stats=stats, status="ok",
                                       project=project, dry_run=True)
         try:
-            print(detail, flush=True)  # dry-run：卡片 JSON 打 stdout
+            # 打 stderr：Stop hook 的 stdout 会被宿主当 hook JSON 输出解析（Claude Code / Codex）
+            print(detail, file=sys.stderr, flush=True)
         except (ValueError, OSError):
             pass
         return
@@ -166,6 +200,10 @@ def run(main) -> None:
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    try:
+        apply_plugin_options()
     except Exception:
         pass
     if not hook_enabled():
