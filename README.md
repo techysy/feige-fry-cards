@@ -85,7 +85,13 @@ webhook/skill 形态 + zcode-feishu-bridge 的 CardKit 流式卡核心抽出来�
 - **M3 Claude Code / Codex 接入** ✅（2026-09-26 完成）：`adapters/claude-code/stop_notify.py`
   （Stop hook + transcript 统计）与 `adapters/codex/notify.py`（notify 事件 → teaser 卡），
   直接 import feige.py 调 `send_report()`，验证"agent 无关"成立（见「各 agent 安装」）。
-- **M4 多渠道**：钉钉 webhook、Telegram Bot；群路由配置（项目 → 多群 fanout）。
+- **M4 多渠道 + 群路由** ✅（2026-09-26 完成）：新增 `dingtalk-webhook`（钉钉 markdown
+  消息）与 `telegram`（Bot API 纯文本）两个渠道，渠道注册表扩至 4 个；`--route` 按
+  路由文件做项目 → 多目标 fanout（见「渠道矩阵」「群路由」）。
+
+**当前状态**：四个里程碑全部完成。feige 已从 ZCode 专属脚本演进为可用的跨 agent
+多渠道汇报核心；后续方向：各渠道的群路由实测联通、tail 守护模式（`feige.py` 已留好
+CardKit 生命周期 import 口）。
 
 ## CLI 用法
 
@@ -94,26 +100,32 @@ python feige.py send --title 标题 --body "markdown 正文" \
     [--project X] [--model X] [--thinking N] [--tools N] \
     [--context 42%] [--elapsed 2m38s] \
     [--status ok|error|running] \
-    [--channel feishu-webhook|feishu-cardkit] [--chat-id oc_xxx] [--dry-run]
+    [--channel feishu-webhook|feishu-cardkit|dingtalk-webhook|telegram] \
+    [--chat-id ...] [--webhook ...] [--route] [--dry-run]
 ```
 
 - **状态着色**（与家族一致）：`running` 蓝、`ok` 绿（默认）、`error` 红；
 - **统计脚注**只在 `ok`/`error` 态单次呈现：`📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · ⏱️ 耗时`，
   空字段自动省略；
-- **渠道默认选择**：有 webhook 环境变量走 `feishu-webhook`（一次性整卡，无流式），
-  否则有应用凭据走 `feishu-cardkit`（建卡 → 正文更新 → 封卡 → 按引用发群），
-  都没有则明确报错（打码后）；
-- **`--dry-run`** 只打印将发送的卡片 JSON，不发网络请求、不要求凭据；
+- **渠道默认选择**：有飞书 webhook 环境变量走 `feishu-webhook`（一次性整卡，无流式），
+  否则有应用凭据走 `feishu-cardkit`（建卡 → 正文更新 → 封卡 → 按引用发群）；
+  钉钉/Telegram 不进默认选择，需显式 `--channel` 或 `--route` 路由；都没有则明确报错（打码后）；
+- **`--webhook`**：渠道级 webhook 覆盖（feishu-webhook / dingtalk-webhook）；
+- **`--route`**：按 `--project` 解析路由文件做多目标 fanout（见「群路由」），不带则保持单渠道；
+- **`--dry-run`** 只打印将发送的载荷 JSON，不发网络请求、不要求凭据；
 - **fail-open**：发卡失败只落日志/返回非零退出码，绝不抛炸调用方。
 
-环境变量（与 zcode-feishu-card 对齐）：
+环境变量：
 
 | 变量 | 用途 |
 |------|------|
-| `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL` | 自定义机器人 webhook（webhook 通道） |
-| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 应用凭据（CardKit 通道） |
+| `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL` | 飞书自定义机器人 webhook |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书应用凭据（CardKit 通道） |
 | `FEISHU_BASE_URL` | 默认 `https://open.feishu.cn` |
-| `FEISHU_NOTIFY_CHAT_ID` | 默认群 `oc_xxx`（CardKit 通道必配） |
+| `FEISHU_NOTIFY_CHAT_ID` | 飞书默认群 `oc_xxx`（CardKit 通道必配） |
+| `DINGTALK_WEBHOOK` | 钉钉自定义机器人 webhook |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram bot token / 目标 chat（群为负数 id） |
+| `FEIGE_ROUTES_FILE` | 群路由文件（默认 `~/.feige-routes.json`） |
 
 库用法（后续 tail 模式 / 各 agent 入口 import 复用）：
 
@@ -125,6 +137,55 @@ feige.send_report("会话收尾", "完成 3 个文件修改",
                   status="ok")  # -> (True, "sent (webhook)")
 # CardKit 流式卡生命周期也可单独取用：
 # feige.create_card / update_content / seal_card / send_card / build_card
+```
+
+## 渠道矩阵
+
+| 渠道 | 凭据环境变量 | 版面能力 | 说明 |
+|------|-------------|---------|------|
+| `feishu-webhook` | `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL` | 交互卡（Card 2.0） | 一次性整卡，最简单 |
+| `feishu-cardkit` | `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（+ `FEISHU_NOTIFY_CHAT_ID`） | 交互卡 + 流式 | 建卡 → 封卡 → 引用发群，生命周期函数可被 tail 模式复用 |
+| `dingtalk-webhook` | `DINGTALK_WEBHOOK`（或 `--webhook`） | markdown 消息 | 标题行 + 正文 + `---` + 统计脚注；无交互卡概念 |
+| `telegram` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`（chat 可 `--chat-id`） | 纯文本 | 不启 parse_mode，避开 MarkdownV2 转义地雷 |
+
+统一卡片模型（标题/正文/统计/状态）为输入，各渠道各自渲染；统计脚注只在完成态
+（ok/error）出现的口径跨渠道一致。
+
+**钉钉最低配置**：群 → 群设置 → 智能群助手 → 添加机器人 → 自定义，复制 webhook
+（安全设置选"自定义关键词"时，正文里带上关键词，例如固定标题词）。
+**Telegram 最低配置**：找 @BotFather 领 token；把 bot 拉进目标群后，用
+`https://api.telegram.org/bot<token>/getUpdates` 查看 `chat.id`（群为负数，如 `-100…`）。
+
+## 群路由（项目 → 多目标 fanout）
+
+路由文件为 JSON，路径取 `FEIGE_ROUTES_FILE`，默认 `~/.feige-routes.json`（**不进仓库**；
+可含 webhook/chat_id 等半敏感信息，注意文件权限，秘密建议用 `$ENV` 引用留在环境变量里）：
+
+```json
+{
+  "routes": {
+    "feige-fry-cards": [
+      {"channel": "feishu-cardkit"},
+      {"channel": "dingtalk-webhook", "webhook": "$DINGTALK_WEBHOOK"}
+    ],
+    "*": [ {"channel": "feishu-cardkit"} ]
+  }
+}
+```
+
+- **匹配**：精确项目名 → `"*"` 通配兜底 → 无匹配时退化为现有单渠道行为（不打断
+  M2/M3 调用方）；
+- **目标字段**：`channel` 必填；`webhook` / `chat_id` / `token` 为该目标的显式覆盖，
+  缺省读各渠道环境变量；整字符串值 `"$NAME"` 引用为环境变量值（秘密不进路由文件）；
+- **fanout**：逐目标独立发送，单目标失败不影响其余，返回聚合结果；目标缺/坏
+  `channel` 会跳过并落日志（打码）。
+
+用法（dry-run 是先验证路由的正确姿势）：
+
+```bash
+export FEIGE_ROUTES_FILE=/path/to/routes.json DINGTALK_WEBHOOK=……
+python feige.py send --title 战报 --body "完成 X" --project feige-fry-cards --route --dry-run
+# 解析出 N 个目标就打印 N 份载荷，确认无误后去掉 --dry-run 真发
 ```
 
 ## 命名

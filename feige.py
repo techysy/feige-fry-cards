@@ -1,24 +1,38 @@
 #!/usr/bin/env python3
-"""🕊️ feige-fry-cards — agent 无关的结果汇报核心 + CLI（M1：发卡核心）。
+"""🕊️ feige-fry-cards — agent 无关的结果汇报核心 + CLI。
 
 任何编码 agent（ZCode、Claude Code、Codex……）会话收尾时，把「标题 + 摘要正文 +
-可选统计字段 + 状态」渲染成一张飞书 Card 2.0 卡片，直发群。纯 Python 标准库，
-单文件；后续 tail 守护模式直接 import 本文件的渠道与卡片函数复用。
+可选统计字段 + 状态」渲染成结果卡片，直发群。纯 Python 标准库，单文件；
+tail 守护 / hook / 适配器直接 import 本文件的渠道与卡片函数复用。
+
+渠道（CHANNELS）：
+
+    feishu-webhook    飞书自定义机器人 webhook，一次性整卡（交互卡）
+    feishu-cardkit    飞书应用凭据，CardKit 流式卡完整生命周期（交互卡+流式）
+    dingtalk-webhook  钉钉自定义机器人 webhook，markdown 消息
+    telegram          Telegram Bot API sendMessage（纯文本版式，不用 parse_mode）
 
 CLI 用法：
 
     python feige.py send --title 标题 --body "markdown 正文" \
         [--project X] [--model X] [--thinking N] [--tools N] [--context 42%] \
         [--elapsed 2m38s] [--status ok|error|running] \
-        [--channel feishu-webhook|feishu-cardkit] [--chat-id oc_xxx] [--dry-run]
+        [--channel <CHANNELS>] [--chat-id ...] [--webhook ...] [--route] [--dry-run]
 
-渠道默认选择：有 webhook 环境变量走 feishu-webhook，否则有应用凭据走
-feishu-cardkit，都没有则明确报错（打码后）。环境变量与 zcode-feishu-card 对齐：
+渠道默认选择：有飞书 webhook 环境变量走 feishu-webhook，否则有应用凭据走
+feishu-cardkit，都没有则明确报错（打码后）；钉钉/Telegram 显式 --channel 或走
+--route 路由。--route 时按 --project 解析路由文件（FEIGE_ROUTES_FILE，默认
+~/.feige-routes.json）做多目标 fanout，路由不可用时退化为单渠道行为。
 
-    FEISHU_CARD_WEBHOOK / FEISHU_WEBHOOK_URL   自定义机器人 webhook（webhook 通道）
-    FEISHU_APP_ID / FEISHU_APP_SECRET          应用凭据（CardKit 通道）
+环境变量：
+
+    FEISHU_CARD_WEBHOOK / FEISHU_WEBHOOK_URL   飞书机器人 webhook
+    FEISHU_APP_ID / FEISHU_APP_SECRET          飞书应用凭据（CardKit 通道）
     FEISHU_BASE_URL                             默认 https://open.feishu.cn
-    FEISHU_NOTIFY_CHAT_ID                       默认群（oc_xxx），CardKit 通道必配
+    FEISHU_NOTIFY_CHAT_ID                       飞书默认群（oc_xxx），CardKit 必配
+    DINGTALK_WEBHOOK                            钉钉机器人 webhook
+    TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID      Telegram bot token / 目标 chat（群为负数）
+    FEIGE_ROUTES_FILE                           群路由文件（默认 ~/.feige-routes.json）
 
 设计不变量（继承自家族踩坑）：摘要是战报不是镜像（正文超长截断）；统计面板只在
 完成态（ok/error）做单次脚注，running 态不堆指标；fail-open——发卡失败只落日志，
@@ -35,6 +49,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 DEFAULT_BASE_URL = "https://open.feishu.cn"
 STREAMING_ELEMENT_ID = "streaming_content"  # 流式正文元素 id（家族固定口径）
@@ -65,16 +80,20 @@ def log(msg: str) -> None:
 
 
 def redact(text: str) -> str:
-    """错误信息打码：tenant_access_token / app_secret / webhook URL / 应用密钥值。"""
+    """错误信息打码：tenant_access_token / app_secret / webhook URL / bot token 等。"""
     s = str(text)
     # 形如 token/secret 字段的值一律替换
     s = re.sub(r'(tenant_access_token["\s:=]+)[A-Za-z0-9_\-]{6,}', r"\1***", s)
     s = re.sub(r'(app_secret["\s:=]+)[A-Za-z0-9]{6,}', r"\1***", s)
+    # Telegram bot token（bot<数字>:<串> 形态）
+    s = re.sub(r'bot\d{6,}:[A-Za-z0-9_\-]{10,}', "bot***", s)
     # 当前进程里配置过的真实凭据，明文出现即打码
     for secret in (
         _env("FEISHU_APP_SECRET", "LARK_APP_SECRET"),
         _env("FEISHU_CARD_WEBHOOK", "FEISHU_WEBHOOK_URL"),
         _env("FEISHU_APP_ID", "LARK_APP_ID"),
+        _env("DINGTALK_WEBHOOK"),
+        _env("TELEGRAM_BOT_TOKEN"),
     ):
         if len(secret) >= 6:
             s = s.replace(secret, "***")
@@ -353,13 +372,81 @@ def send_feishu_cardkit(title: str, body: str, stats: dict | None = None,
     return send_card(card_id, chat_id)
 
 
+# ── 渠道三：dingtalk-webhook（钉钉自定义机器人，markdown 消息）────────────────
+
+def render_dingtalk(title: str, body: str, stats: dict | None = None,
+                    status: str = "ok") -> dict:
+    """统一卡片模型 → 钉钉 markdown 消息载荷。
+
+    钉钉自定义机器人没有交互卡/CardKit，markdown 就是全部版面：
+    标题行 + 正文 + --- + 统计脚注一行（脚注仍只在完成态出现）。
+    """
+    if status not in STATUS_TEMPLATE:
+        raise ValueError(f"unknown status: {status!r} (expect running/ok/error)")
+    full_title = f"{STATUS_PREFIX[status]} {title.strip() or '通知'}"
+    parts = [f"### {full_title}", "", clip(body.strip()) or "（空内容）"]
+    footer = stats_footer(stats)
+    if status != "running" and footer:
+        parts += ["", "---", footer]
+    return {"msgtype": "markdown",
+            "markdown": {"title": full_title, "text": "\n".join(parts)}}
+
+
+def send_dingtalk_webhook(payload: dict, webhook: str = "") -> str:
+    """POST 钉钉机器人 webhook；errcode 非 0 即失败。"""
+    url = webhook or _env("DINGTALK_WEBHOOK")
+    if not url:
+        raise RuntimeError("missing webhook: set DINGTALK_WEBHOOK or pass --webhook")
+    data = _post_json(url, payload)
+    errcode = data.get("errcode", 0) if isinstance(data, dict) else 0
+    if errcode not in (0, "0", None):
+        raise RuntimeError(f"dingtalk send failed: errcode={errcode} errmsg={redact(data.get('errmsg', ''))}")
+    return "sent (dingtalk)"
+
+
+# ── 渠道四：telegram（Bot API sendMessage，纯文本版式）──────────────────────
+
+def render_telegram_text(title: str, body: str, stats: dict | None = None,
+                         status: str = "ok") -> str:
+    """统一卡片模型 → Telegram 纯文本（不启 parse_mode，避开 MarkdownV2 转义地雷）。
+
+    标题、正文按原文、统计一行、「———」分隔；脚注仍只在完成态出现。
+    """
+    if status not in STATUS_TEMPLATE:
+        raise ValueError(f"unknown status: {status!r} (expect running/ok/error)")
+    parts = [f"{STATUS_PREFIX[status]} {title.strip() or '通知'}", "",
+             clip(body.strip()) or "（空内容）"]
+    footer = stats_footer(stats)
+    if status != "running" and footer:
+        parts += ["", "———", footer]
+    return "\n".join(parts)
+
+
+def send_telegram(title: str, body: str, stats: dict | None = None, status: str = "ok",
+                  chat_id: str = "", token: str = "") -> str:
+    """POST https://api.telegram.org/bot<token>/sendMessage（纯文本）。"""
+    token = token or _env("TELEGRAM_BOT_TOKEN")
+    chat = chat_id or _env("TELEGRAM_CHAT_ID")
+    if not token:
+        raise RuntimeError("missing token: set TELEGRAM_BOT_TOKEN (BotFather)")
+    if not chat:
+        raise RuntimeError("missing chat: set TELEGRAM_CHAT_ID or pass --chat-id")
+    data = _post_json(f"https://api.telegram.org/bot{token}/sendMessage",
+                      {"chat_id": chat,
+                       "text": render_telegram_text(title, body, stats, status)})
+    if not data.get("ok"):
+        raise RuntimeError(f"telegram send failed: {redact(data.get('description', data))}")
+    return "sent (telegram)"
+
+
 # ── 统一入口 ─────────────────────────────────────────────────────────────────
 
-CHANNELS = ("feishu-webhook", "feishu-cardkit")
+CHANNELS = ("feishu-webhook", "feishu-cardkit", "dingtalk-webhook", "telegram")
 
 
 def pick_channel() -> str:
-    """渠道默认选择：webhook 环境变量优先，其次应用凭据，都没有返回空串。"""
+    """渠道默认选择：飞书 webhook 优先，其次飞书应用凭据；钉钉/Telegram 不进默认
+    选择（显式 --channel 或 --route 路由指定），都没有返回空串。"""
     if webhook_url():
         return "feishu-webhook"
     if _env("FEISHU_APP_ID", "LARK_APP_ID") and _env("FEISHU_APP_SECRET", "LARK_APP_SECRET"):
@@ -368,10 +455,12 @@ def pick_channel() -> str:
 
 
 def send_report(title: str, body: str, stats: dict | None = None, status: str = "ok",
-                channel: str = "", chat_id: str = "", dry_run: bool = False) -> tuple[bool, str]:
+                channel: str = "", chat_id: str = "", webhook: str = "",
+                token: str = "", dry_run: bool = False) -> tuple[bool, str]:
     """统一发送入口，fail-open：任何异常只落日志，返回 (是否成功, 打码后的说明)。
 
-    dry_run=True 只返回将发送的卡片 JSON 字符串，不发网络请求。
+    dry_run=True 只返回将发送的载荷 JSON 字符串，不发网络请求。
+    webhook/token/chat_id 为路由目标级别的显式覆盖，缺省读各渠道环境变量。
     """
     channel = channel or pick_channel()
     if channel and channel not in CHANNELS:
@@ -379,27 +468,128 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
     if not channel:
         if not dry_run:
             return False, (
-                "no channel configured: set FEISHU_CARD_WEBHOOK / FEISHU_WEBHOOK_URL (webhook), "
-                "or FEISHU_APP_ID + FEISHU_APP_SECRET (cardkit); "
-                f"current: webhook={bool(webhook_url())} app_id={bool(_env('FEISHU_APP_ID','LARK_APP_ID'))}"
+                "no channel configured: set FEISHU_CARD_WEBHOOK / FEISHU_WEBHOOK_URL (feishu webhook), "
+                "FEISHU_APP_ID + FEISHU_APP_SECRET (cardkit), DINGTALK_WEBHOOK or TELEGRAM_BOT_TOKEN; "
+                f"current: feishu_webhook={bool(webhook_url())} feishu_app={bool(_env('FEISHU_APP_ID','LARK_APP_ID'))}"
             )
         channel = "-"  # dry-run 无渠道配置：只展开卡片 JSON
     try:
-        streaming = (channel == "feishu-cardkit")
-        card = build_card(title, body, stats=stats if status != "running" else None,
-                          status=status, streaming=streaming)
+        eff_stats = stats if status != "running" else None
+        # 规范化汇报载荷（title/body/stats/status）按渠道各自渲染
+        if channel == "dingtalk-webhook":
+            payload = render_dingtalk(title, body, eff_stats, status)
+            if dry_run:
+                return True, json.dumps({"channel": channel, "lifecycle": "one-shot",
+                                         "payload": payload}, ensure_ascii=False, indent=2)
+            return True, send_dingtalk_webhook(payload, webhook)
+        if channel == "telegram":
+            payload = {"chat_id": chat_id or _env("TELEGRAM_CHAT_ID") or "<TELEGRAM_CHAT_ID>",
+                       "text": render_telegram_text(title, body, eff_stats, status)}
+            if dry_run:
+                return True, json.dumps({"channel": channel, "lifecycle": "one-shot",
+                                         "payload": payload}, ensure_ascii=False, indent=2)
+            return True, send_telegram(title, body, stats=stats, status=status,
+                                       chat_id=chat_id, token=token)
+        # feishu 两渠道（含 "-" 无渠道 dry-run 预览）：Card 2.0
+        card = build_card(title, body, stats=eff_stats, status=status,
+                          streaming=(channel == "feishu-cardkit"))
         if dry_run:
-            payload = {"msg_type": "interactive", "card": card} if channel == "feishu-webhook" \
+            out = {"msg_type": "interactive", "card": card} if channel == "feishu-webhook" \
                 else {"channel": channel, "lifecycle": "create → update_content → seal → send_card",
                       "card": card}
-            return True, json.dumps(payload, ensure_ascii=False, indent=2)
+            return True, json.dumps(out, ensure_ascii=False, indent=2)
         if channel == "feishu-webhook":
-            return True, send_feishu_webhook(card)
+            return True, send_feishu_webhook(card, webhook)
         return True, send_feishu_cardkit(title, body, stats=stats, status=status, chat_id=chat_id)
     except Exception as exc:  # fail-open：发卡失败只落日志，绝不抛炸调用方
         detail = redact(exc)
         log(f"send failed ({channel}): {detail}")
         return False, detail
+
+
+# ── 群路由（项目 → 多目标 fanout）───────────────────────────────────────────
+
+def routes_file_path(env: dict | None = None) -> str:
+    """路由文件路径：FEIGE_ROUTES_FILE > ~/.feige-routes.json。"""
+    env = env if env is not None else os.environ
+    override = str(env.get("FEIGE_ROUTES_FILE") or "").strip()
+    if override:
+        return override
+    return str(Path.home() / ".feige-routes.json")
+
+
+def load_routes(path: str = "") -> dict | None:
+    """读路由文件；不存在/损坏/结构不合法返回 None 并落日志（fail-open）。
+
+    文件可含 webhook/chat_id 等半敏感信息（$ENV 引用可规避），错误信息打码。
+    """
+    path = path or routes_file_path()
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None  # 没配路由是常态，不叫错误
+    try:
+        doc = json.loads(raw)
+    except ValueError as exc:
+        log(f"routes file broken ({redact(exc)}), falling back to single-channel")
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("routes"), dict):
+        log("routes file missing top-level \"routes\" object, falling back to single-channel")
+        return None
+    return doc
+
+
+def resolve_routes(project: str, doc: dict | None, env: dict | None = None) -> list[dict]:
+    """纯函数：项目 → 展开后的目标列表。
+
+    匹配：精确项目名 → "*" 通配兜底 → []（调用方退化单渠道）。
+    目标项里形如 "$NAME" 的整字符串值替换为 env[NAME]（秘密不进路由文件）。
+    """
+    env = env if env is not None else os.environ
+    routes = (doc or {}).get("routes") or {}
+    targets = routes.get(project) or routes.get("*") or []
+    if not isinstance(targets, list):
+        return []
+    out = []
+    for t in targets:
+        if not isinstance(t, dict):
+            continue
+        expanded = {}
+        for key, value in t.items():
+            if isinstance(value, str) and value.startswith("$") and len(value) > 1:
+                expanded[key] = str(env.get(value[1:], "") or "")
+            else:
+                expanded[key] = value
+        out.append(expanded)
+    return out
+
+
+def send_routed(title: str, body: str, stats: dict | None = None, status: str = "ok",
+                project: str = "", dry_run: bool = False,
+                doc: dict | None = None) -> tuple[bool, str]:
+    """按路由 fanout：每个目标独立发送（单目标失败不影响其余），返回聚合结果。
+
+    无路由文件 / 文件损坏 / 项目无匹配且无 "*" 兜底：退化为现有单渠道行为。
+    """
+    doc = load_routes() if doc is None else doc
+    targets = resolve_routes(project, doc) if doc else []
+    if not targets:
+        if doc is not None:
+            log(f"no route for project {project or '(none)'!r} (no \"*\" fallback), single-channel")
+        return send_report(title, body, stats=stats, status=status, dry_run=dry_run)
+    results: list[tuple[bool, str]] = []
+    for t in targets:
+        channel = str(t.get("channel") or "").strip()
+        if not channel:
+            log(f"route target missing channel, skipped: {redact(t)}")
+            results.append((False, "[?] route target missing channel"))
+            continue
+        ok, detail = send_report(
+            title, body, stats=stats, status=status, channel=channel,
+            chat_id=str(t.get("chat_id") or ""), webhook=str(t.get("webhook") or ""),
+            token=str(t.get("token") or ""), dry_run=dry_run)
+        results.append((ok, f"[{channel}] {detail}"))
+    return all(ok for ok, _ in results), "\n".join(d for _, d in results)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -422,10 +612,16 @@ def _build_parser() -> argparse.ArgumentParser:
     send.add_argument("--status", choices=sorted(STATUS_TEMPLATE), default="ok",
                       help="卡片状态：running 蓝 / ok 绿 / error 红（默认 ok）")
     send.add_argument("--channel", choices=CHANNELS, default="",
-                      help="发送渠道（默认：有 webhook 走 webhook，否则有应用凭据走 cardkit）")
-    send.add_argument("--chat-id", default="", help="目标群 oc_xxx（仅 cardkit；默认 FEISHU_NOTIFY_CHAT_ID）")
+                      help="发送渠道（默认：有飞书 webhook 走 feishu-webhook，否则有应用凭据走 feishu-cardkit）")
+    send.add_argument("--chat-id", default="",
+                      help="目标群：cardkit 用 oc_xxx（默认 FEISHU_NOTIFY_CHAT_ID）、telegram 用群 id（默认 TELEGRAM_CHAT_ID）")
+    send.add_argument("--webhook", default="",
+                      help="渠道级 webhook 覆盖（feishu-webhook / dingtalk-webhook；默认读各渠道环境变量）")
+    send.add_argument("--route", action="store_true",
+                      help="按 --project 解析路由文件（FEIGE_ROUTES_FILE，默认 ~/.feige-routes.json）多目标 fanout；"
+                           "路由不可用退化为单渠道")
     send.add_argument("--dry-run", action="store_true",
-                      help="只打印将发送的卡片 JSON，不发网络请求")
+                      help="只打印将发送的载荷 JSON，不发网络请求")
     return parser
 
 
@@ -442,9 +638,14 @@ def main(argv: list[str] | None = None) -> int:
             "thinking": args.thinking, "tools": args.tools,
             "context": args.context, "elapsed": args.elapsed,
         }
-        ok, detail = send_report(args.title, args.body, stats=stats, status=args.status,
-                                 channel=args.channel, chat_id=args.chat_id,
-                                 dry_run=args.dry_run)
+        if args.route:
+            ok, detail = send_routed(args.title, args.body, stats=stats,
+                                     status=args.status, project=args.project,
+                                     dry_run=args.dry_run)
+        else:
+            ok, detail = send_report(args.title, args.body, stats=stats, status=args.status,
+                                     channel=args.channel, chat_id=args.chat_id,
+                                     webhook=args.webhook, dry_run=args.dry_run)
         print(detail if args.dry_run else (f"✅ {detail}" if ok else f"❌ {detail}"))
         return 0 if ok else 1
     return 2
