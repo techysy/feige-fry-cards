@@ -5,7 +5,7 @@
     "en": "Feige cards: agent-agnostic result reporter. On ZCode session stop, builds a summary battle-report card (title + <=300-char teaser + model/reasoning/tools/context/elapsed stats footer) and sends it to a Feishu group via webhook or CardKit. Ships an optional Stop hook (off by default), the feige send CLI and a feige skill.",
     "zh-CN": "🕊️ 飞鸽卡片：agent 无关的结果汇报插件。ZCode 会话收尾时自动生成摘要战报卡（标题 + ≤300 字摘要 + 模型/💭/🔧/上下文/⏱️ 统计脚注），经 webhook 或 CardKit 直发飞书群。内置 Stop hook（默认关）、feige send CLI 与 feige 技能。"
   },
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": {
     "name": "techysy"
   },

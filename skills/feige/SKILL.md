@@ -32,6 +32,8 @@ python <plugin root>/feige.py send \
   `--tokens`（🎫 累计输出 token 数）、`--elapsed`（⏱️ 耗时）。它们按
   `📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫 token · ⏱️耗时` 顺序拼成一行 notation 脚注，
   只在 ok/error 态出现；未知值省略，不能虚构。
+- **CLI/Mirasim 场景 `--model` 带工具名前缀**：`kimi-code · kimi-k3`、`claude-code · opus-4`，
+  群里一眼看出是哪个 agent 跑的；上下文知道窗口就报 `153.6k/1.0m (15%)` 带分母百分比。
 - **状态着色**：成功 `--status ok`（绿）、失败/中断 `--status error`（红，正文写清错误
   与下一步）、进行中 `--status running`（蓝）。
 - 不知道统计数字就别编——空字段会自动省略，但不许虚构。
@@ -55,3 +57,13 @@ app 凭据 / chat id），不要猜 chat id、不要重试轰炸。`--dry-run` �
 插件带 Stop hook（默认关，Claude Code / Codex / ZCode 通用）：`FEIGE_HOOK_NOTIFY=1` 或插件
 设置打开 hook_notify 后，每轮收尾自动提取本会话摘要与统计发卡——日常靠它即可，
 本技能用于“现在主动发一张”的场景；hook 已开时别再为同一结果重复发卡。
+
+kimi-code（kimi CLI / mirasim 托管的 kimi 会话）不读插件 hooks.json，改在
+`~/.kimi-code/config.toml` 手挂（注册即开启，`FEIGE_HOOK_NOTIFY=0` 关闭；⏱️ 报单轮用时）：
+
+```toml
+[[hooks]]
+event = "Stop"
+command = 'python "<plugin root>/hooks/stop.py"'
+timeout = 20
+```

@@ -113,8 +113,13 @@ python webui.py            # → http://127.0.0.1:8787
 - **M6 一份插件四个宿主** ✅（2026-09-26 完成）：`.claude-plugin/` 清单 + 统一 Stop hook
   `hooks/stop.py`（识别 ZCode / Codex / Claude Code 后分发），Claude Code、Codex、ZCode 都按
   插件安装，Mirasim 托管会话随之覆盖；Claude Code 已实机验证（见「插件安装」）。
+- **M7 kimi-code 接入** ✅（2026-09-26 完成）：`adapters/kimi-code/stop_notify.py`
+  （Stop payload + wire.jsonl 统计），`stop.py` 按 `client_type` 识别分发；kimi-code
+  在 `~/.kimi-code/config.toml` 手挂（注册即开启）。⏱️ 改报单轮用时、上下文带分母百分比
+  （`153.6k/1.0m (15%)`）、模型脚注带工具名前缀；本机 kimi CLI 已实机验证
+  （dry-run 卡片字段齐全）。顺手修复 `stats_footer` 对 `thinking/tools=0` 不省略的存量问题。
 
-**当前状态**：六个里程碑全部完成。feige 已从 ZCode 专属脚本演进为可用的跨 agent
+**当前状态**：七个里程碑全部完成。feige 已从 ZCode 专属脚本演进为可用的跨 agent
 多渠道汇报核心 + 本地设置界面；后续方向：各渠道的群路由实测联通、tail 守护模式
 （`feige.py` 已留好 CardKit 生命周期 import 口）。
 
@@ -259,11 +264,12 @@ python webui.py [--port 8787]   # 打开 http://127.0.0.1:8787
 **飞鸽 Feige**：飞鸽传书，谐音飞书之"飞"；CLI 命令 `feige`。
 仓库名按家族惯例对齐为 `feige-fry-cards`。
 
-## 插件安装（一份插件，四个宿主）
+## 插件安装（一份插件，五个宿主）
 
-仓库即插件。四个宿主都自动加载插件根目录的 `hooks/hooks.json`，且都认 Claude 标准
-`type: "command"` + `${CLAUDE_PLUGIN_ROOT}`（ZCode / Codex 的兼容层均已从本机二进制
-实证），所以只挂**一个** Stop hook：`hooks/stop.py`，由它识别宿主再分发：
+仓库即插件。Claude Code / Codex / ZCode 都自动加载插件根目录的 `hooks/hooks.json`，
+且都认 Claude 标准 `type: "command"` + `${CLAUDE_PLUGIN_ROOT}`（ZCode / Codex 的兼容层
+均已从本机二进制实证），所以只挂**一个** Stop hook：`hooks/stop.py`，由它识别宿主再分发
+（kimi-code 不读 hooks.json，改在 config.toml 手挂，见「kimi-code」小节）：
 
 ```
 feige-fry-cards/
@@ -272,7 +278,7 @@ feige-fry-cards/
 ├── hooks/hooks.json                          # 唯一 Stop hook → python hooks/stop.py
 ├── hooks/stop.py                             # 宿主识别 + 分发
 ├── hooks/stop-notify.mjs                     # ZCode rollout 解析
-├── adapters/{claude-code,codex}/             # Claude transcript / Codex payload 解析
+├── adapters/{claude-code,codex,kimi-code}/   # Claude transcript / Codex payload / kimi wire.jsonl 解析
 ├── skills/feige/SKILL.md                     # 让模型主动调 feige send（各宿主都会加载）
 └── feige.py                                  # 核心 + CLI
 ```
@@ -280,6 +286,7 @@ feige-fry-cards/
 | 宿主 | 识别依据 | 数据来源 |
 |------|---------|---------|
 | ZCode | 环境变量 `ZCODE_SESSION_ID` / `ZCODE_PLUGIN_ROOT` | `~/.zcode/cli/rollout` 会话日志（交给 `stop-notify.mjs`） |
+| kimi-code | payload 带 `client_type: kimi_code_*` | `$KIMI_CODE_HOME/sessions/*/agents/main/wire.jsonl` |
 | Codex | payload 带 `turn_id`（Codex 扩展字段）或转录在 `.codex/` 下 | payload 的 `last_assistant_message` + `model` |
 | Claude Code | 其余 | payload 的 `transcript_path` 转录 |
 
@@ -331,6 +338,28 @@ Mirasim 的插件入口用的是同一套 Claude 格式（`.claude-plugin/plugin
 所以装进上面任一宿主后，Mirasim 托管的对应会话同样会触发。**注意**：Mirasim 自己的飞书
 官方渠道已经在推会话状态卡；两者都开时同一个群会收到两份，建议 feige 走单独的汇报群，
 或只给 Mirasim 托管之外的裸跑 agent 开 feige（这也是 feige 的主场，见「立项背景」）。
+
+### kimi-code（kimi CLI / mirasim 托管的 kimi 会话）
+
+kimi-code 不读插件 hooks.json，它的 hook 体系在 `~/.kimi-code/config.toml` 手挂：
+
+```toml
+[[hooks]]
+event = "Stop"
+command = 'python "<本仓库>/hooks/stop.py"'
+timeout = 20
+```
+
+`stop.py` 按 payload 的 `client_type: kimi_code_*` 识别并分发给
+`adapters/kimi-code/stop_notify.py`：从 `$KIMI_CODE_HOME/sessions/<wd>/<session_id>/agents/main/wire.jsonl`
+汇总 teaser 与统计。与其他宿主两点口径**刻意不同**：
+
+- **注册即开启**（手挂 config.toml 本身就是 opt-in，不吃 `FEIGE_HOOK_NOTIFY` 默认关；
+  显式 `FEIGE_HOOK_NOTIFY=0` 仍可关）；
+- **⏱️ 报单轮用时**（最后一轮首条 loop 事件 → 会话末条记录；跨天会话的累计墙钟没有
+  行动意义）。上下文水位在已知模型窗口时报 `153.6k/1.0m (15%)` 带分母百分比
+  （k3=1.0m 等内置表 → kimi config.toml `[models.*]` max_context_size → 未知退化为绝对值）；
+  模型脚注带工具名前缀（`kimi-code · kimi-k3`）。
 
 ### 收尾去抖（防刷屏）
 

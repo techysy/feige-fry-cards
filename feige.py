@@ -161,10 +161,10 @@ def stats_footer(stats: dict | None) -> str:
     if model:
         parts.append(model.split("/")[-1])  # 只留模型名末段，渠道前缀太吵
     thinking = stats.get("thinking")
-    if thinking is not None and str(thinking).strip():
+    if thinking is not None and str(thinking).strip() and str(thinking) != "0":
         parts.append(f"💭{thinking}")
     tools = stats.get("tools")
-    if tools is not None and str(tools).strip():
+    if tools is not None and str(tools).strip() and str(tools) != "0":
         parts.append(f"🔧{tools}")
     context = str(stats.get("context") or "").strip()
     if context:

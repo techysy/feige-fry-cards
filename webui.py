@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import feige  # noqa: E402
 
 REPO = Path(__file__).resolve().parent
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 _CSS = """
 body{font-family:"Microsoft YaHei",system-ui,sans-serif;max-width:860px;margin:0 auto;padding:12px;color:#24292f;background:#f6f8fa}

@@ -8,7 +8,7 @@
       "name": "feige-fry-cards",
       "source": ".",
       "description": "🕊️ 飞鸽卡片：agent 无关的结果汇报插件——会话收尾摘要战报卡直发飞书群。Agent-agnostic result reporter: session-summary battle-report cards straight to Feishu.",
-      "version": "0.6.0"
+      "version": "0.7.0"
     }
   ]
 }

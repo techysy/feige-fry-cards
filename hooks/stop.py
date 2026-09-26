@@ -7,6 +7,10 @@ Claude Code、Codex、ZCode 都自动加载插件根目录的 hooks/hooks.json�
 
     ZCode        环境里有 ZCODE_SESSION_ID / ZCODE_PLUGIN_ROOT（ZCode 注入）
                  → hooks/stop-notify.mjs（解析 ~/.zcode/cli/rollout）
+    kimi-code    payload 带 client_type: kimi_code_*（kimi-code 不读 hooks.json，
+                 需在 ~/.kimi-code/config.toml 手挂，可直达本脚本或适配器）
+                 → adapters/kimi-code/stop_notify.py（解析 agents/main/wire.jsonl；
+                 注册即开启，不吃 FEIGE_HOOK_NOTIFY 默认关）
     Codex        payload 带 turn_id（Codex 扩展字段），或转录在 .codex/ 下
                  → adapters/codex/notify.py main_hook（直接取 last_assistant_message）
     Claude Code  其余
@@ -40,6 +44,8 @@ def detect_host(payload: dict, env=None) -> str:
     env = os.environ if env is None else env
     if env.get("ZCODE_SESSION_ID") or env.get("ZCODE_PLUGIN_ROOT"):
         return "zcode"
+    if str(payload.get("client_type") or "").startswith("kimi"):
+        return "kimi-code"
     transcript = str(payload.get("transcript_path") or "").replace("\\", "/")
     if "turn_id" in payload or "/.codex/" in transcript:
         return "codex"
@@ -88,6 +94,14 @@ def main() -> None:
     if host == "codex":
         adapter = _load(ADAPTERS / "codex" / "notify.py", "feige_codex")
         common.run(lambda: adapter.main_hook(payload))
+    elif host == "kimi-code":
+        # kimi 适配器自带开关（注册即开启），不走 common.run 的 FEIGE_HOOK_NOTIFY 默认关
+        adapter = _load(ADAPTERS / "kimi-code" / "stop_notify.py", "feige_kimi_code")
+        try:
+            common.apply_plugin_options()
+            adapter.main(payload)
+        except Exception as exc:
+            log(f"kimi adapter failed (fail-open): {exc}")
     else:
         adapter = _load(ADAPTERS / "claude-code" / "stop_notify.py", "feige_claude_code")
         common.run(lambda: adapter.main(payload))
