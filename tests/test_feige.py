@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 import shutil
@@ -530,6 +531,66 @@ class CodexNotifyChainTest(E2EBase):
                            capture_output=True, env=self.env, encoding="utf-8", timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(marker.exists())
+
+
+class ClaudePerTurnTest(unittest.TestCase):
+    """Claude 适配器单轮口径：以最后一条真实用户提问分轮；无提问行退化全文件。"""
+
+    @staticmethod
+    def _load():
+        spec = importlib.util.spec_from_file_location(
+            "feige_claude_ut", REPO / "adapters" / "claude-code" / "stop_notify.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    @classmethod
+    def setUpClass(cls):
+        cls.claude = cls._load()
+
+    def write(self, tmp, lines):
+        p = Path(tmp, "t.jsonl")
+        p.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
+                     encoding="utf-8")
+        return str(p)
+
+    def asst(self, ts, text="", thinking=False, tools=0, out=0):
+        parts = ([{"type": "thinking", "thinking": "…"}] if thinking else []) \
+            + [{"type": "tool_use", "name": "Bash"}] * tools \
+            + ([{"type": "text", "text": text}] if text else [])
+        return {"type": "assistant", "timestamp": f"2026-09-26T00:00:{ts:02d}Z",
+                "message": {"model": "claude-x", "content": parts,
+                            "usage": {"input_tokens": 10, "output_tokens": out}}}
+
+    def test_per_turn_stats(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self.write(d, [
+                {"type": "user", "timestamp": "2026-09-26T00:00:00Z",
+                 "message": {"content": "任务一"}},
+                self.asst(1, thinking=True, tools=2, out=100),
+                self.asst(2, text="第一轮", out=50),
+                {"type": "user", "timestamp": "2026-09-26T00:00:03Z",
+                 "message": {"content": [{"type": "tool_result", "content": "ok"}]}},
+                {"type": "user", "timestamp": "2026-09-26T00:00:04Z",
+                 "message": {"content": [{"type": "text", "text": "任务二"}]}},
+                self.asst(5, thinking=True, text="第二轮", out=30),
+            ])
+            s = self.claude.summarize_transcript(path)
+            # 只算「任务二」本轮；tool_result 行不算提问、不重置
+            self.assertEqual((s["thinking"], s["tools"], s["tokens"]), (1, 0, 30))
+            self.assertEqual(s["elapsed"], "1.0s")
+            self.assertEqual(s["body"], "第二轮")
+            self.assertEqual(s["model"], "claude-code · claude-x")
+
+    def test_no_user_prompt_falls_back_to_whole_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self.write(d, [
+                self.asst(0, thinking=True, tools=1, out=10),
+                self.asst(5, text="只有回复", out=5),
+            ])
+            s = self.claude.summarize_transcript(path)
+            self.assertEqual((s["thinking"], s["tools"], s["tokens"]), (1, 1, 15))
+            self.assertEqual(s["elapsed"], "5.0s")
 
 
 if __name__ == "__main__":

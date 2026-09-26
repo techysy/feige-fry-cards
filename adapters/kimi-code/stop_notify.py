@@ -19,7 +19,7 @@ $KIMI_CODE_HOME/sessions/<wd>/<session_id>/agents/main/wire.jsonl（append-only 
   text 为 teaser 来源（取最后一条）；
 - `event.turnId`：💭/🔧/🎫/⏱️ 都只算最后一轮（🎫 = 时间 ≥ 最后一轮首条时间的
   usage.output 之和；⏱️ = 全文件末条时间 − 最后一轮首条时间；多轮会话的累计数
-  没有行动意义，与 Claude/Codex 口径刻意不同）。wire 里没有 turnId 的老格式
+  没有行动意义，Claude 适配器同口径）。wire 里没有 turnId 的老格式
   退化为全文件统计。
 
 上下文分母：已知模型窗口表（k3=1.0m 等）→ kimi config.toml [models.*] max_context_size

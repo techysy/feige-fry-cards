@@ -29,7 +29,7 @@ python <plugin root>/feige.py send \
   不是把完整回复/长日志贴进去；超过 300 字级的内容先自己提炼再发。
 - **统计字段**能带就带：`--project`（📦）、`--model`、`--thinking`（💭 思考轮数）、
   `--tools`（🔧 工具调用数）、`--context`（上下文水位，形如 `42%` 或 `86.5k/200.0k (43%)`）、
-  `--tokens`（🎫 累计输出 token 数）、`--elapsed`（⏱️ 耗时）。它们按
+  `--tokens`（🎫 输出 token 数，按单轮计）、`--elapsed`（⏱️ 耗时，单轮用时）。它们按
   `📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫 token · ⏱️耗时` 顺序拼成一行 notation 脚注，
   只在 ok/error 态出现；未知值省略，不能虚构。
 - **CLI/Mirasim 场景 `--model` 带工具名前缀**：`kimi-code · kimi-k3`、`claude-code · opus-4`，

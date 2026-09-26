@@ -295,7 +295,9 @@ feige-fry-cards/
 （毫秒级），发送交给后台 `feige.py send --route` 子进程，hook 立刻返回，网络再慢也不卡
 agent（后台 stderr 落 `FEIGE_LOG_FILE`）。`FEIGE_DRY_RUN=1` 时把载荷 JSON 打到 stderr
 不发网络（stdout 永远为空——宿主会把 Stop hook 的 stdout 当 hook 输出 JSON 解析）。
-依赖：`python` 在 PATH 上（ZCode 另需 `node`）。
+依赖：`python` 在 PATH 上（ZCode 另需 `node`）。**统计口径**：💭/🔧/🎫/⏱️ 只算最后
+一轮（Claude 按最后一条真实用户提问分轮，kimi 按 turnId，无分轮信息退化为全量）；
+上下文报当前水位；模型脚注带工具名前缀（`claude-code · opus-x`、`kimi-code · kimi-k3`）。
 
 ### Claude Code
 
