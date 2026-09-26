@@ -72,8 +72,9 @@ webhook/skill 形态 + zcode-feishu-bridge 的 CardKit 流式卡核心抽出来�
 - **M1 发卡核心** ✅（2026-09-26 完成）：从 zcode-feishu-bridge 抽 CardKit 流式卡生命
   周期，从 zcode-feishu-card 抽 webhook 双通道发送，合成独立单文件库 `feige.py`，提供
   `feige send --title … --body … [--channel feishu-webhook]` CLI。
-- **M2 ZCode 接入**：以 skill/hook 形式接入 ZCode，会话收尾自动发摘要卡，与现有
-  bridge 守护进程并存切换。
+- **M2 ZCode 接入** ✅（2026-09-26 完成）：以 skill/hook 形式接入 ZCode，会话收尾自动
+  发摘要战报卡（Stop hook，默认关）；`.zcode-plugin/` 清单、`hooks/`、`skills/feige/`
+  就位，与现有 bridge 守护进程并存切换（见下文「安装与启用」）。
 - **M3 Claude Code / Codex 接入**：Claude Code 的 Stop hook、Codex 的 notify 机制，
   验证"agent 无关"成立。
 - **M4 多渠道**：钉钉 webhook、Telegram Bot；群路由配置（项目 → 多群 fanout）。
@@ -122,6 +123,46 @@ feige.send_report("会话收尾", "完成 3 个文件修改",
 
 **飞鸽 Feige**：飞鸽传书，谐音飞书之"飞"；CLI 命令 `feige`。
 仓库名按家族惯例对齐为 `feige-fry-cards`。
+
+## 安装与启用（ZCode 插件）
+
+仓库即插件，目录结构对齐家族规范：
+
+```
+feige-fry-cards/
+├── .zcode-plugin/{plugin,marketplace}.json   # 插件清单（userConfig: 凭据/hook 开关等）
+├── hooks/{hooks.json,stop-notify.mjs}        # Stop hook：收尾自动发战报卡
+├── skills/feige/SKILL.md                     # 让模型主动调 feige send
+└── feige.py                                  # 核心 + CLI（M1）
+```
+
+1. **发现**：在 ZCode 插件市场里添加本目录（`.zcode-plugin/marketplace.json` 指向 `.`），
+   安装 feige-fry-cards 插件。
+2. **凭据**：插件 Settings 里填 webhook_url（推荐，最简单）或 app_id/app_secret +
+   notify_chat_id；也可只配系统环境变量（`FEISHU_CARD_WEBHOOK` 等），真实环境变量优先于
+   Settings。
+3. **打开 Stop hook 战报**（默认关）：插件 Settings 打开 `hook_notify`，或设环境变量
+   `FEIGE_HOOK_NOTIFY=1`。之后每个任务收尾自动发卡：hook 从
+   `~/.zcode/cli/rollout/model-io-sess_*.jsonl` 定位本会话（payload.session_id 命中文件名，
+   否则取 mtime 最新兜底），解析最后一条 `finishReason=="stop"` 行做 ≤300 字摘要，
+   统计全会话的 💭/🔧/上下文水位/⏱️，调用 `feige.py send --status ok …`（detached +
+   unref，绝不阻塞 ZCode；任何异常 exit 0）。
+4. **调试**：`FEIGE_DRY_RUN=1` 时 hook 改为同步执行并把 feige 命令与卡片 JSON 打到
+   stderr，不发网络；测试可用 `ROLLOUT_DIR=<目录>` 覆盖日志目录。
+
+### 与 zcode-feishu-bridge 的关系
+
+两者**定位不同、不冲突**：bridge 守护进程是**过程流式镜像**（每一轮打字机直播到专属群），
+feige Stop hook 是**收尾战报**（任务结束一张摘要卡）。可以并存（直播看过程 + 战报进
+大群），也可以只开其一。注意若同时开，**同一个群会收到两张口径不同的卡**，建议 bridge
+走专属小群、feige 走汇报群。
+
+### hook 环境变量的坑（联调实录）
+
+hook 在 **ZCode 进程内环境**运行，拿到的是 ZCode **启动时**的环境快照：
+`setx` / 改注册表对已在运行的 ZCode 无效（同 M1 联调的 230002 排错）。
+在插件 Settings 里填凭据更可靠——hook 会把 `ZCODE_USER_CONFIG_*` 注入 feige 子进程
+（真实环境变量优先）。验证配置时请显式传最新值。
 
 ## 联调排错
 

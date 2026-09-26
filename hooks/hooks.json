@@ -1,0 +1,20 @@
+{
+  "description": "feige-fry-cards: post a summary report card to Feishu when a ZCode task finishes. Enable via plugin userConfig hook_notify=true or env FEIGE_HOOK_NOTIFY=1 (default off).",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "args": [
+              "${ZCODE_PLUGIN_ROOT}/hooks/stop-notify.mjs"
+            ],
+            "timeoutMs": 10000,
+            "statusMessage": "feige: sending report card…"
+          }
+        ]
+      }
+    ]
+  }
+}

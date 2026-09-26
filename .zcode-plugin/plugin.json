@@ -1,0 +1,70 @@
+{
+  "name": "feige-fry-cards",
+  "description": "🕊️ 飞鸽卡片：agent 无关的结果汇报插件。ZCode 会话收尾时自动生成摘要战报卡（标题 + ≤300 字摘要 + 模型/💭/🔧/上下文/⏱️ 统计脚注），经 webhook 或 CardKit 直发飞书群。内置 Stop hook（默认关）、feige send CLI 与 feige 技能。",
+  "description_i18n": {
+    "en": "Feige cards: agent-agnostic result reporter. On ZCode session stop, builds a summary battle-report card (title + <=300-char teaser + model/reasoning/tools/context/elapsed stats footer) and sends it to a Feishu group via webhook or CardKit. Ships an optional Stop hook (off by default), the feige send CLI and a feige skill.",
+    "zh-CN": "🕊️ 飞鸽卡片：agent 无关的结果汇报插件。ZCode 会话收尾时自动生成摘要战报卡（标题 + ≤300 字摘要 + 模型/💭/🔧/上下文/⏱️ 统计脚注），经 webhook 或 CardKit 直发飞书群。内置 Stop hook（默认关）、feige send CLI 与 feige 技能。"
+  },
+  "version": "0.2.0",
+  "author": {
+    "name": "techysy"
+  },
+  "keywords": [
+    "feishu",
+    "lark",
+    "card",
+    "notification",
+    "report",
+    "fry-cards"
+  ],
+  "userConfig": {
+    "webhook_url": {
+      "title": "飞书 webhook / Feishu webhook URL",
+      "description": "自定义机器人 webhook（https://open.feishu.cn/open-apis/bot/v2/hook/xxx），设置后无需应用凭据。Custom-bot webhook URL; takes precedence over app credentials.",
+      "type": "string",
+      "default": ""
+    },
+    "app_id": {
+      "title": "飞书 App ID / Feishu App ID",
+      "description": "CardKit 通道应用凭据（cli_ 开头），留空则读环境变量 FEISHU_APP_ID。Feishu app credential; empty = use env FEISHU_APP_ID.",
+      "type": "string",
+      "default": ""
+    },
+    "app_secret": {
+      "title": "飞书 App Secret / Feishu App Secret",
+      "description": "飞书应用密钥，仅存本地配置，不会入库。Feishu app secret; stored locally, never committed.",
+      "type": "string",
+      "default": ""
+    },
+    "base_url": {
+      "title": "飞书域名 / Feishu base URL",
+      "description": "默认 https://open.feishu.cn，Lark 国际版填 https://open.larksuite.com。Default https://open.feishu.cn; Lark: https://open.larksuite.com.",
+      "type": "string",
+      "default": ""
+    },
+    "notify_chat_id": {
+      "title": "接收群 / Notify chat id",
+      "description": "CardKit 通道的目标群（oc_ 开头），机器人须已加入。Target chat oc_xxx; the app bot must be in the group.",
+      "type": "string",
+      "default": ""
+    },
+    "rollout_dir": {
+      "title": "rollout 目录 / Rollout directory",
+      "description": "ZCode 模型调用日志目录，默认 ~/.zcode/cli/rollout。ZCode rollout log directory.",
+      "type": "string",
+      "default": ""
+    },
+    "context_total": {
+      "title": "上下文窗口 / Context window",
+      "description": "上下文水位百分比用的窗口大小，默认 1000000。Model context window for the usage footer; default 1000000.",
+      "type": "string",
+      "default": "1000000"
+    },
+    "hook_notify": {
+      "title": "Stop hook 战报 / Stop hook notify",
+      "description": "会话收尾时自动发摘要战报卡（默认关）。Send a summary report card automatically when a task finishes (off by default).",
+      "type": "boolean",
+      "default": "false"
+    }
+  }
+}
