@@ -89,9 +89,12 @@ webhook/skill 形态 + zcode-feishu-bridge 的 CardKit 流式卡核心抽出来�
   消息）与 `telegram`（Bot API 纯文本）两个渠道，渠道注册表扩至 4 个；`--route` 按
   路由文件做项目 → 多目标 fanout（见「渠道矩阵」「群路由」）。
 
-**当前状态**：四个里程碑全部完成。feige 已从 ZCode 专属脚本演进为可用的跨 agent
-多渠道汇报核心；后续方向：各渠道的群路由实测联通、tail 守护模式（`feige.py` 已留好
-CardKit 生命周期 import 口）。
+- **M5 独立设置 WebUI** ✅（2026-09-26 完成）：`webui.py`（纯标准库 `http.server`，
+  只绑 127.0.0.1），总览/群路由编辑/卡片预览/测试发送/接入自检五页（见「WebUI 设置页」）。
+
+**当前状态**：五个里程碑全部完成。feige 已从 ZCode 专属脚本演进为可用的跨 agent
+多渠道汇报核心 + 本地设置界面；后续方向：各渠道的群路由实测联通、tail 守护模式
+（`feige.py` 已留好 CardKit 生命周期 import 口）。
 
 ## CLI 用法
 
@@ -187,6 +190,28 @@ export FEIGE_ROUTES_FILE=/path/to/routes.json DINGTALK_WEBHOOK=……
 python feige.py send --title 战报 --body "完成 X" --project feige-fry-cards --route --dry-run
 # 解析出 N 个目标就打印 N 份载荷，确认无误后去掉 --dry-run 真发
 ```
+
+## WebUI 设置页
+
+```bash
+python webui.py [--port 8787]   # 打开 http://127.0.0.1:8787
+```
+
+对标 hermes-fry-cards 的 studio 工作坊，但走本项目的纯 Python 标准库路线
+（`http.server` 手写，零第三方依赖）。五个页面：
+
+| 页面 | 功能 |
+|------|------|
+| `GET /` 总览 | 4 渠道凭据状态（只显"已配置/未配置"）、路由文件状态；附各渠道测试发送按钮（未配置禁用） |
+| `GET+POST /routes` | 群路由表单化编辑：缺 channel 拒绝、保存前 `.bak` 备份 + 原子写、`$ENV` 引用原样保留、保存后按 `resolve_routes` 语义冒烟 |
+| `GET /preview` | 填参数出两部分：feige dry-run 载荷 JSON（原样）+ 朴素 HTML 外观示意 |
+| `POST /test` | 发送固定内容测试卡「🕊️ feige WebUI 测试卡」，结果打码后展示 |
+| `GET /adapters` | 接入自检（只读）：ZCode 插件注册 / Claude settings.json 片段 / Codex notify 行（含冲突提示），未接入项给 README 指引 |
+
+**安全说明**：只监听 `127.0.0.1`，**无鉴权**——局域网/公网都到不了，但不要改绑定地址、
+不要把端口转发出去。密钥硬规则与 `feige.redact` 同级：任何响应体绝不回显
+`FEISHU_APP_SECRET` / bot token / webhook key 的值（凭据列只有"已配置/未配置"）。
+所有处理函数 fail-open：异常显示为页面内错误条而非 500 白屏。
 
 ## 命名
 
