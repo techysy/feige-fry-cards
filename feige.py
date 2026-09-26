@@ -16,6 +16,7 @@ CLI 用法：
 
     python feige.py send --title 标题 --body "markdown 正文" \
         [--project X] [--model X] [--thinking N] [--tools N] [--context 42%] \
+        [--tokens N] \
         [--elapsed 2m38s] [--status ok|error|running] \
         [--channel <CHANNELS>] [--chat-id ...] [--webhook ...] [--route] [--dry-run]
 
@@ -146,7 +147,7 @@ def clip(text: str, limit: int = BODY_MAX_BYTES, unit: str = "bytes") -> str:
 # ── 统一卡片模型 ─────────────────────────────────────────────────────────────
 
 def stats_footer(stats: dict | None) -> str:
-    """拼装统计脚注行：「📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · ⏱️耗时」。
+    """拼装统计脚注行：「📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 token · ⏱️耗时」。
 
     约定与家族统一面板口径一致；空字段自动省略。
     """
@@ -160,18 +161,37 @@ def stats_footer(stats: dict | None) -> str:
     if model:
         parts.append(model.split("/")[-1])  # 只留模型名末段，渠道前缀太吵
     thinking = stats.get("thinking")
-    if thinking:
+    if thinking is not None and str(thinking).strip():
         parts.append(f"💭{thinking}")
     tools = stats.get("tools")
-    if tools:
+    if tools is not None and str(tools).strip():
         parts.append(f"🔧{tools}")
     context = str(stats.get("context") or "").strip()
     if context:
         parts.append(context)  # 形如 "42%" 或 "86.5k/200.0k (43%)"，上游已格式化
+    tokens = stats.get("tokens")
+    if tokens is not None and str(tokens).strip():
+        try:
+            token_count = int(tokens)
+        except (TypeError, ValueError):
+            token_label = str(tokens).strip()  # 允许上游传入已格式化的数量
+        else:
+            token_label = compact_count(token_count) if token_count > 0 else ""
+        if token_label:
+            parts.append(f"🎫 {token_label}")
     elapsed = str(stats.get("elapsed") or "").strip()
     if elapsed:
         parts.append(f"⏱️ {elapsed}")
     return " · ".join(parts)
+
+
+def compact_count(value: int) -> str:
+    """数量紧凑格式，与 ZCode bridge 一致：14,300 → 14.3k。"""
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return str(value)
 
 
 def build_card(title: str, body: str, stats: dict | None = None,
@@ -743,9 +763,10 @@ def _build_parser() -> argparse.ArgumentParser:
     send.add_argument("--body", required=True, help="卡片正文（markdown，战报摘要非全文）")
     send.add_argument("--project", default="", help="项目标签（📦）")
     send.add_argument("--model", default="", help="模型名")
-    send.add_argument("--thinking", type=int, default=0, help="思考轮数（💭）")
-    send.add_argument("--tools", type=int, default=0, help="工具调用数（🔧）")
+    send.add_argument("--thinking", type=int, default=None, help="思考轮数（💭）")
+    send.add_argument("--tools", type=int, default=None, help="工具调用数（🔧）")
     send.add_argument("--context", default="", help="上下文水位，如 42%% 或 86.5k/200.0k (43%%)")
+    send.add_argument("--tokens", type=int, default=None, help="累计输出 token 数（🎫）")
     send.add_argument("--elapsed", default="", help="耗时，如 2m38s（⏱️）")
     send.add_argument("--status", choices=sorted(STATUS_TEMPLATE), default="ok",
                       help="卡片状态：running 蓝 / ok 绿 / error 红（默认 ok）")
@@ -783,7 +804,7 @@ def main(argv: list[str] | None = None) -> int:
         stats = {
             "project": args.project, "model": args.model,
             "thinking": args.thinking, "tools": args.tools,
-            "context": args.context, "elapsed": args.elapsed,
+            "context": args.context, "tokens": args.tokens, "elapsed": args.elapsed,
         }
         if args.route:
             ok, detail = send_routed(args.title, args.body, stats=stats,

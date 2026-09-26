@@ -138,8 +138,11 @@ def send_argv(title: str, body: str, stats: dict, debounce_key: str) -> list[str
             f"--title={title}", f"--body={body}", "--status=ok", "--route"]
     for key in ("project", "model", "context", "elapsed"):
         argv.append(f"--{key}={stats.get(key) or ''}")
+    if stats.get("tokens") is not None and str(stats.get("tokens")).strip():
+        argv.append(f"--tokens={stats['tokens']}")
     for key in ("thinking", "tools"):
-        argv.append(f"--{key}={int(stats.get(key) or 0)}")
+        if stats.get(key) is not None and str(stats.get(key)).strip():
+            argv.append(f"--{key}={int(stats[key])}")
     if debounce_key:
         argv.append(f"--debounce-key={debounce_key}")
     return argv

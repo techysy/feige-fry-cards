@@ -71,6 +71,7 @@ async function main(raw) {
     `--thinking=${summary.thinking}`,
     `--tools=${summary.tools}`,
     `--context=${summary.context}`,
+    `--tokens=${summary.tokens}`,
     `--elapsed=${summary.elapsed}`,
     // 有路由文件按项目 fanout，没有则退化为默认单渠道
     "--route",
@@ -235,7 +236,7 @@ function summarizeSession(file) {
   ) || 1_000_000;
 
   let firstAt = "", lastAt = "", model = "";
-  let reasoningTurns = 0, toolsTotal = 0, ctx = 0, project = "";
+  let reasoningTurns = 0, toolsTotal = 0, tokensTotal = 0, ctx = 0, project = "";
   let stopText = "", foundStop = false;
 
   let lines;
@@ -254,6 +255,7 @@ function summarizeSession(file) {
 
     const usage = resp.usage || {};
     ctx = Number(usage.inputTokens) || ctx;
+    tokensTotal += Number(usage.outputTokens) || 0;
     if (String(resp.reasoningText || "").trim()) reasoningTurns += 1;
     toolsTotal += (resp.toolCalls || []).filter((t) => t && t.name).length;
     model = (entry.model || {}).modelId || model;
@@ -283,6 +285,7 @@ function summarizeSession(file) {
     thinking: reasoningTurns,
     tools: toolsTotal,
     context: ctx ? `${compact(ctx)}/${compact(ctxTotal)} (${pct.toFixed(0)}%)` : "",
+    tokens: tokensTotal,
     elapsed,
   };
 }

@@ -1,7 +1,7 @@
 {
   "name": "feige-fry-cards",
   "version": "0.6.0",
-  "description": "🕊️ 飞鸽卡片：agent 无关的结果汇报插件。每轮收尾把摘要战报卡（标题 + ≤300 字摘要 + 模型/💭/🔧/上下文/⏱️ 统计脚注）直发飞书 / 钉钉 / Telegram 群。同一插件可装进 Claude Code、Codex、ZCode。Stop hook 默认关，在插件设置里打开 hook_notify。",
+  "description": "🕊️ 飞鸽卡片：agent 无关的结果汇报插件。每轮收尾把摘要战报卡（标题 + ≤300 字摘要 + 模型/💭/🔧/上下文/🎫输出 token/⏱️ 统计脚注）直发飞书 / 钉钉 / Telegram 群。同一插件可装进 Claude Code、Codex、ZCode。Stop hook 默认关，在插件设置里打开 hook_notify。",
   "author": {
     "name": "techysy"
   },

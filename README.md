@@ -47,7 +47,7 @@ webhook/skill 形态 + zcode-feishu-bridge 的 CardKit 流式卡核心抽出来�
 ## 设计原则（继承自 bridge / 家族的踩坑）
 
 - **摘要是战报，不是镜像**：卡片正文截断（300 字级），全文永远留在 agent 客户端/官方通道。
-- **统计行只在封卡出现**：进行中的卡不堆指标；综合面板（模型 · 💭 · 🔧 · 上下文 · ⏱️）
+- **统计行只在封卡出现**：进行中的卡不堆指标；综合面板（模型 · 💭 · 🔧 · 上下文 · 🎫输出 token · ⏱️）
   是收尾脚注，单次呈现——与 hermes/claw 的统一面板口径对齐。
 - **fail-open**：发卡失败绝不能拖垮 agent 会话；异常只落日志。
 - **密钥只走环境变量**：`FEISHU_APP_ID/SECRET`、webhook URL 一律不入库、不进日志。
@@ -123,7 +123,7 @@ python webui.py            # → http://127.0.0.1:8787
 ```bash
 python feige.py send --title 标题 --body "markdown 正文" \
     [--project X] [--model X] [--thinking N] [--tools N] \
-    [--context 42%] [--elapsed 2m38s] \
+    [--context 42%] [--tokens N] [--elapsed 2m38s] \
     [--status ok|error|running] \
     [--channel feishu-webhook|feishu-cardkit|dingtalk-webhook|telegram] \
     [--chat-id ...] [--webhook ...] [--route] [--dry-run] \
@@ -131,7 +131,7 @@ python feige.py send --title 标题 --body "markdown 正文" \
 ```
 
 - **状态着色**（与家族一致）：`running` 蓝、`ok` 绿（默认）、`error` 红；
-- **统计脚注**只在 `ok`/`error` 态单次呈现：`📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · ⏱️ 耗时`，
+- **统计脚注**只在 `ok`/`error` 态单次呈现：`📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 token · ⏱️ 耗时`，
   空字段自动省略；
 - **渠道默认选择**：有飞书 webhook 环境变量走 `feishu-webhook`（一次性整卡，无流式），
   否则有应用凭据走 `feishu-cardkit`（建终态卡 → 按引用发群，2 次调用）；
@@ -168,7 +168,8 @@ python feige.py send --title 标题 --body "markdown 正文" \
 import feige
 feige.send_report("会话收尾", "完成 3 个文件修改",
                   stats={"project": "feige-fry-cards", "model": "glm-5",
-                         "thinking": 4, "tools": 12, "context": "42%", "elapsed": "2m38s"},
+                         "thinking": 4, "tools": 12, "context": "42%",
+                         "tokens": 14300, "elapsed": "2m38s"},
                   status="ok")  # -> (True, "sent (webhook)")
 # CardKit 流式卡生命周期也可单独取用（tail 模式：先 send_card 再持续 update_content，最后 seal_card）：
 # feige.create_card / update_content / seal_card / send_card / build_card(streaming=True)
@@ -320,7 +321,7 @@ Codex 里实跑**（本机 Codex CLI 未登录），首次安装后建议 `FEIGE
 feige-fry-cards。插件 Settings 填 webhook_url（推荐）或 app_id/app_secret + notify_chat_id，
 打开 `hook_notify`。hook 从 `~/.zcode/cli/rollout/model-io-sess_*.jsonl` 定位本会话
 （payload.session_id 命中文件名，否则取 mtime 最新兜底），解析最后一条
-`finishReason=="stop"` 行做 ≤300 字摘要，统计全会话的 💭/🔧/上下文水位/⏱️。
+`finishReason=="stop"` 行做 ≤300 字摘要，统计全会话的 💭/🔧/上下文水位/输出 token/⏱️。
 调试：`FEIGE_DRY_RUN=1` 把 feige 命令与卡片 JSON 打到 stderr；`ROLLOUT_DIR=<目录>` 覆盖日志目录。
 
 ### Mirasim
@@ -351,7 +352,7 @@ Mirasim 的插件入口用的是同一套 Claude 格式（`.claude-plugin/plugin
 转录解析口径：assistant 行按 `content[].type` 取 text（teaser）/ thinking（💭）/
 tool_use（🔧），模型取 `message.model`，上下文水位 = 最后一条 assistant 的
 `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`（只报绝对值，不猜窗口），
-⏱️ 取首末 timestamp；`isSidechain` 子代理行跳过。
+🎫 累加 assistant 的 `output_tokens`；⏱️ 取首末 timestamp；`isSidechain` 子代理行跳过。
 
 **Codex（legacy notify）**：`~/.codex/config.toml` 顶层：
 

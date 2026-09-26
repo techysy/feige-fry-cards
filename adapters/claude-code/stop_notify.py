@@ -13,7 +13,8 @@ transcript schema 已拿本机真实转录（~/.claude/projects/**）验证：
 - message.content 数组按 part.type 分：text（teaser 来源，取最后一条）/
   thinking（💭 计数）/ tool_use（🔧 计数）；
 - 模型 message.model；上下文水位 = 最后一条 assistant 的
-  message.usage.input_tokens + cache_creation_input_tokens + cache_read_input_tokens；
+  message.usage.input_tokens + cache_creation_input_tokens + cache_read_input_tokens；🎫 为所有
+  assistant 行的 message.usage.output_tokens 累加；
 - ⏱️ = 全文件首末 timestamp 之差。
 
 开关与 fail-open 约定见 adapters/common.py（FEIGE_HOOK_NOTIFY=1 启用，默认关）。
@@ -36,6 +37,7 @@ def summarize_transcript(path: str) -> dict | None:
     model = ""
     thinking_turns = 0
     tools_total = 0
+    tokens_total = 0
     ctx = 0
     last_text = ""
     saw_assistant = False
@@ -89,6 +91,10 @@ def summarize_transcript(path: str) -> dict | None:
                 ctx = used or ctx  # 最后一条 assistant 的水位 ≈ 当前上下文
             except (TypeError, ValueError):
                 pass
+            try:
+                tokens_total += int(usage.get("output_tokens") or 0)
+            except (TypeError, ValueError):
+                pass
 
     if not saw_assistant:
         return None
@@ -107,6 +113,7 @@ def summarize_transcript(path: str) -> dict | None:
         "model": model,
         "thinking": thinking_turns,
         "tools": tools_total,
+        "tokens": tokens_total,
         # Claude 上下文窗口因模型/计划而异，硬编码百分比不靠谱——只报绝对水位
         "context": compact(ctx) if ctx else "",
         "elapsed": elapsed,
@@ -131,6 +138,7 @@ def main(payload: dict | None = None) -> None:
         "thinking": summary["thinking"],
         "tools": summary["tools"],
         "context": summary["context"],
+        "tokens": summary["tokens"],
         "elapsed": summary["elapsed"],
     }
     send_card("", summary["body"], stats, agent="Claude Code",

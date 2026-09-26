@@ -1,6 +1,6 @@
 ---
 name: feige
-description: 用飞鸽（feige-fry-cards）把任务结果以摘要战报卡直发飞书群。Use when the user asks to 发战报/结果卡片到飞书群、汇报任务结果到群里、会话结束自动通知飞书, send a battle-report/summary card to a Feishu group, or asks about feige / 📦·💭·🔧·⏱️ style status cards. Runs the local `feige.py` CLI (webhook 或 CardKit 双渠道自动选择).
+description: 用飞鸽（feige-fry-cards）把任务结果以摘要战报卡直发飞书群。Use when the user asks to 发战报/结果卡片到飞书群、汇报任务结果到群里、会话结束自动通知飞书, send a battle-report/summary card to a Feishu group, or asks about feige / 📦·💭·🔧·🎫·⏱️ style status cards. Runs the local `feige.py` CLI (webhook 或 CardKit 双渠道自动选择).
 ---
 
 # feige — 摘要战报卡直发飞书群
@@ -16,7 +16,7 @@ python <plugin root>/feige.py send \
     --body "**一句话战报**：改了什么、结果如何" \
     --status ok \
     [--project 项目名] [--model 模型] [--thinking N] [--tools N] \
-    [--context "42%"] [--elapsed "2m38s"] \
+    [--context "42%"] [--tokens N] [--elapsed "2m38s"] \
     [--channel feishu-webhook|feishu-cardkit] [--chat-id oc_xxx] [--dry-run]
 ```
 
@@ -29,7 +29,9 @@ python <plugin root>/feige.py send \
   不是把完整回复/长日志贴进去；超过 300 字级的内容先自己提炼再发。
 - **统计字段**能带就带：`--project`（📦）、`--model`、`--thinking`（💭 思考轮数）、
   `--tools`（🔧 工具调用数）、`--context`（上下文水位，形如 `42%` 或 `86.5k/200.0k (43%)`）、
-  `--elapsed`（⏱️ 耗时）。它们会拼成一行 notation 脚注，只在 ok/error 态出现。
+  `--tokens`（🎫 累计输出 token 数）、`--elapsed`（⏱️ 耗时）。它们按
+  `📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫 token · ⏱️耗时` 顺序拼成一行 notation 脚注，
+  只在 ok/error 态出现；未知值省略，不能虚构。
 - **状态着色**：成功 `--status ok`（绿）、失败/中断 `--status error`（红，正文写清错误
   与下一步）、进行中 `--status running`（蓝）。
 - 不知道统计数字就别编——空字段会自动省略，但不许虚构。
