@@ -10,11 +10,11 @@
 
 | 仓库 | emoji | 宿主 agent | 形态 |
 |------|-------|-----------|------|
-| [hermes-fry-cards](../hermes-fry-cards) | 🍟 薯条 | Hermes Gateway | 通道内流式卡片插件（系列源头） |
-| [claw-fry-cards](../claw-fry-cards) | 🍤 虾条 | OpenClaw | 飞书通道插件（替代官方通道） |
-| [mimo-fry-cards](../mimo-fry-cards) | — | MiMo Desktop / MiMoCode | 飞书 fry 风格通道（探针阶段） |
-| [zcode-feishu-bridge](../zcode-feishu-bridge) | — | ZCode | 日志 tail 桥接守护进程（流式卡片） |
-| [zcode-feishu-card](../zcode-feishu-card) | — | ZCode | MCP 主动推卡插件（非流式，单次卡片） |
+| [hermes-fry-cards](https://github.com/techysy/hermes-fry-cards) | 🍟 薯条 | Hermes Gateway | 通道内流式卡片插件（系列源头） |
+| [claw-fry-cards](https://github.com/techysy/claw-fry-cards) | 🍤 虾条 | OpenClaw | 飞书通道插件（替代官方通道） |
+| [zcode-feishu-bridge](https://github.com/techysy/zcode-feishu-bridge) | 🌉 | ZCode | 日志 tail 桥接守护进程（流式卡片） |
+| mimo-fry-cards（本地探针） | — | MiMo Desktop / MiMoCode | 飞书 fry 风格通道（探针阶段） |
+| zcode-feishu-card（本地） | — | ZCode | MCP 主动推卡插件（非流式，单次卡片） |
 | **feige-fry-cards**（本仓） | 🕊️ 飞鸽 | **agent 无关** | **结果汇报插件**：会话收尾摘要卡直发群 |
 
 命名规则沿用家族惯例 `{宿主}-{风格}-cards`；本仓宿主是飞鸽这个"信使"而非某个具体
