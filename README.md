@@ -53,6 +53,7 @@ flowchart TD
         C2["飞书 CardKit (应用凭据 / 引用直发)"]
         C3["钉钉 Webhook (Markdown 消息 / 加签)"]
         C4["Telegram (Bot API 纯文本 / 免转义)"]
+        PAD["&nbsp;<br/>&nbsp;"]
     end
 
     H1 --> PARSE
@@ -69,6 +70,9 @@ flowchart TD
     ROUTER --> C2
     ROUTER --> C3
     ROUTER --> C4
+    C4 ~~~ PAD
+
+    style PAD fill:transparent,stroke:none,color:transparent
 ```
 
 ### 核心设计原则
