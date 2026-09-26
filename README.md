@@ -1,430 +1,249 @@
+<div align="center">
+
 # 🕊️ feige-fry-cards — 飞鸽卡片
 
-> 飞鸽传书——把 agent 的战报投进任何群。fry-cards 系列第 N 只。
+**跨 Agent 会话战报直发插件：收尾自动汇总 · 飞书 CardKit v2.0 / Webhook · 钉钉 · Telegram 多渠道路由 · 纯标准库实现**
 
-一个 **agent 侧的结果汇报插件**：任何编码 agent（ZCode、Claude Code、Codex……）的会话
-结束时，自动生成**摘要结果卡片**，直发飞书群。不依赖任何 agent 产品的内置渠道，
-卡片形态完全自控。
+[![Release](https://img.shields.io/github/v/release/techysy/feige-fry-cards?label=%E7%89%88%E6%9C%AC&color=2563eb)](https://github.com/techysy/feige-fry-cards/releases/latest)
+[![Python](https://img.shields.io/badge/Python-%E2%89%A5%203.9-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Linux%20%7C%20macOS%20%7C%20Windows-6b7280)](#快速开始)
+[![Framework](https://img.shields.io/badge/fry--cards-%E5%AE%B6%E6%97%8F%E6%88%90%E5%91%98-f59e0b)](#系列对齐fry-cards-家族)
 
-## 系列对齐（fry-cards 家族）
+[特性](#-特性) · [快速开始](#-快速开始) · [渠道矩阵](#-渠道矩阵) · [群路由](#-群路由项目--多目标-fanout) · [插件安装](#-插件安装一份插件五个宿主) · [WebUI 控制台](#%EF%B8%8F-webui-控制台) · [项目结构](#-项目结构)
 
-| 仓库 | emoji | 宿主 agent | 形态 |
-|------|-------|-----------|------|
-| [hermes-fry-cards](https://github.com/techysy/hermes-fry-cards) | 🍟 薯条 | Hermes Gateway | 通道内流式卡片插件（系列源头） |
-| [claw-fry-cards](https://github.com/techysy/claw-fry-cards) | 🍤 虾条 | OpenClaw | 飞书通道插件（替代官方通道） |
-| [zcode-feishu-bridge](https://github.com/techysy/zcode-feishu-bridge) | 🌉 | ZCode | 日志 tail 桥接守护进程（流式卡片） |
-| mimo-fry-cards（本地探针） | — | MiMo Desktop / MiMoCode | 飞书 fry 风格通道（探针阶段） |
-| zcode-feishu-card（本地） | — | ZCode | MCP 主动推卡插件（非流式，单次卡片） |
-| **feige-fry-cards**（本仓） | 🕊️ 飞鸽 | **agent 无关** | **结果汇报插件**：会话收尾摘要卡直发群 |
+</div>
 
-命名规则沿用家族惯例 `{宿主}-{风格}-cards`；本仓宿主是飞鸽这个"信使"而非某个具体
-agent，因为它面向的是**所有 agent**。
+> **这是什么**：一个专为各类 AI 编码 Agent（Claude Code、Codex、ZCode、kimi-code 等）打造的**会话结果收尾汇报插件**。当 Agent 完成任务会话收尾时，自动生成结构化摘要战报卡片投递至飞书、钉钉、Telegram 群组。  
+> **核心定位**：不受制于宿主内置渠道的封闭限制，卡片形态与统计口径完全自主掌控；零外部依赖，纯 Python 标准库原生驱动。
 
-与兄弟仓库的分工：hermes / claw / mimo 那几只做的是**双向通道**（接管 IM 收发，渲染每一轮
-流式回复）；zcode-feishu-bridge 是 ZCode 专属的日志桥接；zcode-feishu-card 是 ZCode 专属
-的主动推卡。飞鸽做的是**跨 agent 的"结果汇报"这一件事**——把 zcode-feishu-card 的
-webhook/skill 形态 + zcode-feishu-bridge 的 CardKit 流式卡核心抽出来，做成任何 agent
-都能挂的通用汇报层。
+---
 
-## 立项背景
+## 🕊️ 系列对齐（fry-cards 家族）
 
-对 Mirasim 的评估（2026-09）证实了两件事：
+| 仓库 | 标志 | 宿主 Agent | 形态与定位 |
+| --- | --- | --- | --- |
+| [hermes-fry-cards](https://github.com/techysy/hermes-fry-cards) | 🍟 薯条 | Hermes Gateway | 网关通道内 CardKit v2.0 流式交互卡片插件（系列源头） |
+| [claw-fry-cards](https://github.com/techysy/claw-fry-cards) | 🍤 虾条 | OpenClaw | 飞书全功能通道插件（CardKit v2.0 打字机流式） |
+| [zcode-feishu-bridge](https://github.com/techysy/zcode-feishu-bridge) | 🌉 | ZCode | 会话日志 Tail 桥接守护进程（流式进度卡片） |
+| **feige-fry-cards**（本仓） | 🕊️ 飞鸽 | **Agent 无关** | **结果汇报插件**：会话收尾摘要卡直发各群（跨宿主统一收敛） |
 
-1. "agent 进展汇报到 IM 群"是被验证的标准需求——Mirasim 把它做成了内置的 7 渠道双向遥控；
-2. 但内置渠道**不给你卡片形态和注入的控制权**（闭源固定适配器、无渠道插件 SDK），
-   想要"自定义摘要卡片进群"，正确姿势是在 agent 侧挂 skill，走各平台 webhook 直发。
+---
 
-飞鸽就是第二条路，也是 fry-cards 家族风格（流式卡片 / 统一面板 / 封卡统计）向
-"跨 agent 汇报"场景的延伸。
+## 🏗️ 架构与设计原则
 
-> **实测勘误（2026-09-26）**：Mirasim 飞书官渠实机验证为**交互卡片**——会话状态条
-> （`agent · 模型 · ⏱️ 耗时` 实时更新）+ Stop 按钮（卡片交互回调），群内 @bot 双向遥控
-> 完整可用；此前"大概率富文本、无卡片承诺"的推测作废。结论修正为：Mirasim 托管的
-> 会话由官渠良好覆盖，feige 不与其竞争；feige 的领地是 **Mirasim 托管体系之外的
-> 裸跑 agent 进程**（本机直起的 ZCode / Claude Code / Codex CLI），以及卡片风格的
-> 完全自控（fry 美学、统计面板口径）。
+```mermaid
+flowchart TD
+    subgraph Ingress["多宿主触发入口 (可插拔 Hook)"]
+        H1["Claude Code (Stop Hook)"]
+        H2["Codex (Notify / Hook)"]
+        H3["ZCode (Stop Hook)"]
+        H4["kimi-code (Stop Hook)"]
+        H5["CLI 手动调用 / Tail 守护"]
+    end
 
-## 设计原则（继承自 bridge / 家族的踩坑）
+    subgraph Core["feige 核心引擎 (feige.py / 纯标准库)"]
+        PARSE["会话转录提取<br/>💭/🔧/🎫/⏱️ 自动归算"]
+        CARD["卡片骨架装配<br/>字节预算控制 / 统一脚注"]
+        DEBOUNCE["收尾防刷去抖<br/>Debounce 机制"]
+        ROUTER["多目标路由 Fanout<br/>(~/.feige-routes.json)"]
+    end
 
-- **摘要是战报，不是镜像**：卡片正文截断（300 字级），全文永远留在 agent 客户端/官方通道。
-- **统计行只在封卡出现**：进行中的卡不堆指标；综合面板（模型 · 💭 · 🔧 · 上下文 · 🎫输出 token · ⏱️）
-  是收尾脚注，单次呈现——与 hermes/claw 的统一面板口径对齐。
-- **fail-open**：发卡失败绝不能拖垮 agent 会话；异常只落日志。
-- **密钥只走环境变量**：`FEISHU_APP_ID/SECRET`、webhook URL 一律不入库、不进日志。
-- **Python 标准库 only**（CLI/核心），单文件核心优先；文档与注释用中文。
+    subgraph Channels["投递渠道矩阵"]
+        C1["飞书 Webhook (CardKit v2.0 交互整卡)"]
+        C2["飞书 CardKit (应用凭据 / 引用直发)"]
+        C3["钉钉 Webhook (Markdown 消息 / 加签)"]
+        C4["Telegram (Bot API 纯文本 / 免转义)"]
+    end
 
-## 架构
+    H1 --> PARSE
+    H2 --> PARSE
+    H3 --> PARSE
+    H4 --> PARSE
+    H5 --> PARSE
 
+    PARSE --> CARD
+    CARD --> DEBOUNCE
+    DEBOUNCE --> ROUTER
+
+    ROUTER --> C1
+    ROUTER --> C2
+    ROUTER --> C3
+    ROUTER --> C4
 ```
-┌───────────── 入口（可插拔） ─────────────┐
-│ skill 调用   hook 回调   CLI   tail 守护  │  ← 各 agent 一层薄适配
-└──────────────────┬────────────────────────┘
-                   ▼
-        feige 核心（单文件 feige.py）
-        会话摘要 → 卡片拼装 → sequence/重试/限流
-                   ▼
-┌──────────── 渠道（可插拔） ──────────────┐
-│ 飞书 webhook ✓  飞书 CardKit  钉钉  TG … │  ← 各渠道一个 adapter，群路由走配置
-└───────────────────────────────────────────┘
-```
 
-- **入口**决定"什么时候汇报"：agent 会话结束的 Stop hook、`feige send` 手动调用、
-  或保留 tail 模式兼容 ZCode 现状。
-- **渠道**决定"发到哪、什么形态"：每个渠道一个薄 adapter，输入统一的卡片模型
-  （标题 / 摘要正文 / 统计脚注 / 状态），输出各平台消息。
-- **群路由**：一份配置把「项目 → 群 webhook」映射起来，支持一个项目多群。
+### 核心设计原则
+- 🎯 **摘要是战报，不是镜像**：卡片正文控制在 300 字级核心提炼，完整交互留在终端，杜绝冗长刷屏。
+- 📊 **统计面板规范呈现**：遵循家族统一口径，在终态卡片底部附带紧凑脚注：`📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 · ⏱️耗时`。
+- 🛡️ **Fail-Open 稳态容错**：卡片生成或网络发信异常仅记录本地日志，**绝不反向阻断或拖垮 Agent 本身的执行进程**。
+- 🔒 **密钥零泄露保障**：凭据全走系统环境变量或系统钥匙串，日志与 WebUI 严格脱敏，不落盘明文。
+- 📦 **纯标准库零依赖**：基于 Python 标准库（`http.server`、`urllib` 等），无 `pip install` 外部三方包依赖负担。
 
-## 快速开始
+---
+
+## ✨ 特性
+
+- 🤖 **一插件统驭五宿主**：无缝适配 Claude Code、Codex CLI、ZCode、kimi-code 及 Mirasim 托管会话。
+- 🌐 **多渠道智能 Fanout**：支持按项目名称将战报广播（Fanout）到不同群组，单渠道故障互不连带。
+- ⏱️ **精准口径与收尾去抖**：支持仅统计单轮用时与消耗（或全会话累计），内置 Debounce 机制防止频繁短交互刷屏。
+- 🎛️ **内置轻量 WebUI 控制台**：单命令调起本地管理面板，提供凭据自检、群路由表单编辑与卡片实时预览。
+
+---
+
+## 🚀 快速开始
+
+### 方式一：CLI 命令行直接发卡
 
 ```bash
-# 1. 手动发一张战报卡（最快 30 秒见效；凭据见「渠道矩阵」）
-export FEISHU_APP_ID=... FEISHU_APP_SECRET=... FEISHU_NOTIFY_CHAT_ID=oc_...
-python feige.py send --title "hello" --body "**feige 上线**" \
-       --project demo --model kimi-k3 --elapsed 0m30s --dry-run   # 先看载荷,去掉 --dry-run 真发
+# 1. 配置飞书机器人 Webhook 环境变量
+export FEISHU_CARD_WEBHOOK="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
 
-# 2. 把本仓库当插件装进你的 agent，收尾自动发（Claude Code 示例，其余见「插件安装」）
-#    /plugin marketplace add <本仓库路径>   →   /plugin install feige-fry-cards@feige-fry-cards
+# 2. 发送测试战报（先使用 --dry-run 查看装配载荷）
+python feige.py send \
+  --title "任务完成" \
+  --body "**项目核心模块重构完毕**，所有测试均已通过。" \
+  --project "feige-fry-cards" \
+  --model "claude-sonnet-5" \
+  --thinking 3 \
+  --tools 8 \
+  --context "42%" \
+  --tokens 3200 \
+  --elapsed "1m15s" \
+  --status ok \
+  --dry-run
 
-# 3. 打开设置页（渠道状态、群路由编辑、卡片预览、接入自检）
-python webui.py            # → http://127.0.0.1:8787
+# 3. 去掉 --dry-run 即刻向目标群发卡
 ```
 
-完整说明：[CLI 用法](#cli-用法) · [渠道矩阵](#渠道矩阵) · [群路由](#群路由项目--多目标-fanout) ·
-[插件安装](#插件安装一份插件四个宿主) ·
-[WebUI 设置页](#webui-设置页) · [联调排错](#联调排错)
-
-## 里程碑
-
-- **M1 发卡核心** ✅（2026-09-26 完成）：从 zcode-feishu-bridge 抽 CardKit 流式卡生命
-  周期，从 zcode-feishu-card 抽 webhook 双通道发送，合成独立单文件库 `feige.py`，提供
-  `feige send --title … --body … [--channel feishu-webhook]` CLI。
-- **M2 ZCode 接入** ✅（2026-09-26 完成）：以 skill/hook 形式接入 ZCode，会话收尾自动
-  发摘要战报卡（Stop hook，默认关）；`.zcode-plugin/` 清单、`hooks/`、`skills/feige/`
-  就位，与现有 bridge 守护进程并存切换（见下文「安装与启用」）。
-- **M3 Claude Code / Codex 接入** ✅（2026-09-26 完成）：`adapters/claude-code/stop_notify.py`
-  （Stop hook + transcript 统计）与 `adapters/codex/notify.py`（notify 事件 → teaser 卡），
-  直接 import feige.py 调 `send_report()`，验证"agent 无关"成立（见「插件安装」）。
-- **M4 多渠道 + 群路由** ✅（2026-09-26 完成）：新增 `dingtalk-webhook`（钉钉 markdown
-  消息）与 `telegram`（Bot API 纯文本）两个渠道，渠道注册表扩至 4 个；`--route` 按
-  路由文件做项目 → 多目标 fanout（见「渠道矩阵」「群路由」）。
-
-- **M5 独立设置 WebUI** ✅（2026-09-26 完成）：`webui.py`（纯标准库 `http.server`，
-  只绑 127.0.0.1），总览/群路由编辑/卡片预览/测试发送/接入自检五页（见「WebUI 设置页」）。
-- **M6 一份插件四个宿主** ✅（2026-09-26 完成）：`.claude-plugin/` 清单 + 统一 Stop hook
-  `hooks/stop.py`（识别 ZCode / Codex / Claude Code 后分发），Claude Code、Codex、ZCode 都按
-  插件安装，Mirasim 托管会话随之覆盖；Claude Code 已实机验证（见「插件安装」）。
-- **M7 kimi-code 接入** ✅（2026-09-26 完成）：`adapters/kimi-code/stop_notify.py`
-  （Stop payload + wire.jsonl 统计），`stop.py` 按 `client_type` 识别分发；kimi-code
-  在 `~/.kimi-code/config.toml` 手挂（注册即开启）。⏱️ 改报单轮用时、上下文带分母百分比
-  （`153.6k/1.0m (15%)`）、模型脚注带工具名前缀；本机 kimi CLI 已实机验证
-  （dry-run 卡片字段齐全）。顺手修复 `stats_footer` 对 `thinking/tools=0` 不省略的存量问题。
-
-**当前状态**：七个里程碑全部完成。feige 已从 ZCode 专属脚本演进为可用的跨 agent
-多渠道汇报核心 + 本地设置界面；后续方向：各渠道的群路由实测联通、tail 守护模式
-（`feige.py` 已留好 CardKit 生命周期 import 口）。
-
-## CLI 用法
+### 方式二：启动 WebUI 本地控制台
 
 ```bash
-python feige.py send --title 标题 --body "markdown 正文" \
-    [--project X] [--model X] [--thinking N] [--tools N] \
-    [--context 42%] [--tokens N] [--elapsed 2m38s] \
-    [--status ok|error|running] \
-    [--channel feishu-webhook|feishu-cardkit|dingtalk-webhook|telegram] \
-    [--chat-id ...] [--webhook ...] [--route] [--dry-run] \
-    [--debounce-key KEY] [--debounce N]
+python webui.py    # 默认绑定 127.0.0.1:8787，安全无外网暴露
 ```
 
-- **状态着色**（与家族一致）：`running` 蓝、`ok` 绿（默认）、`error` 红；
-- **统计脚注**只在 `ok`/`error` 态单次呈现：`📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 token · ⏱️ 耗时`，
-  空字段自动省略；
-- **渠道默认选择**：有飞书 webhook 环境变量走 `feishu-webhook`（一次性整卡，无流式），
-  否则有应用凭据走 `feishu-cardkit`（建终态卡 → 按引用发群，2 次调用）；
-  钉钉/Telegram 不进默认选择，需显式 `--channel` 或 `--route` 路由；都没有则明确报错（打码后）；
-- **`--webhook`**：渠道级 webhook 覆盖（feishu-webhook / dingtalk-webhook）；
-- **`--route`**：按 `--project` 解析路由文件做多目标 fanout（见「群路由」），不带则保持单渠道；
-- **`--dry-run`** 只打印将发送的载荷 JSON，不发网络请求、不要求凭据；
-- **`--debounce-key`**：收尾去抖（见「收尾去抖」），窗口秒数取 `--debounce` 或 `FEIGE_DEBOUNCE_SECONDS`；
-- 值以 `-` 开头时用 `--body=-xxx` 写法（argparse 会把 `--body -xxx` 的值误当选项）；
-- **长度上限按渠道截断**：飞书/钉钉正文按 UTF-8 **字节**卡在 15000（webhook 请求体
-  ≤20KB，中文一字 3 字节，按字数截会超）；Telegram 整条按 UTF-16 单元卡在 4096（emoji 占 2），
-  截的是正文，标题与统计脚注保留；
-- **fail-open**：发卡失败只落日志/返回非零退出码，绝不抛炸调用方。
+---
 
-环境变量：
+## 📡 渠道矩阵
 
-| 变量 | 用途 |
-|------|------|
-| `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL` | 飞书自定义机器人 webhook |
-| `FEISHU_WEBHOOK_SECRET` | 飞书机器人开了「签名校验」时的密钥（可选） |
-| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书应用凭据（CardKit 通道） |
-| `FEISHU_BASE_URL` | 默认 `https://open.feishu.cn` |
-| `FEISHU_NOTIFY_CHAT_ID` | 飞书默认群 `oc_xxx`（CardKit 通道必配） |
-| `DINGTALK_WEBHOOK` | 钉钉自定义机器人 webhook |
-| `DINGTALK_SECRET` | 钉钉机器人安全设置选「加签」时的密钥（`SEC` 开头，可选） |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram bot token / 目标 chat（群为负数 id） |
-| `FEIGE_ROUTES_FILE` | 群路由文件（默认 `~/.feige-routes.json`） |
-| `FEIGE_DEBOUNCE_SECONDS` | 收尾去抖秒数，默认 `0`（关闭，每轮收尾都发卡） |
-| `FEIGE_LOG_FILE` | 后台发送进程的日志（默认 `<临时目录>/feige.log`，超 1MB 轮转为 `.1`） |
+| 渠道标识 | 所需环境变量 | 展现形式 | 特性说明 |
+| --- | --- | --- | --- |
+| `feishu-webhook` | `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL`<br/>可选 `FEISHU_WEBHOOK_SECRET`（签名） | 飞书 CardKit 2.0 交互卡 | 配置最便捷，一次性交互卡片，开箱即用 |
+| `feishu-cardkit` | `FEISHU_APP_ID` + `FEISHU_APP_SECRET`<br/>`FEISHU_NOTIFY_CHAT_ID`（目标群号） | 飞书原生卡片消息 | 走开放平台标准 App 凭据，直接向指定群分发终态卡片 |
+| `dingtalk-webhook` | `DINGTALK_WEBHOOK`<br/>可选 `DINGTALK_SECRET`（加签） | 钉钉 Markdown 消息 | 标题行 + 结构化正文 + 状态脚注，自动处理加签鉴权 |
+| `telegram` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Telegram 纯文本 | 严防 MarkdownV2 转义破坏，超长文本自动根据 UTF-16 截断 |
 
-库用法（后续 tail 模式 / 各 agent 入口 import 复用）：
+---
 
-```python
-import feige
-feige.send_report("会话收尾", "完成 3 个文件修改",
-                  stats={"project": "feige-fry-cards", "model": "glm-5",
-                         "thinking": 4, "tools": 12, "context": "42%",
-                         "tokens": 14300, "elapsed": "2m38s"},
-                  status="ok")  # -> (True, "sent (webhook)")
-# CardKit 流式卡生命周期也可单独取用（tail 模式：先 send_card 再持续 update_content，最后 seal_card）：
-# feige.create_card / update_content / seal_card / send_card / build_card(streaming=True)
-```
+## 🔀 群路由（项目 → 多目标 Fanout）
 
-## 渠道矩阵
-
-| 渠道 | 凭据环境变量 | 版面能力 | 说明 |
-|------|-------------|---------|------|
-| `feishu-webhook` | `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL`（签名校验 + `FEISHU_WEBHOOK_SECRET`） | 交互卡（Card 2.0） | 一次性整卡，最简单 |
-| `feishu-cardkit` | `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（+ `FEISHU_NOTIFY_CHAT_ID`） | 交互卡（流式能力留给 tail 模式） | 建终态卡 → 引用发群；结果卡封好才进群，流式过程本就看不到，所以不走流式 |
-| `dingtalk-webhook` | `DINGTALK_WEBHOOK`（或 `--webhook`；加签 + `DINGTALK_SECRET`） | markdown 消息 | 标题行 + 正文 + `---` + 统计脚注；无交互卡概念 |
-| `telegram` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`（chat 可 `--chat-id`） | 纯文本 | 不启 parse_mode，避开 MarkdownV2 转义地雷 |
-
-统一卡片模型（标题/正文/统计/状态）为输入，各渠道各自渲染；统计脚注只在完成态
-（ok/error）出现的口径跨渠道一致。
-
-**钉钉最低配置**：群 → 群设置 → 智能群助手 → 添加机器人 → 自定义，复制 webhook
-（安全设置选"自定义关键词"时，正文里带上关键词，例如固定标题词；选"加签"时把
-`SEC…` 密钥配到 `DINGTALK_SECRET`，或在路由目标里写 `"secret": "$某变量"`）。
-**飞书签名校验**：机器人设置里开「签名校验」后，把密钥配到 `FEISHU_WEBHOOK_SECRET`
-（ZCode 插件 Settings 的 webhook_secret 同效）。环境变量里的密钥只配环境变量里的
-webhook；路由目标另指定 webhook 时，密钥也要在该目标的 `secret` 里单独给。
-**Telegram 最低配置**：找 @BotFather 领 token；把 bot 拉进目标群后，用
-`https://api.telegram.org/bot<token>/getUpdates` 查看 `chat.id`（群为负数，如 `-100…`）。
-
-## 群路由（项目 → 多目标 fanout）
-
-路由文件为 JSON，路径取 `FEIGE_ROUTES_FILE`，默认 `~/.feige-routes.json`（**不进仓库**；
-可含 webhook/chat_id 等半敏感信息，注意文件权限，秘密建议用 `$ENV` 引用留在环境变量里）：
+在 `~/.feige-routes.json` 中配置群路由映射，支持根据 `--project` 名称将战报投递至不同群组：
 
 ```json
 {
   "routes": {
     "feige-fry-cards": [
-      {"channel": "feishu-cardkit"},
-      {"channel": "dingtalk-webhook", "webhook": "$DINGTALK_WEBHOOK"}
+      { "channel": "feishu-webhook" },
+      { "channel": "dingtalk-webhook", "webhook": "$DINGTALK_WEBHOOK" }
     ],
-    "*": [ {"channel": "feishu-cardkit"} ]
+    "*": [
+      { "channel": "feishu-cardkit" }
+    ]
   }
 }
 ```
 
-- **匹配**：精确项目名 → `"*"` 通配兜底 → 无匹配时退化为现有单渠道行为（不打断
-  M2/M3 调用方）；
-- **目标字段**：`channel` 必填；`webhook` / `chat_id` / `token` / `secret`（webhook 签名/
-  加签密钥）为该目标的显式覆盖，缺省读各渠道环境变量；整字符串值 `"$NAME"` 引用为环境变量值（秘密不进路由文件）；
-- **fanout**：逐目标独立发送，单目标失败不影响其余，返回聚合结果；目标缺/坏
-  `channel` 会跳过并落日志（只报键名，不打印值）；
-- **`$ENV` 未设置**：该目标直接判失败并在日志里点名缺哪个变量，**绝不**退回默认渠道
-  （否则项目 A 的战报会静默发进默认群）；WebUI 保存路由时也会提示；
-- **三个 agent 入口都自动走路由**：ZCode / Claude Code / Codex 的收尾发卡一律带
-  `--route`——有路由文件就按项目 fanout，没有则就是原来的单渠道行为。
+- **路由匹配规则**：优先精确匹配项目名，未命中则降级采用 `"*"` 全局通配规则；无匹配时自动回落至单渠道行为。
+- **环境变量安全引用**：路由文件内支持使用 `"$ENV_NAME"` 占位符引用外部凭据，防止密钥固化在配置文件中。
 
-用法（dry-run 是先验证路由的正确姿势）：
+---
 
-```bash
-export FEIGE_ROUTES_FILE=/path/to/routes.json DINGTALK_WEBHOOK=……
-python feige.py send --title 战报 --body "完成 X" --project feige-fry-cards --route --dry-run
-# 解析出 N 个目标就打印 N 份载荷，确认无误后去掉 --dry-run 真发
-```
+## 🔌 插件安装（一份插件，五个宿主）
 
-## WebUI 设置页
-
-```bash
-python webui.py [--port 8787]   # 打开 http://127.0.0.1:8787
-```
-
-对标 hermes-fry-cards 的 studio 工作坊，但走本项目的纯 Python 标准库路线
-（`http.server` 手写，零第三方依赖）。五个页面：
-
-| 页面 | 功能 |
-|------|------|
-| `GET /` 总览 | 4 渠道凭据状态（只显"已配置/未配置"）、路由文件状态；附各渠道测试发送按钮（未配置禁用） |
-| `GET+POST /routes` | 群路由表单化编辑：缺 channel 拒绝、保存前 `.bak` 备份 + 原子写、`$ENV` 引用原样保留、保存后按 `resolve_routes` 语义冒烟 |
-| `GET /preview` | 填参数出两部分：feige dry-run 载荷 JSON（原样）+ 朴素 HTML 外观示意 |
-| `POST /test` | 发送固定内容测试卡「🕊️ feige WebUI 测试卡」，结果打码后展示 |
-| `GET /adapters` | 接入自检（只读）：ZCode 插件注册 / Claude settings.json 片段 / Codex notify 行（含冲突提示），未接入项给 README 指引 |
-
-**安全说明**：只监听 `127.0.0.1`，**无鉴权**——局域网/公网都到不了，但不要改绑定地址、
-不要把端口转发出去。密钥硬规则与 `feige.redact` 同级：任何响应体绝不回显
-`FEISHU_APP_SECRET` / bot token / webhook key 的值（凭据列只有"已配置/未配置"）。
-所有处理函数 fail-open：异常显示为页面内错误条而非 500 白屏。
-
-## 命名
-
-**飞鸽 Feige**：飞鸽传书，谐音飞书之"飞"；CLI 命令 `feige`。
-仓库名按家族惯例对齐为 `feige-fry-cards`。
-
-## 插件安装（一份插件，五个宿主）
-
-仓库即插件。Claude Code / Codex / ZCode 都自动加载插件根目录的 `hooks/hooks.json`，
-且都认 Claude 标准 `type: "command"` + `${CLAUDE_PLUGIN_ROOT}`（ZCode / Codex 的兼容层
-均已从本机二进制实证），所以只挂**一个** Stop hook：`hooks/stop.py`，由它识别宿主再分发
-（kimi-code 不读 hooks.json，改在 config.toml 手挂，见「kimi-code」小节）：
+仓库结构原生即插件。Claude Code、Codex 与 ZCode 均统一读取根目录下 `hooks/hooks.json` 挂载的 `hooks/stop.py` 调度入口：
 
 ```
 feige-fry-cards/
-├── .claude-plugin/{plugin,marketplace}.json  # Claude Code / Codex 读（Mirasim 复用两者的插件缓存）
-├── .zcode-plugin/{plugin,marketplace}.json   # ZCode 读
-├── hooks/hooks.json                          # 唯一 Stop hook → python hooks/stop.py
-├── hooks/stop.py                             # 宿主识别 + 分发
-├── hooks/stop-notify.mjs                     # ZCode rollout 解析
-├── adapters/{claude-code,codex,kimi-code}/   # Claude transcript / Codex payload / kimi wire.jsonl 解析
-├── skills/feige/SKILL.md                     # 让模型主动调 feige send（各宿主都会加载）
-└── feige.py                                  # 核心 + CLI
+├── .claude-plugin/              # Claude Code 与 Codex 插件描述清单
+├── .zcode-plugin/               # ZCode 插件市场描述清单
+├── hooks/
+│   ├── hooks.json               # 统一 Stop Hook 触发声明
+│   ├── stop.py                  # 宿主环境侦测与任务分发中心
+│   └── stop-notify.mjs          # ZCode Rollout 会话日志转录解析
+├── adapters/                    # 针对各 Agent 的转录提取适配器
+│   ├── claude-code/
+│   ├── codex/
+│   └── kimi-code/
+├── feige.py                     # 发卡核心引擎与 CLI
+└── webui.py                     # 轻量设置面板服务
 ```
 
-| 宿主 | 识别依据 | 数据来源 |
-|------|---------|---------|
-| ZCode | 环境变量 `ZCODE_SESSION_ID` / `ZCODE_PLUGIN_ROOT` | `~/.zcode/cli/rollout` 会话日志（交给 `stop-notify.mjs`） |
-| kimi-code | payload 带 `client_type: kimi_code_*` | `$KIMI_CODE_HOME/sessions/*/agents/main/wire.jsonl` |
-| Codex | payload 带 `turn_id`（Codex 扩展字段）或转录在 `.codex/` 下 | payload 的 `last_assistant_message` + `model` |
-| Claude Code | 其余 | payload 的 `transcript_path` 转录 |
-
-**通用约定**：Stop hook **默认关**，在插件设置里打开 `hook_notify`（或环境变量
-`FEIGE_HOOK_NOTIFY=1`）；凭据填插件设置或环境变量，**真实环境变量优先**。前台只解析
-（毫秒级），发送交给后台 `feige.py send --route` 子进程，hook 立刻返回，网络再慢也不卡
-agent（后台 stderr 落 `FEIGE_LOG_FILE`）。`FEIGE_DRY_RUN=1` 时把载荷 JSON 打到 stderr
-不发网络（stdout 永远为空——宿主会把 Stop hook 的 stdout 当 hook 输出 JSON 解析）。
-依赖：`python` 在 PATH 上（ZCode 另需 `node`）。**统计口径**：💭/🔧/🎫/⏱️ 只算最后
-一轮（Claude 按最后一条真实用户提问分轮，kimi 按 turnId，无分轮信息退化为全量）；
-上下文报当前水位；模型脚注带工具名前缀（`claude-code · opus-x`、`kimi-code · kimi-k3`）。
-
-### Claude Code
-
-```
-/plugin marketplace add F:/Files/GitHub Files/feige-fry-cards
+### 1. Claude Code
+```bash
+/plugin marketplace add /path/to/feige-fry-cards
 /plugin install feige-fry-cards@feige-fry-cards
 ```
+- 在插件设置中启用 `hook_notify`，并配置对应 Webhook 或应用凭据。会话收尾时自动发卡。
 
-启用时会提示填插件设置：`hook_notify`、`webhook_url`（或 `app_id` / `app_secret` /
-`notify_chat_id`）、`webhook_secret`、`debounce_seconds`、`routes_file`。标了 sensitive
-的密钥存系统钥匙串，不进 `settings.json`。**已实机验证**：`claude -p … --plugin-dir <本仓库>`
-收尾即收到卡（标题 / 正文 / 模型 / 💭 / 上下文 / ⏱️ 齐全）。
-
-### Codex（≥0.15x 插件系统）
-
+### 2. OpenAI Codex CLI
 ```bash
-codex plugin marketplace add "F:/Files/GitHub Files/feige-fry-cards"
+codex plugin marketplace add "/path/to/feige-fry-cards"
 codex plugin add feige-fry-cards@feige-fry-cards
 ```
+- 开关与配置直接通过环境变量注入（`FEIGE_HOOK_NOTIFY=1`）。与现存 `notify` 链互不干扰。
 
-Codex 读本仓的 `.claude-plugin/marketplace.json`。它没有插件设置页，凭据与开关走环境变量
-（`FEIGE_HOOK_NOTIFY=1`、`FEISHU_CARD_WEBHOOK` 等）。插件 hook 与 `notify` **互不干扰**，
-已被 codex-computer-use 占用的 notify 不用动。Stop payload 字段（`session_id` / `turn_id` /
-`model` / `last_assistant_message` …）已从 codex.exe 内置 schema 核对；**尚未在已登录的
-Codex 里实跑**（本机 Codex CLI 未登录），首次安装后建议 `FEIGE_DRY_RUN=1` 看一眼 stderr。
+### 3. ZCode
+- 在 ZCode 插件市场中添加本地目录，安装 `feige-fry-cards`。
+- 在插件配置面板勾选 `hook_notify` 并填入 Webhook 地址。
 
-### ZCode
-
-在 ZCode 插件市场里添加本目录（`.zcode-plugin/marketplace.json` 指向 `.`），安装
-feige-fry-cards。插件 Settings 填 webhook_url（推荐）或 app_id/app_secret + notify_chat_id，
-打开 `hook_notify`。hook 从 `~/.zcode/cli/rollout/model-io-sess_*.jsonl` 定位本会话
-（payload.session_id 命中文件名，否则取 mtime 最新兜底），解析最后一条
-`finishReason=="stop"` 行做 ≤300 字摘要，统计全会话的 💭/🔧/上下文水位/输出 token/⏱️。
-调试：`FEIGE_DRY_RUN=1` 把 feige 命令与卡片 JSON 打到 stderr；`ROLLOUT_DIR=<目录>` 覆盖日志目录。
-
-### Mirasim
-
-Mirasim 的插件入口用的是同一套 Claude 格式（`.claude-plugin/plugin.json`、
-`hooks/hooks.json`、`${CLAUDE_PLUGIN_ROOT}`），并读取 Claude Code / Codex 的插件缓存，
-所以装进上面任一宿主后，Mirasim 托管的对应会话同样会触发。**注意**：Mirasim 自己的飞书
-官方渠道已经在推会话状态卡；两者都开时同一个群会收到两份，建议 feige 走单独的汇报群，
-或只给 Mirasim 托管之外的裸跑 agent 开 feige（这也是 feige 的主场，见「立项背景」）。
-
-### kimi-code（kimi CLI / mirasim 托管的 kimi 会话）
-
-kimi-code 不读插件 hooks.json，它的 hook 体系在 `~/.kimi-code/config.toml` 手挂：
-
+### 4. kimi-code
+在 `~/.kimi-code/config.toml` 中配置原生 Hook：
 ```toml
 [[hooks]]
 event = "Stop"
-command = 'python "<本仓库>/hooks/stop.py"'
+command = 'python "/path/to/feige-fry-cards/hooks/stop.py"'
 timeout = 20
 ```
 
-`stop.py` 按 payload 的 `client_type: kimi_code_*` 识别并分发给
-`adapters/kimi-code/stop_notify.py`：从 `$KIMI_CODE_HOME/sessions/<wd>/<session_id>/agents/main/wire.jsonl`
-汇总 teaser 与统计。与其他宿主两点口径**刻意不同**：
+---
 
-- **注册即开启**（手挂 config.toml 本身就是 opt-in，不吃 `FEIGE_HOOK_NOTIFY` 默认关；
-  显式 `FEIGE_HOOK_NOTIFY=0` 仍可关）；
-- **💭/🔧/🎫/⏱️ 只算最后一轮**（跨天会话的累计数没有行动意义；无 turnId 的老格式
-  退化为全文件统计）。上下文水位在已知模型窗口时报
-  `153.6k/1.0m (15%)` 带分母百分比（k3=1.0m 等内置表 → kimi config.toml `[models.*]`
-  max_context_size → 未知退化为绝对值）；模型脚注带工具名前缀（`kimi-code · kimi-k3`）。
+## 🎛️ WebUI 控制台
 
-### 收尾去抖（防刷屏）
+运行 `python webui.py` 即刻打开本地设置面板：
 
-各宿主的收尾事件（Stop / `agent-turn-complete`）都是**每轮回复结束**触发，不是
-整个会话结束——来回聊 10 轮就是 10 张卡。设 `FEIGE_DEBOUNCE_SECONDS=N`（或插件设置
-`debounce_seconds`）后，同一会话在 N 秒内又收尾，前一张就放弃，只发安静下来后的最后一张；
-统计本就是全会话累计，最后一张信息最全。代价是卡片晚 N 秒到。建议值：连续交互为主设
-`90`；长任务丢下就走、要第一时间知道的保持默认 `0`。
+| 模块 | 功能 |
+| --- | --- |
+| **总览概况** | 实时显示 4 大渠道的环境变量配置状态（脱敏展示）与一键测试发卡能力 |
+| **群路由编辑** | 可视化编辑 `routes.json`，保存前自动生成 `.bak` 备份并执行原子写入校验 |
+| **卡片实时预览** | 输入参数即时查看装配后的 Dry-run 载荷与 HTML 样式渲染效果 |
+| **接入状态诊断** | 自动自检当前环境中 Claude Code、Codex、ZCode 等宿主的插件注册情况 |
 
-### 手动接入（不装插件）
+---
 
-**Claude Code**：贴到 `~/.claude/settings.json`（路径按实际仓库位置改）：
+## 📁 项目结构
 
-```json
-{ "hooks": { "Stop": [ { "hooks": [ { "type": "command",
-  "command": "python \"F:/Files/GitHub Files/feige-fry-cards/hooks/stop.py\"" } ] } ] } }
+```
+feige-fry-cards/
+├── adapters/                    # 各宿主 Agent 转录与用量提取器
+├── hooks/                       # 宿主生命周期 Hook 触发脚本
+├── skills/                      # Agent 交互 Skill 提示词模板
+├── tests/                       # 自动化单元测试套件
+├── feige.py                     # 核心发卡引擎与 CLI 逻辑
+├── webui.py                     # 本地 WebUI 独立服务
+└── README.md                    # 项目文档
 ```
 
-转录解析口径：assistant 行按 `content[].type` 取 text（teaser）/ thinking（💭）/
-tool_use（🔧），模型取 `message.model`，上下文水位 = 最后一条 assistant 的
-`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`（只报绝对值，不猜窗口），
-🎫 累加 assistant 的 `output_tokens`；⏱️ 取首末 timestamp；`isSidechain` 子代理行跳过。
+---
 
-**Codex（legacy notify）**：`~/.codex/config.toml` 顶层：
-
-```toml
-notify = ["python", "F:/Files/GitHub Files/feige-fry-cards/adapters/codex/notify.py"]
-```
-
-已有 notify（如 codex-computer-use）时用**包装链**——把原命令原样接在后面，两边都跑：
-
-```toml
-notify = ["python", "F:/Files/GitHub Files/feige-fry-cards/adapters/codex/notify.py",
-          "<原命令>", "<原参数>…"]
-```
-
-notify.py 先以「原参数 + 事件 JSON」启动原命令（行为与直接配置一致），再发飞鸽卡，最后
-透传原命令的退出码；飞鸽关闭或失败都不影响原命令。notify 事件字段为 kebab-case（`type` /
-`thread-id` / `cwd` / `last-assistant-message` …），只在 `agent-turn-complete` 时发卡。
-
-### 与 zcode-feishu-bridge 的关系
-
-两者**定位不同、不冲突**：bridge 守护进程是**过程流式镜像**（每一轮打字机直播到专属群），
-feige Stop hook 是**收尾战报**（任务结束一张摘要卡）。可以并存（直播看过程 + 战报进
-大群），也可以只开其一。注意若同时开，**同一个群会收到两张口径不同的卡**，建议 bridge
-走专属小群、feige 走汇报群。
-
-### 陈旧环境变量提醒（所有宿主同样适用）
-
-hook 跑在 **agent 进程启动时的环境快照**里：`setx` 或新改的系统环境变量对已在运行的
-agent 无效（同 M1 联调的 230002 排错）。插件设置页填的值更可靠（ZCode 注入为
-`ZCODE_USER_CONFIG_*`、Claude Code 注入为 `CLAUDE_PLUGIN_OPTION_*`，feige 自动映射）；
-Codex 没有设置页——改完凭据**重启 agent 会话**再验证。
-
-## 测试
+## 🧪 测试
 
 ```bash
-python -m unittest discover -s tests -v   # 纯标准库；含本地假 webhook 的端到端用例，不发外网
+# 纯标准库测试套件，内置模拟 Webhook 测试樁，不向外网发请求
+python -m unittest discover -s tests -v
 ```
 
-## 联调排错
+---
 
-- **`230002 Bot/User can NOT be out of the chat`**：先查机器人在不在群（`GET /im/v1/chats`
-  列出 bot 所在群；不在就拉进群）。再查环境变量是不是陈旧的——**`setx` 不影响已运行
-  进程**，守护进程/长会话终端里的 `FEISHU_APP_ID` 可能落后于注册表；用
-  `reg query "HKCU\Environment" /v FEISHU_APP_ID` 对一下，验证时显式传最新值。
+## 🔗 相关项目
+
+- [🍟 hermes-fry-cards](https://github.com/techysy/hermes-fry-cards) — Hermes Gateway 飞书流式卡片插件
+- [🍤 claw-fry-cards](https://github.com/techysy/claw-fry-cards) — OpenClaw 飞书通道插件
+- [🌉 zcode-feishu-bridge](https://github.com/techysy/zcode-feishu-bridge) — ZCode 飞书流式卡片桥接守护进程
