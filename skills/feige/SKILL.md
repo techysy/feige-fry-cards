@@ -59,7 +59,7 @@ app 凭据 / chat id），不要猜 chat id、不要重试轰炸。`--dry-run` �
 本技能用于“现在主动发一张”的场景；hook 已开时别再为同一结果重复发卡。
 
 kimi-code（kimi CLI / mirasim 托管的 kimi 会话）不读插件 hooks.json，改在
-`~/.kimi-code/config.toml` 手挂（注册即开启，`FEIGE_HOOK_NOTIFY=0` 关闭；⏱️ 报单轮用时）：
+`~/.kimi-code/config.toml` 手挂（注册即开启，`FEIGE_HOOK_NOTIFY=0` 关闭；💭/🔧/🎫/⏱️ 只算最后一轮）：
 
 ```toml
 [[hooks]]

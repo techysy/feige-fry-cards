@@ -12,13 +12,15 @@ payload 经 stdin JSON：`hook_event_name` / `session_id` / `session_title` /
 `client_type`（kimi_code_cli）/ `cwd`。等价于 Claude transcript 的是
 $KIMI_CODE_HOME/sessions/<wd>/<session_id>/agents/main/wire.jsonl（append-only JSONL）：
 
-- `usage.record`：🎫 = usage.output 累加；上下文水位 = 最后一条的
+- `usage.record`：🎫 = 本轮 usage.output 之和；上下文水位 = 最后一条的
   inputOther + inputCacheRead + inputCacheCreation；
 - `llm.request`：真实模型名（跳过 __kimi_env_model__ / agent-loop 占位）；
 - `context.append_loop_event`：tool.call 计 🔧；content.part 的 think 计 💭、
   text 为 teaser 来源（取最后一条）；
-- `event.turnId`：⏱️ 报单轮用时 = 全文件末条时间 − 最后一轮首条时间
-  （多轮会话的累计墙钟没有行动意义，与 Claude/Codex 口径刻意不同）。
+- `event.turnId`：💭/🔧/🎫/⏱️ 都只算最后一轮（🎫 = 时间 ≥ 最后一轮首条时间的
+  usage.output 之和；⏱️ = 全文件末条时间 − 最后一轮首条时间；多轮会话的累计数
+  没有行动意义，与 Claude/Codex 口径刻意不同）。wire 里没有 turnId 的老格式
+  退化为全文件统计。
 
 上下文分母：已知模型窗口表（k3=1.0m 等）→ kimi config.toml [models.*] max_context_size
 （含 overrides）→ 都没有则退化为绝对水位。形如 `153.6k/1.0m (15%)`。
@@ -119,9 +121,12 @@ def summarize_wire(path: Path) -> dict | None:
     thinking = 0
     tools = 0
     tokens_total = 0
+    usage_outputs: list[tuple[float | None, int]] = []
     ctx = 0
     last_text = ""
     turn_first: dict[str, float] = {}
+    turn_tools: dict[str, int] = {}
+    turn_thinking: dict[str, int] = {}
     last_turn = None
     saw_turn = False
 
@@ -150,7 +155,9 @@ def summarize_wire(path: Path) -> dict | None:
                     used = sum(int(usage.get(k) or 0) for k in (
                         "inputOther", "inputCacheRead", "inputCacheCreation"))
                     ctx = used or ctx
-                    tokens_total += int(usage.get("output") or 0)
+                    out = int(usage.get("output") or 0)
+                    tokens_total += out
+                    usage_outputs.append((t if isinstance(t, (int, float)) else None, out))
                 except (TypeError, ValueError):
                     pass
                 saw_turn = True
@@ -173,12 +180,16 @@ def summarize_wire(path: Path) -> dict | None:
             etype = event.get("type")
             if etype == "tool.call":
                 tools += 1
+                if tid is not None:
+                    turn_tools[tid] = turn_tools.get(tid, 0) + 1
                 saw_turn = True
             elif etype == "content.part":
                 part = event.get("part") or {}
                 ptype = part.get("type")
                 if ptype == "think":
                     thinking += 1
+                    if tid is not None:
+                        turn_thinking[tid] = turn_thinking.get(tid, 0) + 1
                 elif ptype == "text":
                     text = str(part.get("text") or "").strip()
                     if text:
@@ -187,6 +198,15 @@ def summarize_wire(path: Path) -> dict | None:
 
     if not saw_turn:
         return None
+
+    # 💭/🔧/🎫 只算最后一轮（无 turnId 的老格式保留全文件统计）
+    if last_turn is not None:
+        tools = turn_tools.get(last_turn, 0)
+        thinking = turn_thinking.get(last_turn, 0)
+        start = turn_first.get(last_turn)
+        if start is not None:
+            tokens_total = sum(out for ts, out in usage_outputs
+                               if ts is not None and ts >= start)
 
     # ⏱️ 单轮用时：最后一轮首条 loop 事件 → 全文件末条记录
     elapsed = ""

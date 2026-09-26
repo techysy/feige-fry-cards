@@ -73,11 +73,33 @@ class SummarizeWireTest(WireFixtureMixin, unittest.TestCase):
 
     def test_stats(self):
         s = self.summary
-        self.assertEqual(s["tools"], 2)
-        self.assertEqual(s["thinking"], 2)
-        self.assertEqual(s["tokens"], 800)
+        # 🎫 同样只算最后一轮（turn1 输出 500 / turn2 输出 300）
+        self.assertEqual(s["tokens"], 300)
         self.assertEqual(s["ctx"], 153_600)
         self.assertEqual(s["body"], "最终答复")
+
+    def test_tools_and_thinking_are_last_turn_only(self):
+        # 两轮各有 1 tool + 1 think，卡片只报最后一轮
+        self.assertEqual(self.summary["tools"], 1)
+        self.assertEqual(self.summary["thinking"], 1)
+
+    def test_no_turnid_falls_back_to_whole_file(self):
+        # 无 turnId 的老格式：💭/🔧/🎫 退化为全文件统计（全部计入）
+        with tempfile.TemporaryDirectory() as d:
+            wire = Path(d) / "wire.jsonl"
+            wire.write_text("\n".join([
+                json.dumps({"type": "context.append_loop_event", "agentId": "main",
+                            "time": T0, "event": {"type": "tool.call", "name": "Bash"}}),
+                json.dumps({"type": "context.append_loop_event", "agentId": "main",
+                            "time": T0 + 1, "event": {"type": "tool.call", "name": "Read"}}),
+                json.dumps({"type": "context.append_loop_event", "agentId": "main",
+                            "time": T0 + 2, "event": {"type": "content.part",
+                                                      "part": {"type": "think", "think": "…"}}}),
+                _usage(T0 + 3, (10, 0, 0), 40),
+                _usage(T0 + 4, (10, 0, 0), 2),
+            ]) + "\n", encoding="utf-8")
+            s = kimi.summarize_wire(wire)
+            self.assertEqual((s["tools"], s["thinking"], s["tokens"]), (2, 1, 42))
 
     def test_model_prefix_tool_name(self):
         self.assertEqual(self.summary["model"], "kimi-code · kimi-k3")

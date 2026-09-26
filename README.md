@@ -356,10 +356,10 @@ timeout = 20
 
 - **注册即开启**（手挂 config.toml 本身就是 opt-in，不吃 `FEIGE_HOOK_NOTIFY` 默认关；
   显式 `FEIGE_HOOK_NOTIFY=0` 仍可关）；
-- **⏱️ 报单轮用时**（最后一轮首条 loop 事件 → 会话末条记录；跨天会话的累计墙钟没有
-  行动意义）。上下文水位在已知模型窗口时报 `153.6k/1.0m (15%)` 带分母百分比
-  （k3=1.0m 等内置表 → kimi config.toml `[models.*]` max_context_size → 未知退化为绝对值）；
-  模型脚注带工具名前缀（`kimi-code · kimi-k3`）。
+- **💭/🔧/🎫/⏱️ 只算最后一轮**（跨天会话的累计数没有行动意义；无 turnId 的老格式
+  退化为全文件统计）。上下文水位在已知模型窗口时报
+  `153.6k/1.0m (15%)` 带分母百分比（k3=1.0m 等内置表 → kimi config.toml `[models.*]`
+  max_context_size → 未知退化为绝对值）；模型脚注带工具名前缀（`kimi-code · kimi-k3`）。
 
 ### 收尾去抖（防刷屏）
 
