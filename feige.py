@@ -544,6 +544,8 @@ def resolve_routes(project: str, doc: dict | None, env: dict | None = None) -> l
 
     匹配：精确项目名 → "*" 通配兜底 → []（调用方退化单渠道）。
     目标项里形如 "$NAME" 的整字符串值替换为 env[NAME]（秘密不进路由文件）。
+    引用的变量未设置/为空时，把变量名记入目标的 "_unresolved" 列表——空值绝不能
+    交给 send_report，否则会静默回退到默认渠道环境变量，把战报发进别的群。
     """
     env = env if env is not None else os.environ
     routes = (doc or {}).get("routes") or {}
@@ -554,12 +556,17 @@ def resolve_routes(project: str, doc: dict | None, env: dict | None = None) -> l
     for t in targets:
         if not isinstance(t, dict):
             continue
-        expanded = {}
+        expanded: dict = {}
+        unresolved = []
         for key, value in t.items():
             if isinstance(value, str) and value.startswith("$") and len(value) > 1:
-                expanded[key] = str(env.get(value[1:], "") or "")
+                expanded[key] = str(env.get(value[1:], "") or "").strip()
+                if not expanded[key]:
+                    unresolved.append(value[1:])
             else:
                 expanded[key] = value
+        if unresolved:
+            expanded["_unresolved"] = unresolved
         out.append(expanded)
     return out
 
@@ -581,8 +588,15 @@ def send_routed(title: str, body: str, stats: dict | None = None, status: str = 
     for t in targets:
         channel = str(t.get("channel") or "").strip()
         if not channel:
-            log(f"route target missing channel, skipped: {redact(t)}")
+            # 只报键名：展开后的值可能含路由级密钥，redact 并不认识它们
+            log(f"route target missing channel, skipped (keys: {sorted(t)})")
             results.append((False, "[?] route target missing channel"))
+            continue
+        if t.get("_unresolved"):
+            names = ", ".join(f"${n}" for n in t["_unresolved"])
+            detail = f"unset env var(s) {names}, target skipped (no fallback to default channel)"
+            log(f"route [{channel}] {detail}")
+            results.append((False, f"[{channel}] {detail}"))
             continue
         ok, detail = send_report(
             title, body, stats=stats, status=status, channel=channel,

@@ -60,17 +60,18 @@ async function main(raw) {
   }
 
   const feigePy = fileURLToPath(new URL("../feige.py", import.meta.url));
+  // 一律 --flag=value：值以 "-" 开头（如 "-修复登录"）时 argparse 会误当成选项而报错
   const args = [
     feigePy, "send",
-    "--title", summary.title,
-    "--body", summary.body,
-    "--status", "ok",
-    "--project", summary.project,
-    "--model", summary.model,
-    "--thinking", String(summary.thinking),
-    "--tools", String(summary.tools),
-    "--context", summary.context,
-    "--elapsed", summary.elapsed,
+    `--title=${summary.title}`,
+    `--body=${summary.body}`,
+    "--status=ok",
+    `--project=${summary.project}`,
+    `--model=${summary.model}`,
+    `--thinking=${summary.thinking}`,
+    `--tools=${summary.tools}`,
+    `--context=${summary.context}`,
+    `--elapsed=${summary.elapsed}`,
   ];
   const dryRun = /^(1|true|yes)$/i.test(process.env.FEIGE_DRY_RUN || "");
   if (dryRun) args.push("--dry-run");
@@ -101,28 +102,33 @@ async function main(raw) {
   spawnPython(args, { sync: false, env: childEnv });
 }
 
-/** 依次试 python、py -3；都找不到只打日志。dry-run 用同步版好抓输出。 */
+/** 同步探测可用解释器：依次试 python、py -3，返回 [命令, 前置参数] 或 null。
+ *  必须同步：异步 spawn 的 ENOENT 要到下一个 tick 才触发，而 hook 随后立刻
+ *  process.exit(0)，基于 error 事件的回退永远跑不到。 */
+function resolvePython(env) {
+  for (const [cmd, pre] of [["python", []], ["py", ["-3"]]]) {
+    const r = spawnSync(cmd, [...pre, "--version"], { env, windowsHide: true, timeout: 5000 });
+    if (!r.error && r.status === 0) return [cmd, pre];
+  }
+  return null;
+}
+
+/** dry-run 用同步版好抓输出；正式路径 detached 起子进程后立刻返回。 */
 function spawnPython(args, { sync, env }) {
-  const opts = sync
-    ? { env, encoding: "utf8", windowsHide: true }
-    : { env, detached: true, stdio: "ignore", windowsHide: true };
+  const py = resolvePython(env);
+  if (!py) { log("python not found (tried python, py -3)"); return null; }
+  const [cmd, pre] = py;
   if (sync) {
-    let r = spawnSync("python", args, opts);
-    if (r.error) {
-      r = spawnSync("py", ["-3", ...args], opts);
-      if (r.error) { log(`python not found: ${r.error.message}`); return null; }
-    }
+    const r = spawnSync(cmd, [...pre, ...args], { env, encoding: "utf8", windowsHide: true });
+    if (r.error) { log(`spawn failed: ${r.error.message}`); return null; }
     if (r.status !== 0) log(`feige exited ${r.status}: ${(r.stderr || "").trim()}`);
     return r;
   }
-  let child = spawn("python", args, opts);
-  child.on("error", () => {
-    child = spawn("py", ["-3", ...args], opts);
-    child.on("error", (e) => log(`python not found: ${e.message}`));
-    child.unref();
-  });
+  const child = spawn(cmd, [...pre, ...args],
+    { env, detached: true, stdio: "ignore", windowsHide: true });
+  child.on("error", (e) => log(`spawn failed: ${e.message}`));
   child.unref();
-  log(`feige spawned (pid ${child.pid})`);
+  log(`feige spawned via ${cmd} (pid ${child.pid})`);
   return child;
 }
 

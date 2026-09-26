@@ -4,6 +4,7 @@
     python webui.py [--port 8787]
 
 纯 Python 标准库（http.server 手写），只绑 127.0.0.1——无鉴权，切勿对外暴露端口。
+另校验 Host（防 DNS rebinding）与 POST 的 Origin/Referer（防 CSRF），见 request_allowed。
 
 页面：
   GET  /          总览：4 渠道凭据状态（只显"已配置/未配置"，绝不回显密钥值）、
@@ -14,7 +15,8 @@
   GET  /adapters  接入状态自检（ZCode/Claude Code/Codex，只读，绝不写用户配置）
 
 secrets 硬规则（与 feige.redact 同级）：任何响应体不得出现 FEISHU_APP_SECRET /
-bot token / webhook key 的值。
+bot token / webhook key 的值。例外：群路由页为可编辑会回显路由文件里的明文值——
+路由里的密钥请写成 $ENV 引用。
 """
 
 from __future__ import annotations
@@ -197,8 +199,11 @@ def handle_routes_post(body: bytes) -> bytes:
     if err:
         return _routes_form(feige.load_routes(), err=err)
     # 冒烟：保存后语义与 feige.resolve_routes 一致，先 dry 一遍计数
-    smoke = ", ".join(
-        f"{p}: {len(feige.resolve_routes(p, doc, env={}))} 目标" for p in doc["routes"])
+    def _smoke(p: str) -> str:
+        targets = feige.resolve_routes(p, doc)
+        bad = sum(1 for t in targets if t.get("_unresolved"))
+        return f"{p}: {len(targets)} 目标" + (f"（{bad} 个引用了未设置的 $ENV，发送时将跳过）" if bad else "")
+    smoke = ", ".join(_smoke(p) for p in doc["routes"])
     path = feige.routes_file_path()
     try:
         p = Path(path)
@@ -334,8 +339,28 @@ def page_adapters() -> bytes:
 
 # ── HTTP 骨架 ─────────────────────────────────────────────────────────────────
 
+def request_allowed(method: str, host: str, origin: str, referer: str, port: int) -> str:
+    """只绑 127.0.0.1 挡不住浏览器：返回拒绝原因，空串表示放行。
+
+    - Host 必须是本机地址（防 DNS rebinding：恶意域名解析到 127.0.0.1 后读路由页）；
+    - POST 的 Origin（缺省退到 Referer）必须同源（防 CSRF：任意网页自动提交表单
+      改写路由、把战报导向攻击者 webhook）。两者都缺的非浏览器客户端（curl）放行。
+    """
+    local = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    if (host or "").strip().lower() not in local:
+        return f"Host 不被允许：{host or '(缺失)'}"
+    if method == "POST":
+        src = (origin or "").strip()
+        if not src and referer:
+            u = urllib.parse.urlsplit(referer)
+            src = f"{u.scheme}://{u.netloc}"
+        if src and src.lower() not in {f"http://{h}" for h in local}:
+            return f"跨站请求被拒绝：{src}"
+    return ""
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "feige-webui/0.5"
+    server_version = "feige-webui/0.6"
 
     def log_message(self, fmt, *args):  # 静默访问日志（避免路径里的业务参数刷屏）
         pass
@@ -369,6 +394,13 @@ class Handler(BaseHTTPRequestHandler):
         return page("404", "<div class='err'>页面不存在</div>")
 
     def _handle(self) -> None:
+        reason = request_allowed(self.command, self.headers.get("Host", ""),
+                                 self.headers.get("Origin", ""),
+                                 self.headers.get("Referer", ""),
+                                 self.server.server_address[1])
+        if reason:
+            self._send(page("拒绝", f"<div class='err'>{esc(reason)}</div>"), status=403)
+            return
         try:
             self._send(self._dispatch())
         except Exception as exc:  # fail-open：错误条而不是 500 白屏
@@ -380,15 +412,25 @@ class Handler(BaseHTTPRequestHandler):
     do_GET = do_POST = _handle
 
 
+class Server(ThreadingHTTPServer):
+    # Windows 的 SO_REUSEADDR 允许重复绑定已被占用的端口：不报错，请求随机落到
+    # 某个进程上。在 Windows 上关掉它，端口冲突时直接报错退出。
+    allow_reuse_address = os.name != "nt"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="🕊️ feige WebUI（仅 127.0.0.1，勿暴露端口）")
     ap.add_argument("--port", type=int, default=8787)
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        srv = Server(("127.0.0.1", args.port), Handler)
+    except OSError as exc:
+        sys.exit(f"🕊️ 端口 {args.port} 不可用（{exc}），换一个：python webui.py --port <N>")
     print(f"🕊️ feige WebUI: http://127.0.0.1:{args.port} （Ctrl+C 退出）")
     try:
         srv.serve_forever()
