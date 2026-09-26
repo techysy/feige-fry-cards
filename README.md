@@ -122,3 +122,10 @@ feige.send_report("会话收尾", "完成 3 个文件修改",
 
 **飞鸽 Feige**：飞鸽传书，谐音飞书之"飞"；CLI 命令 `feige`。
 仓库名按家族惯例对齐为 `feige-fry-cards`。
+
+## 联调排错
+
+- **`230002 Bot/User can NOT be out of the chat`**：先查机器人在不在群（`GET /im/v1/chats`
+  列出 bot 所在群；不在就拉进群）。再查环境变量是不是陈旧的——**`setx` 不影响已运行
+  进程**，守护进程/长会话终端里的 `FEISHU_APP_ID` 可能落后于注册表；用
+  `reg query "HKCU\Environment" /v FEISHU_APP_ID` 对一下，验证时显式传最新值。
