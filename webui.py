@@ -121,12 +121,13 @@ def _routes_form(doc: dict, msg: str = "", err: str = "") -> bytes:
             f"<td><input type='text' name='wh_{i}_{j}' value='{esc(t.get('webhook', ''))}' placeholder='$ENV 或 webhook'></td>"
             f"<td><input type='text' name='cid_{i}_{j}' value='{esc(t.get('chat_id', ''))}' placeholder='oc_… / -100…'></td>"
             f"<td><input type='text' name='tok_{i}_{j}' value='{esc(t.get('token', ''))}' placeholder='$ENV 或 token'></td>"
+            f"<td><input type='text' name='sec_{i}_{j}' value='{esc(t.get('secret', ''))}' placeholder='$ENV（签名/加签密钥）'></td>"
             "</tr>"
             for j, t in enumerate(targets if isinstance(targets, list) else []))
         blocks.append(
             f"<div class='card'><h3>项目 <input type='text' name='proj_{i}' value='{esc(proj)}' "
             f"style='width:280px'></h3>"
-            f"<table id='tbl_{i}'><tr><th>channel</th><th>webhook</th><th>chat_id</th><th>token</th></tr>"
+            f"<table id='tbl_{i}'><tr><th>channel</th><th>webhook</th><th>chat_id</th><th>token</th><th>secret</th></tr>"
             f"{trows}</table>"
             f"<button type='button' onclick=\"addTarget({i})\">＋目标</button></div>")
     n = len(routes)
@@ -139,12 +140,13 @@ function trow(i,j){return `<tr><td><select name="ch_${i}_${j}">`+
  CH.map(c=>`<option>${c}</option>`).join("")+`</select></td>`+
  `<td><input type="text" name="wh_${i}_${j}" placeholder="$ENV 或 webhook"></td>`+
  `<td><input type="text" name="cid_${i}_${j}" placeholder="oc_… / -100…"></td>`+
- `<td><input type="text" name="tok_${i}_${j}" placeholder="$ENV 或 token"></td></tr>`;}
+ `<td><input type="text" name="tok_${i}_${j}" placeholder="$ENV 或 token"></td>`+
+ `<td><input type="text" name="sec_${i}_${j}" placeholder="$ENV（签名/加签密钥）"></td></tr>`;}
 function addTarget(i){const t=document.getElementById("tbl_"+i);
  t.insertAdjacentHTML("beforeend",trow(i,t.rows.length-1));}
 function addProject(){const f=document.getElementById("rt");const i=window._n++;
  f.insertAdjacentHTML("beforeend",`<div class="card"><h3>项目 <input type="text" name="proj_${i}" style="width:280px"></h3>`+
- `<table id="tbl_${i}"><tr><th>channel</th><th>webhook</th><th>chat_id</th><th>token</th></tr></table>`+
+ `<table id="tbl_${i}"><tr><th>channel</th><th>webhook</th><th>chat_id</th><th>token</th><th>secret</th></tr></table>`+
  `<button type="button" onclick="addTarget(${i})">＋目标</button></div>`);addTarget(i);}
 </script>"""
     body = (f"{banner}{error}<form method='post' action='/routes'><div id='rt'>"
@@ -168,12 +170,13 @@ def _parse_routes_form(form: dict) -> tuple[dict | None, str]:
         targets = []
         j = 0
         # 行存在性：ch/wh/cid/tok 任一键在都算有这行——避免"有内容但无 ch 键"被静默丢弃
-        while any(f"{k}_{i}_{j}" in form for k in ("ch", "wh", "cid", "tok")):
+        while any(f"{k}_{i}_{j}" in form for k in ("ch", "wh", "cid", "tok", "sec")):
             ch = (form.get(f"ch_{i}_{j}") or [""])[0].strip()
             wh = (form.get(f"wh_{i}_{j}") or [""])[0].strip()
             cid = (form.get(f"cid_{i}_{j}") or [""])[0].strip()
             tok = (form.get(f"tok_{i}_{j}") or [""])[0].strip()
-            if ch or wh or cid or tok:
+            sec = (form.get(f"sec_{i}_{j}") or [""])[0].strip()
+            if ch or wh or cid or tok or sec:
                 if ch not in feige.CHANNELS:
                     return None, f"项目 {name or pk} 第 {j + 1} 个目标缺 channel 或渠道非法（行内有内容时 channel 必填）"
                 t = {"channel": ch}
@@ -183,6 +186,8 @@ def _parse_routes_form(form: dict) -> tuple[dict | None, str]:
                     t["chat_id"] = cid
                 if tok:
                     t["token"] = tok
+                if sec:
+                    t["secret"] = sec
                 targets.append(t)
             j += 1
         if not name:

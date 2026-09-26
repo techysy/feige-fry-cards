@@ -24,6 +24,12 @@
       "type": "string",
       "default": ""
     },
+    "webhook_secret": {
+      "title": "webhook 签名密钥 / Webhook signing secret",
+      "description": "机器人开了「签名校验」才需要填，仅存本地配置。Only needed when the custom bot has signature verification enabled; stored locally.",
+      "type": "string",
+      "default": ""
+    },
     "app_id": {
       "title": "飞书 App ID / Feishu App ID",
       "description": "CardKit 通道应用凭据（cli_ 开头），留空则读环境变量 FEISHU_APP_ID。Feishu app credential; empty = use env FEISHU_APP_ID.",

@@ -87,6 +87,8 @@ async function main(raw) {
     ...process.env,
     FEISHU_CARD_WEBHOOK: process.env.FEISHU_CARD_WEBHOOK || process.env.FEISHU_WEBHOOK_URL
       || process.env.ZCODE_USER_CONFIG_WEBHOOK_URL || "",
+    FEISHU_WEBHOOK_SECRET: process.env.FEISHU_WEBHOOK_SECRET
+      || process.env.ZCODE_USER_CONFIG_WEBHOOK_SECRET || "",
     FEISHU_APP_ID: process.env.FEISHU_APP_ID || process.env.ZCODE_USER_CONFIG_APP_ID || "",
     FEISHU_APP_SECRET: process.env.FEISHU_APP_SECRET || process.env.ZCODE_USER_CONFIG_APP_SECRET || "",
     FEISHU_BASE_URL: process.env.FEISHU_BASE_URL || process.env.ZCODE_USER_CONFIG_BASE_URL || "",

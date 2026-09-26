@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -14,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -121,6 +125,16 @@ class WebuiGuardTest(unittest.TestCase):
 
     def test_non_browser_post(self):
         self.assertTrue(self.allowed("POST", "127.0.0.1:8787"))
+
+    def test_routes_form_keeps_secret(self):
+        """路由表单曾只认 webhook/chat_id/token，保存会静默丢掉 secret。"""
+        form = {"proj_0": ["p"], "ch_0_0": ["dingtalk-webhook"], "wh_0_0": ["$DT"],
+                "sec_0_0": ["$DT_SEC"]}
+        doc, err = webui._parse_routes_form(form)
+        self.assertEqual(err, "")
+        self.assertEqual(doc["routes"]["p"], [{"channel": "dingtalk-webhook", "webhook": "$DT",
+                                               "secret": "$DT_SEC"}])
+        self.assertIn("$DT_SEC", webui._routes_form(doc).decode("utf-8"))
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
@@ -274,6 +288,104 @@ class ZcodeHookLiveTest(E2EBase):
         got = self.wait_for(1)
         self.assertEqual([p for p, _ in got], ["/zroute"])
         self.assertIn("zcode 战报", json.dumps(got[0][1], ensure_ascii=False))
+
+
+class ClipTest(unittest.TestCase):
+    LONG = "战报正文" * 10_000  # 40k 汉字 ≈ 120KB
+
+    def test_short_untouched(self):
+        self.assertEqual(feige.clip("短"), "短")
+
+    def test_feishu_payload_under_webhook_limit(self):
+        _, out = feige.send_report("t", self.LONG, channel="feishu-webhook", dry_run=True)
+        payload = json.dumps(json.loads(out), ensure_ascii=False).encode("utf-8")
+        self.assertLess(len(payload), 20 * 1024)
+        self.assertIn("内容过长已截断", out)
+
+    def test_dingtalk_payload_under_limit(self):
+        _, out = feige.send_report("t", self.LONG, channel="dingtalk-webhook", dry_run=True)
+        payload = json.loads(out)["payload"]
+        self.assertLess(len(json.dumps(payload, ensure_ascii=False).encode("utf-8")), 20_000)
+
+    def test_telegram_utf16_limit_with_emoji(self):
+        text = feige.render_telegram_text("🕊️" * 10, "😀" * 5000,
+                                          stats={"project": "p", "tools": 3}, status="ok")
+        self.assertLessEqual(len(text.encode("utf-16-le")) // 2, 4096)
+        self.assertTrue(text.endswith("📦 p · 🔧3"), "截的是正文，脚注要保住")
+
+
+class CardkitTest(unittest.TestCase):
+    def test_two_calls_final_card(self):
+        """回归：旧流程建流式卡→更新同样正文→整卡 PUT→PATCH 关流式→发群，5 次调用。"""
+        calls = []
+
+        def fake(method, path, body=None):
+            calls.append((method, path.split("?")[0], body))
+            return {"code": 0, "data": {"card_id": "c1", "message_id": "m1"}}
+
+        with mock.patch.object(feige, "call_app_api", side_effect=fake):
+            ok, detail = feige.send_report("t", "b", stats={"tools": 2}, channel="feishu-cardkit",
+                                           chat_id="oc_x")
+        self.assertTrue(ok, detail)
+        self.assertEqual([(m, p) for m, p, _ in calls],
+                         [("POST", "/cardkit/v1/cards"), ("POST", "/im/v1/messages")])
+        card = json.loads(calls[0][2]["data"])
+        self.assertNotIn("streaming_mode", card["config"])
+        self.assertEqual(card["header"]["template"], "green")
+        self.assertIn("🔧2", json.dumps(card, ensure_ascii=False))
+
+
+class RedactUrlTest(unittest.TestCase):
+    def test_route_level_webhooks(self):
+        s = feige.redact("POST https://open.feishu.cn/open-apis/bot/v2/hook/abcdef-123456 failed; "
+                         "https://oapi.dingtalk.com/robot/send?access_token=deadbeef99&timestamp=1&sign=xyz%2B")
+        for leaked in ("abcdef-123456", "deadbeef99", "xyz%2B"):
+            self.assertNotIn(leaked, s)
+        self.assertIn("design=ok", feige.redact("design=ok"))
+
+
+class SignE2ETest(E2EBase):
+    """签名/加签：本地假 webhook 收到的请求按官方算法独立复核。"""
+
+    def send(self, **kw):
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            return feige.send_report("t", "b", **kw)
+
+    def test_feishu_signed(self):
+        self.env.update(FEISHU_CARD_WEBHOOK=self.url + "/hook", FEISHU_WEBHOOK_SECRET="s3cret")
+        ok, detail = self.send(channel="feishu-webhook")
+        self.assertTrue(ok, detail)
+        body = self.handler.got[0][1]
+        key = f"{body['timestamp']}\ns3cret".encode()
+        expect = base64.b64encode(hmac.new(key, b"", hashlib.sha256).digest()).decode()
+        self.assertEqual(body["sign"], expect)
+        self.assertLess(abs(int(body["timestamp"]) - time.time()), 60)
+
+    def test_env_secret_not_used_for_route_webhook(self):
+        self.env["FEISHU_WEBHOOK_SECRET"] = "for-the-default-bot"
+        ok, _ = self.send(channel="feishu-webhook", webhook=self.url + "/other")
+        self.assertTrue(ok)
+        self.assertNotIn("sign", self.handler.got[0][1])
+
+    def test_dingtalk_signed(self):
+        self.env.update(DINGTALK_WEBHOOK=self.url + "/ding?access_token=t0k", DINGTALK_SECRET="SECabc")
+        ok, detail = self.send(channel="dingtalk-webhook")
+        self.assertTrue(ok, detail)
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.handler.got[0][0]).query)
+        ts = q["timestamp"][0]
+        expect = base64.b64encode(hmac.new(b"SECabc", f"{ts}\nSECabc".encode(),
+                                           hashlib.sha256).digest()).decode()
+        self.assertEqual(q["sign"][0], expect)  # parse_qs 已做 URL 解码
+        self.assertEqual(q["access_token"][0], "t0k")
+
+    def test_route_secret_passed_through(self):
+        doc = {"routes": {"p": [{"channel": "dingtalk-webhook", "webhook": self.url + "/ding",
+                                 "secret": "$ROUTE_SEC"}]}}
+        self.env["ROUTE_SEC"] = "SECroute"
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            ok, detail = feige.send_routed("t", "b", project="p", doc=doc)
+        self.assertTrue(ok, detail)
+        self.assertIn("sign=", self.handler.got[0][0])
 
 
 if __name__ == "__main__":

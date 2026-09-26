@@ -8,7 +8,7 @@ tail 守护 / hook / 适配器直接 import 本文件的渠道与卡片函数复
 渠道（CHANNELS）：
 
     feishu-webhook    飞书自定义机器人 webhook，一次性整卡（交互卡）
-    feishu-cardkit    飞书应用凭据，CardKit 流式卡完整生命周期（交互卡+流式）
+    feishu-cardkit    飞书应用凭据，CardKit 建卡 → 按引用发群（交互卡；流式生命周期函数留给 tail 模式）
     dingtalk-webhook  钉钉自定义机器人 webhook，markdown 消息
     telegram          Telegram Bot API sendMessage（纯文本版式，不用 parse_mode）
 
@@ -27,10 +27,12 @@ feishu-cardkit，都没有则明确报错（打码后）；钉钉/Telegram 显�
 环境变量：
 
     FEISHU_CARD_WEBHOOK / FEISHU_WEBHOOK_URL   飞书机器人 webhook
+    FEISHU_WEBHOOK_SECRET                       飞书机器人「签名校验」密钥（可选）
     FEISHU_APP_ID / FEISHU_APP_SECRET          飞书应用凭据（CardKit 通道）
     FEISHU_BASE_URL                             默认 https://open.feishu.cn
     FEISHU_NOTIFY_CHAT_ID                       飞书默认群（oc_xxx），CardKit 必配
     DINGTALK_WEBHOOK                            钉钉机器人 webhook
+    DINGTALK_SECRET                             钉钉机器人「加签」密钥（SEC 开头，可选）
     TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID      Telegram bot token / 目标 chat（群为负数）
     FEIGE_ROUTES_FILE                           群路由文件（默认 ~/.feige-routes.json）
     FEIGE_DEBOUNCE_SECONDS                      收尾去抖秒数（配合 --debounce-key，默认 0 关闭）
@@ -44,7 +46,9 @@ feishu-cardkit，都没有则明确报错（打码后）；钉钉/Telegram 显�
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -52,12 +56,16 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 DEFAULT_BASE_URL = "https://open.feishu.cn"
 STREAMING_ELEMENT_ID = "streaming_content"  # 流式正文元素 id（家族固定口径）
-MAX_BODY_CHARS = 24_000                     # 卡片正文体量硬兜底
+# 渠道体量上限（官方口径 + 余量）。按字符截断不够：中文 UTF-8 占 3 字节，24k 字就是 72KB
+BODY_MAX_BYTES = 15_000    # 飞书 webhook 请求体 ≤20KB、钉钉消息 ≤20000 字节，给卡片骨架留余量
+TELEGRAM_MAX_UNITS = 4096  # Telegram sendMessage text ≤4096，按 UTF-16 单元计（emoji 占 2）
+TRUNC_NOTE = "\n\n…（内容过长已截断）"
 
 # 状态 → header 着色（与 hermes-fry-cards 家族一致：流式中蓝、完成绿、中断/错误红）
 STATUS_TEMPLATE = {"running": "blue", "ok": "green", "error": "red"}
@@ -86,30 +94,53 @@ def log(msg: str) -> None:
 def redact(text: str) -> str:
     """错误信息打码：tenant_access_token / app_secret / webhook URL / bot token 等。"""
     s = str(text)
+    # 先按当前进程里配置过的真实凭据整串打码（要在形态打码之前，否则整串对不上）
+    for secret in (
+        _env("FEISHU_APP_SECRET", "LARK_APP_SECRET"),
+        _env("FEISHU_CARD_WEBHOOK", "FEISHU_WEBHOOK_URL"),
+        _env("FEISHU_WEBHOOK_SECRET"),
+        _env("FEISHU_APP_ID", "LARK_APP_ID"),
+        _env("DINGTALK_WEBHOOK"),
+        _env("DINGTALK_SECRET"),
+        _env("TELEGRAM_BOT_TOKEN"),
+    ):
+        if len(secret) >= 6:
+            s = s.replace(secret, "***")
     # 形如 token/secret 字段的值一律替换
     s = re.sub(r'(tenant_access_token["\s:=]+)[A-Za-z0-9_\-]{6,}', r"\1***", s)
     s = re.sub(r'(app_secret["\s:=]+)[A-Za-z0-9]{6,}', r"\1***", s)
     # Telegram bot token（bot<数字>:<串> 形态）
     s = re.sub(r'bot\d{6,}:[A-Za-z0-9_\-]{10,}', "bot***", s)
-    # 当前进程里配置过的真实凭据，明文出现即打码
-    for secret in (
-        _env("FEISHU_APP_SECRET", "LARK_APP_SECRET"),
-        _env("FEISHU_CARD_WEBHOOK", "FEISHU_WEBHOOK_URL"),
-        _env("FEISHU_APP_ID", "LARK_APP_ID"),
-        _env("DINGTALK_WEBHOOK"),
-        _env("TELEGRAM_BOT_TOKEN"),
-    ):
-        if len(secret) >= 6:
-            s = s.replace(secret, "***")
+    # webhook URL 形态（路由里另配的 webhook 不在环境变量里，只能按形态认）：
+    # 飞书/Lark /bot/v2/hook/<id>、钉钉 access_token=<串>、加签 sign=<串>
+    s = re.sub(r'(/hook/)[A-Za-z0-9_\-]{6,}', r"\1***", s)
+    s = re.sub(r'\b((?:access_token|sign)=)[^&\s"\']+', r"\1***", s)
     return s
 
 
-def clip(text: str) -> str:
-    """卡片正文超长硬截断——摘要是战报，不是镜像。"""
+def _size(text: str, unit: str) -> int:
+    if unit == "utf16":
+        return len(text.encode("utf-16-le")) // 2
+    return len(text.encode("utf-8"))
+
+
+def clip(text: str, limit: int = BODY_MAX_BYTES, unit: str = "bytes") -> str:
+    """正文超长硬截断到渠道上限（含截断提示）——摘要是战报，不是镜像。
+
+    unit："bytes" 按 UTF-8 字节（飞书/钉钉），"utf16" 按 UTF-16 单元（Telegram）。
+    """
     text = text or ""
-    if len(text) <= MAX_BODY_CHARS:
+    if _size(text, unit) <= limit:
         return text
-    return text[:MAX_BODY_CHARS] + "\n\n…（内容过长已截断）"
+    budget = limit - _size(TRUNC_NOTE, unit)
+    lo, hi = 0, len(text)  # 二分找最长可容纳前缀
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _size(text[:mid], unit) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + TRUNC_NOTE
 
 
 # ── 统一卡片模型 ─────────────────────────────────────────────────────────────
@@ -227,12 +258,33 @@ def webhook_url() -> str:
     return _env("FEISHU_CARD_WEBHOOK", "FEISHU_WEBHOOK_URL")
 
 
-def send_feishu_webhook(card: dict, webhook: str = "") -> str:
-    """对机器人 webhook 一次性 POST interactive 卡片（无流式，适合结果卡）。"""
+def feishu_webhook_secret(webhook: str = "", secret: str = "") -> str:
+    """签名密钥：显式传入优先；环境变量密钥只配环境变量里的 webhook——路由里另指定
+    的 webhook 是另一个机器人，拿默认密钥签只会签错。"""
+    return secret or ("" if webhook else _env("FEISHU_WEBHOOK_SECRET"))
+
+
+def feishu_sign(secret: str, timestamp: int) -> str:
+    """飞书自定义机器人「签名校验」：key = "{timestamp}\\n{secret}"，对空串 HMAC-SHA256，base64。"""
+    key = f"{timestamp}\n{secret}".encode("utf-8")
+    return base64.b64encode(hmac.new(key, b"", hashlib.sha256).digest()).decode("ascii")
+
+
+def send_feishu_webhook(card: dict, webhook: str = "", secret: str = "") -> str:
+    """对机器人 webhook 一次性 POST interactive 卡片（无流式，适合结果卡）。
+
+    机器人开了「签名校验」时配 FEISHU_WEBHOOK_SECRET（或路由目标 secret），载荷带
+    timestamp + sign。
+    """
     url = webhook or webhook_url()
     if not url:
         raise RuntimeError("missing webhook: set FEISHU_CARD_WEBHOOK or FEISHU_WEBHOOK_URL")
-    data = _post_json(url, {"msg_type": "interactive", "card": card})
+    body: dict = {"msg_type": "interactive", "card": card}
+    secret = feishu_webhook_secret(webhook, secret)
+    if secret:
+        ts = int(time.time())
+        body.update(timestamp=str(ts), sign=feishu_sign(secret, ts))
+    data = _post_json(url, body)
     if isinstance(data, dict) and data.get("code", 0) not in (0, "0", None):
         raise RuntimeError(f"webhook send failed: code={data.get('code')} msg={redact(data.get('msg', ''))}")
     return "sent (webhook)"
@@ -357,22 +409,15 @@ def send_card(card_id: str, chat_id: str = "") -> str:
 def send_feishu_cardkit(title: str, body: str, stats: dict | None = None,
                         status: str = "ok", chat_id: str = "",
                         card: dict | None = None) -> str:
-    """M1 发卡顺序：建卡（流式）→ 正文更新 → 封卡 → 按引用发到群。
+    """结果卡：直接建终态卡 → 按引用发到群，共 2 次调用。
 
-    card 参数可注入预建好的流式卡（供后续 tail 模式复用）；缺省走 build_card。
+    不走流式：卡片是封好之后才发进群的，群里看不到打字机过程，旧的
+    「建流式卡 → 更新同样的正文 → 整卡 PUT → PATCH 关流式 → 发群」只是多花 3 次调用；
+    running 态的一次性卡也不该开着流式模式没人来关。流式生命周期（create_card /
+    update_content / seal_card）保留给 tail 模式：先 send_card 再持续更新才有意义。
+    card 参数可注入预建好的卡片，原样建卡发送。
     """
-    streaming_card = card or build_card(title, body, stats=None,
-                                        status="running", streaming=True)
-    card_id = create_card(streaming_card)
-    seq = 1
-    try:
-        update_content(card_id, body, seq)
-        seq += 1
-    except RuntimeError as exc:
-        log(f"content update skipped (non-fatal): {exc}")
-    if status != "running":
-        final_card = build_card(title, body, stats=stats, status=status)
-        seq = seal_card(card_id, final_card, seq)
+    card_id = create_card(card or build_card(title, body, stats=stats, status=status))
     return send_card(card_id, chat_id)
 
 
@@ -396,11 +441,31 @@ def render_dingtalk(title: str, body: str, stats: dict | None = None,
             "markdown": {"title": full_title, "text": "\n".join(parts)}}
 
 
-def send_dingtalk_webhook(payload: dict, webhook: str = "") -> str:
-    """POST 钉钉机器人 webhook；errcode 非 0 即失败。"""
+def dingtalk_secret(webhook: str = "", secret: str = "") -> str:
+    """加签密钥：显式传入优先；DINGTALK_SECRET 只配环境变量里的 webhook（同飞书口径）。"""
+    return secret or ("" if webhook else _env("DINGTALK_SECRET"))
+
+
+def dingtalk_signed_url(url: str, secret: str, timestamp_ms: int) -> str:
+    """钉钉「加签」：HMAC-SHA256(key=secret, msg="{timestamp}\\n{secret}")，base64 后
+    URL 编码，以 &timestamp=&sign= 追加到 webhook。"""
+    msg = f"{timestamp_ms}\n{secret}".encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()
+    sign = urllib.parse.quote_plus(base64.b64encode(digest))
+    return f"{url}{'&' if '?' in url else '?'}timestamp={timestamp_ms}&sign={sign}"
+
+
+def send_dingtalk_webhook(payload: dict, webhook: str = "", secret: str = "") -> str:
+    """POST 钉钉机器人 webhook；errcode 非 0 即失败。
+
+    机器人安全设置选了「加签」时配 DINGTALK_SECRET（SEC 开头，或路由目标 secret）。
+    """
     url = webhook or _env("DINGTALK_WEBHOOK")
     if not url:
         raise RuntimeError("missing webhook: set DINGTALK_WEBHOOK or pass --webhook")
+    secret = dingtalk_secret(webhook, secret)
+    if secret:
+        url = dingtalk_signed_url(url, secret, int(time.time() * 1000))
     data = _post_json(url, payload)
     errcode = data.get("errcode", 0) if isinstance(data, dict) else 0
     if errcode not in (0, "0", None):
@@ -418,12 +483,12 @@ def render_telegram_text(title: str, body: str, stats: dict | None = None,
     """
     if status not in STATUS_TEMPLATE:
         raise ValueError(f"unknown status: {status!r} (expect running/ok/error)")
-    parts = [f"{STATUS_PREFIX[status]} {title.strip() or '通知'}", "",
-             clip(body.strip()) or "（空内容）"]
+    head = f"{STATUS_PREFIX[status]} {title.strip() or '通知'}\n\n"
     footer = stats_footer(stats)
-    if status != "running" and footer:
-        parts += ["", "———", footer]
-    return "\n".join(parts)
+    tail = f"\n\n———\n{footer}" if status != "running" and footer else ""
+    budget = TELEGRAM_MAX_UNITS - _size(head + tail, "utf16")
+    text = head + (clip(body.strip(), max(budget, 0), "utf16") or "（空内容）") + tail
+    return clip(text, TELEGRAM_MAX_UNITS, "utf16")  # 标题/脚注本身超长时的最后兜底
 
 
 def send_telegram(title: str, body: str, stats: dict | None = None, status: str = "ok",
@@ -460,11 +525,12 @@ def pick_channel() -> str:
 
 def send_report(title: str, body: str, stats: dict | None = None, status: str = "ok",
                 channel: str = "", chat_id: str = "", webhook: str = "",
-                token: str = "", dry_run: bool = False) -> tuple[bool, str]:
+                token: str = "", dry_run: bool = False, secret: str = "") -> tuple[bool, str]:
     """统一发送入口，fail-open：任何异常只落日志，返回 (是否成功, 打码后的说明)。
 
     dry_run=True 只返回将发送的载荷 JSON 字符串，不发网络请求。
-    webhook/token/chat_id 为路由目标级别的显式覆盖，缺省读各渠道环境变量。
+    webhook/token/chat_id/secret 为路由目标级别的显式覆盖，缺省读各渠道环境变量
+    （secret 是 webhook 的签名密钥，只对 feishu-webhook / dingtalk-webhook 有效）。
     """
     channel = channel or pick_channel()
     if channel and channel not in CHANNELS:
@@ -484,8 +550,9 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
             payload = render_dingtalk(title, body, eff_stats, status)
             if dry_run:
                 return True, json.dumps({"channel": channel, "lifecycle": "one-shot",
+                                         "signed": bool(dingtalk_secret(webhook, secret)),
                                          "payload": payload}, ensure_ascii=False, indent=2)
-            return True, send_dingtalk_webhook(payload, webhook)
+            return True, send_dingtalk_webhook(payload, webhook, secret)
         if channel == "telegram":
             payload = {"chat_id": chat_id or _env("TELEGRAM_CHAT_ID") or "<TELEGRAM_CHAT_ID>",
                        "text": render_telegram_text(title, body, eff_stats, status)}
@@ -494,17 +561,19 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
                                          "payload": payload}, ensure_ascii=False, indent=2)
             return True, send_telegram(title, body, stats=stats, status=status,
                                        chat_id=chat_id, token=token)
-        # feishu 两渠道（含 "-" 无渠道 dry-run 预览）：Card 2.0
-        card = build_card(title, body, stats=eff_stats, status=status,
-                          streaming=(channel == "feishu-cardkit"))
+        # feishu 两渠道（含 "-" 无渠道 dry-run 预览）：Card 2.0 终态卡
+        card = build_card(title, body, stats=eff_stats, status=status)
         if dry_run:
-            out = {"msg_type": "interactive", "card": card} if channel == "feishu-webhook" \
-                else {"channel": channel, "lifecycle": "create → update_content → seal → send_card",
-                      "card": card}
+            if channel == "feishu-webhook":
+                out = {"msg_type": "interactive", "card": card}
+                if feishu_webhook_secret(webhook, secret):
+                    out.update(timestamp="<unix 秒>", sign="<HMAC-SHA256 签名>")
+            else:
+                out = {"channel": channel, "lifecycle": "create_card → send_card", "card": card}
             return True, json.dumps(out, ensure_ascii=False, indent=2)
         if channel == "feishu-webhook":
-            return True, send_feishu_webhook(card, webhook)
-        return True, send_feishu_cardkit(title, body, stats=stats, status=status, chat_id=chat_id)
+            return True, send_feishu_webhook(card, webhook, secret)
+        return True, send_feishu_cardkit(title, body, chat_id=chat_id, card=card)
     except Exception as exc:  # fail-open：发卡失败只落日志，绝不抛炸调用方
         detail = redact(exc)
         log(f"send failed ({channel}): {detail}")
@@ -605,7 +674,8 @@ def send_routed(title: str, body: str, stats: dict | None = None, status: str = 
         ok, detail = send_report(
             title, body, stats=stats, status=status, channel=channel,
             chat_id=str(t.get("chat_id") or ""), webhook=str(t.get("webhook") or ""),
-            token=str(t.get("token") or ""), dry_run=dry_run)
+            token=str(t.get("token") or ""), secret=str(t.get("secret") or ""),
+            dry_run=dry_run)
         results.append((ok, f"[{channel}] {detail}"))
     return all(ok for ok, _ in results), "\n".join(d for _, d in results)
 

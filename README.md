@@ -131,13 +131,16 @@ python feige.py send --title 标题 --body "markdown 正文" \
 - **统计脚注**只在 `ok`/`error` 态单次呈现：`📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · ⏱️ 耗时`，
   空字段自动省略；
 - **渠道默认选择**：有飞书 webhook 环境变量走 `feishu-webhook`（一次性整卡，无流式），
-  否则有应用凭据走 `feishu-cardkit`（建卡 → 正文更新 → 封卡 → 按引用发群）；
+  否则有应用凭据走 `feishu-cardkit`（建终态卡 → 按引用发群，2 次调用）；
   钉钉/Telegram 不进默认选择，需显式 `--channel` 或 `--route` 路由；都没有则明确报错（打码后）；
 - **`--webhook`**：渠道级 webhook 覆盖（feishu-webhook / dingtalk-webhook）；
 - **`--route`**：按 `--project` 解析路由文件做多目标 fanout（见「群路由」），不带则保持单渠道；
 - **`--dry-run`** 只打印将发送的载荷 JSON，不发网络请求、不要求凭据；
 - **`--debounce-key`**：收尾去抖（见「收尾去抖」），窗口秒数取 `--debounce` 或 `FEIGE_DEBOUNCE_SECONDS`；
 - 值以 `-` 开头时用 `--body=-xxx` 写法（argparse 会把 `--body -xxx` 的值误当选项）；
+- **长度上限按渠道截断**：飞书/钉钉正文按 UTF-8 **字节**卡在 15000（webhook 请求体
+  ≤20KB，中文一字 3 字节，按字数截会超）；Telegram 整条按 UTF-16 单元卡在 4096（emoji 占 2），
+  截的是正文，标题与统计脚注保留；
 - **fail-open**：发卡失败只落日志/返回非零退出码，绝不抛炸调用方。
 
 环境变量：
@@ -145,10 +148,12 @@ python feige.py send --title 标题 --body "markdown 正文" \
 | 变量 | 用途 |
 |------|------|
 | `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL` | 飞书自定义机器人 webhook |
+| `FEISHU_WEBHOOK_SECRET` | 飞书机器人开了「签名校验」时的密钥（可选） |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书应用凭据（CardKit 通道） |
 | `FEISHU_BASE_URL` | 默认 `https://open.feishu.cn` |
 | `FEISHU_NOTIFY_CHAT_ID` | 飞书默认群 `oc_xxx`（CardKit 通道必配） |
 | `DINGTALK_WEBHOOK` | 钉钉自定义机器人 webhook |
+| `DINGTALK_SECRET` | 钉钉机器人安全设置选「加签」时的密钥（`SEC` 开头，可选） |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram bot token / 目标 chat（群为负数 id） |
 | `FEIGE_ROUTES_FILE` | 群路由文件（默认 `~/.feige-routes.json`） |
 | `FEIGE_DEBOUNCE_SECONDS` | 收尾去抖秒数，默认 `0`（关闭，每轮收尾都发卡） |
@@ -162,24 +167,28 @@ feige.send_report("会话收尾", "完成 3 个文件修改",
                   stats={"project": "feige-fry-cards", "model": "glm-5",
                          "thinking": 4, "tools": 12, "context": "42%", "elapsed": "2m38s"},
                   status="ok")  # -> (True, "sent (webhook)")
-# CardKit 流式卡生命周期也可单独取用：
-# feige.create_card / update_content / seal_card / send_card / build_card
+# CardKit 流式卡生命周期也可单独取用（tail 模式：先 send_card 再持续 update_content，最后 seal_card）：
+# feige.create_card / update_content / seal_card / send_card / build_card(streaming=True)
 ```
 
 ## 渠道矩阵
 
 | 渠道 | 凭据环境变量 | 版面能力 | 说明 |
 |------|-------------|---------|------|
-| `feishu-webhook` | `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL` | 交互卡（Card 2.0） | 一次性整卡，最简单 |
-| `feishu-cardkit` | `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（+ `FEISHU_NOTIFY_CHAT_ID`） | 交互卡 + 流式 | 建卡 → 封卡 → 引用发群，生命周期函数可被 tail 模式复用 |
-| `dingtalk-webhook` | `DINGTALK_WEBHOOK`（或 `--webhook`） | markdown 消息 | 标题行 + 正文 + `---` + 统计脚注；无交互卡概念 |
+| `feishu-webhook` | `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL`（签名校验 + `FEISHU_WEBHOOK_SECRET`） | 交互卡（Card 2.0） | 一次性整卡，最简单 |
+| `feishu-cardkit` | `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（+ `FEISHU_NOTIFY_CHAT_ID`） | 交互卡（流式能力留给 tail 模式） | 建终态卡 → 引用发群；结果卡封好才进群，流式过程本就看不到，所以不走流式 |
+| `dingtalk-webhook` | `DINGTALK_WEBHOOK`（或 `--webhook`；加签 + `DINGTALK_SECRET`） | markdown 消息 | 标题行 + 正文 + `---` + 统计脚注；无交互卡概念 |
 | `telegram` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`（chat 可 `--chat-id`） | 纯文本 | 不启 parse_mode，避开 MarkdownV2 转义地雷 |
 
 统一卡片模型（标题/正文/统计/状态）为输入，各渠道各自渲染；统计脚注只在完成态
 （ok/error）出现的口径跨渠道一致。
 
 **钉钉最低配置**：群 → 群设置 → 智能群助手 → 添加机器人 → 自定义，复制 webhook
-（安全设置选"自定义关键词"时，正文里带上关键词，例如固定标题词）。
+（安全设置选"自定义关键词"时，正文里带上关键词，例如固定标题词；选"加签"时把
+`SEC…` 密钥配到 `DINGTALK_SECRET`，或在路由目标里写 `"secret": "$某变量"`）。
+**飞书签名校验**：机器人设置里开「签名校验」后，把密钥配到 `FEISHU_WEBHOOK_SECRET`
+（ZCode 插件 Settings 的 webhook_secret 同效）。环境变量里的密钥只配环境变量里的
+webhook；路由目标另指定 webhook 时，密钥也要在该目标的 `secret` 里单独给。
 **Telegram 最低配置**：找 @BotFather 领 token；把 bot 拉进目标群后，用
 `https://api.telegram.org/bot<token>/getUpdates` 查看 `chat.id`（群为负数，如 `-100…`）。
 
@@ -202,8 +211,8 @@ feige.send_report("会话收尾", "完成 3 个文件修改",
 
 - **匹配**：精确项目名 → `"*"` 通配兜底 → 无匹配时退化为现有单渠道行为（不打断
   M2/M3 调用方）；
-- **目标字段**：`channel` 必填；`webhook` / `chat_id` / `token` 为该目标的显式覆盖，
-  缺省读各渠道环境变量；整字符串值 `"$NAME"` 引用为环境变量值（秘密不进路由文件）；
+- **目标字段**：`channel` 必填；`webhook` / `chat_id` / `token` / `secret`（webhook 签名/
+  加签密钥）为该目标的显式覆盖，缺省读各渠道环境变量；整字符串值 `"$NAME"` 引用为环境变量值（秘密不进路由文件）；
 - **fanout**：逐目标独立发送，单目标失败不影响其余，返回聚合结果；目标缺/坏
   `channel` 会跳过并落日志（只报键名，不打印值）；
 - **`$ENV` 未设置**：该目标直接判失败并在日志里点名缺哪个变量，**绝不**退回默认渠道

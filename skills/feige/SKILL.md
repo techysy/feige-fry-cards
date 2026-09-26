@@ -38,7 +38,9 @@ python <plugin root>/feige.py send \
 
 渠道自动选择：有 `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL` 走自定义机器人
 webhook（一次性整卡）；否则有 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 走 CardKit
-（建卡 → 封卡 → 按引用发群，目标群 `FEISHU_NOTIFY_CHAT_ID` 或 `--chat-id`）。
+（建卡 → 按引用发群，目标群 `FEISHU_NOTIFY_CHAT_ID` 或 `--chat-id`）。
+机器人开了签名校验就配 `FEISHU_WEBHOOK_SECRET`。正文超长会按渠道上限自动截断，
+但仍应自己先提炼。
 也可在插件 Settings 里填（hook 注入为 ZCODE_USER_CONFIG_*）。
 
 发送失败时：读 stderr 里打码后的错误，告诉用户该配哪个变量（webhook URL /
