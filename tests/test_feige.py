@@ -11,7 +11,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -138,6 +141,139 @@ class ZcodeHookTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("-修复登录", r.stderr)
         self.assertNotIn("expected one argument", r.stderr)
+
+
+class DebounceTest(unittest.TestCase):
+    def test_only_latest_sends(self):
+        key = f"test-{os.getpid()}-{time.time_ns()}"
+        results = {}
+        t1 = threading.Thread(target=lambda: results.update(a=feige.debounce_wait(key, 0.6)))
+        t1.start()
+        time.sleep(0.2)
+        results["b"] = feige.debounce_wait(key, 0.6)
+        t1.join()
+        self.assertEqual(results, {"a": False, "b": True})
+
+    def test_seconds_from_env(self):
+        with mock.patch.dict(os.environ, {"FEIGE_DEBOUNCE_SECONDS": "abc"}):
+            self.assertEqual(feige.debounce_seconds(), 0.0)
+        with mock.patch.dict(os.environ, {"FEIGE_DEBOUNCE_SECONDS": "90"}):
+            self.assertEqual(feige.debounce_seconds(), 90.0)
+
+
+# ── 端到端：本地假 webhook 服务器 + 真实 hook 进程 ──────────────────────────────
+
+class _Capture(BaseHTTPRequestHandler):
+    delay = 0.0
+    got: list = []
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        time.sleep(self.delay)
+        type(self).got.append((self.path, json.loads(body)))
+        data = b'{"code": 0, "errcode": 0}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *a):
+        pass
+
+
+class E2EBase(unittest.TestCase):
+    """每个用例：新的捕获服务器 + 剥干净的环境（不碰真实凭据/路由/日志）。"""
+
+    def setUp(self):
+        self.handler = type("H", (_Capture,), {"got": [], "delay": 0.0})
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), self.handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}"
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith(("FEISHU_", "LARK_", "DINGTALK_", "TELEGRAM_", "FEIGE_"))}
+        self.env.update({"FEIGE_HOOK_NOTIFY": "1", "PYTHONIOENCODING": "utf-8",
+                         "FEIGE_ROUTES_FILE": str(Path(self.tmp.name, "routes.json")),
+                         "FEIGE_LOG_FILE": str(Path(self.tmp.name, "feige.log"))})
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        self.tmp.cleanup()
+
+    def wait_for(self, n, timeout=15.0):
+        end = time.time() + timeout
+        while time.time() < end and len(self.handler.got) < n:
+            time.sleep(0.1)
+        return self.handler.got
+
+    def transcript(self, text, name="t.jsonl"):
+        entry = {"type": "assistant", "timestamp": "2026-09-26T00:00:00Z",
+                 "message": {"model": "claude-x", "content": [{"type": "text", "text": text}]}}
+        path = Path(self.tmp.name, name)
+        path.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
+        return str(path)
+
+    def run_claude_hook(self, text, session="s1", name="t.jsonl"):
+        payload = {"session_id": session, "cwd": "/x/demo", "transcript_path": self.transcript(text, name)}
+        t0 = time.time()
+        r = subprocess.run([sys.executable, str(REPO / "adapters" / "claude-code" / "stop_notify.py")],
+                           input=json.dumps(payload), capture_output=True, env=self.env,
+                           encoding="utf-8", timeout=30)
+        return r, time.time() - t0
+
+
+class ClaudeCodeE2ETest(E2EBase):
+    def test_hook_returns_before_network(self):
+        """回归：Stop hook 曾同步发送，网络慢多久 Claude Code 就卡多久。"""
+        self.handler.delay = 3.0
+        self.env["FEISHU_CARD_WEBHOOK"] = self.url + "/hook"
+        r, took = self.run_claude_hook("-第一行以短横开头")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertLess(took, 2.5, "hook 应在网络返回前就退出")
+        got = self.wait_for(1)
+        self.assertEqual(len(got), 1, Path(self.env["FEIGE_LOG_FILE"]).read_text(encoding="utf-8")
+                         if Path(self.env["FEIGE_LOG_FILE"]).exists() else "no log")
+        self.assertIn("-第一行以短横开头", json.dumps(got[0][1], ensure_ascii=False))
+
+    def test_debounce_sends_only_last(self):
+        self.env["FEISHU_CARD_WEBHOOK"] = self.url + "/hook"
+        self.env["FEIGE_DEBOUNCE_SECONDS"] = "1.5"
+        self.run_claude_hook("第一轮回复", name="a.jsonl")
+        self.run_claude_hook("第二轮回复", name="b.jsonl")
+        time.sleep(3.5)
+        got = self.wait_for(1)
+        self.assertEqual(len(got), 1)
+        self.assertIn("第二轮回复", json.dumps(got[0][1], ensure_ascii=False))
+
+    def test_routes_only_sink(self):
+        """回归：hook 不走路由；只配了路由（如钉钉）时永远只预览不发。"""
+        Path(self.env["FEIGE_ROUTES_FILE"]).write_text(json.dumps(
+            {"routes": {"*": [{"channel": "dingtalk-webhook", "webhook": self.url + "/ding"}]}}),
+            encoding="utf-8")
+        r, _ = self.run_claude_hook("走路由")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = self.wait_for(1)
+        self.assertEqual([p for p, _ in got], ["/ding"])
+        self.assertEqual(got[0][1]["msgtype"], "markdown")
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class ZcodeHookLiveTest(E2EBase):
+    def test_routed_detached_send(self):
+        Path(self.env["FEIGE_ROUTES_FILE"]).write_text(json.dumps(
+            {"routes": {"*": [{"channel": "feishu-webhook", "webhook": self.url + "/zroute"}]}}),
+            encoding="utf-8")
+        entry = {"type": "model_io", "model": {"modelId": "m1"}, "completedAt": "2026-09-26T00:00:00Z",
+                 "response": {"finishReason": "stop", "text": "zcode 战报"}}
+        Path(self.tmp.name, "model-io-sess_z.jsonl").write_text(json.dumps(entry), encoding="utf-8")
+        self.env["ROLLOUT_DIR"] = self.tmp.name
+        r = subprocess.run(["node", str(REPO / "hooks" / "stop-notify.mjs")], input="{}",
+                           capture_output=True, env=self.env, encoding="utf-8", timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = self.wait_for(1)
+        self.assertEqual([p for p, _ in got], ["/zroute"])
+        self.assertIn("zcode 战报", json.dumps(got[0][1], ensure_ascii=False))
 
 
 if __name__ == "__main__":

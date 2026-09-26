@@ -130,7 +130,8 @@ def main() -> None:
         "context": summary["context"],
         "elapsed": summary["elapsed"],
     }
-    send_card("", summary["body"], stats, agent="Claude Code")
+    send_card("", summary["body"], stats, agent="Claude Code",
+              session=str(payload.get("session_id") or ""))
 
 
 if __name__ == "__main__":

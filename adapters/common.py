@@ -3,6 +3,8 @@
 约定（与 M2 ZCode hook 一致）：
 - FEIGE_HOOK_NOTIFY=1 才启用，默认关闭；
 - FEIGE_DRY_RUN=1 把卡片 JSON 打到 stdout，不发网络；
+- 正式发送走后台子进程（feige.py send --route），hook 立刻返回；
+- FEIGE_DEBOUNCE_SECONDS>0 时同会话连续收尾只发最后一张（见 feige.debounce_wait）；
 - 全部 fail-open：任何异常 → stderr 打日志 → exit 0，绝不拖死 agent。
 """
 
@@ -92,25 +94,71 @@ def read_payload() -> dict:
         return {}
 
 
-def send_card(title: str, body: str, stats: dict, agent: str) -> None:
-    """统一发送：dry-run 或渠道未配置时把卡片 JSON 打 stdout，否则真发；失败只落日志。"""
-    full_title = f"{stats.get('project') + ' · ' if stats.get('project') else ''}{agent} 任务完成"
-    title = title or full_title
+def has_sink(project: str) -> bool:
+    """有地方可发：路由文件对本项目解析出目标，或有默认飞书渠道。"""
+    return bool(feige.pick_channel() or feige.resolve_routes(project, feige.load_routes()))
+
+
+def send_argv(title: str, body: str, stats: dict, debounce_key: str) -> list[str]:
+    """拼 `feige.py send` 命令行。一律 --flag=value：值以 "-" 开头时 argparse 会误判。"""
+    argv = [sys.executable, str(_REPO_ROOT / "feige.py"), "send",
+            f"--title={title}", f"--body={body}", "--status=ok", "--route"]
+    for key in ("project", "model", "context", "elapsed"):
+        argv.append(f"--{key}={stats.get(key) or ''}")
+    for key in ("thinking", "tools"):
+        argv.append(f"--{key}={int(stats.get(key) or 0)}")
+    if debounce_key:
+        argv.append(f"--debounce-key={debounce_key}")
+    return argv
+
+
+def spawn_detached(argv: list[str]) -> None:
+    """后台起发送子进程后立刻返回：agent 的 hook/notify 绝不等网络。
+
+    std 句柄全部不继承 agent 的管道（否则 agent 会等管道 EOF，等于没 detach），
+    stderr 落 feige 日志文件，发送失败仍可追查。
+    """
+    import subprocess
+
+    logfh = feige.open_log_file()
+    kw: dict = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+                "stderr": logfh or subprocess.DEVNULL, "close_fds": True}
+    try:
+        if os.name == "nt":
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            try:  # 尽量脱离 agent 的 job object，agent 退出时不连带杀掉发送进程
+                proc = subprocess.Popen(argv, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kw)
+            except OSError:  # job 不允许 breakaway
+                proc = subprocess.Popen(argv, creationflags=flags, **kw)
+        else:
+            proc = subprocess.Popen(argv, start_new_session=True, **kw)
+        log(f"send spawned (pid {proc.pid}), log: {feige.log_file_path()}")
+    finally:
+        if logfh:
+            logfh.close()  # 子进程已持有自己的句柄
+
+
+def send_card(title: str, body: str, stats: dict, agent: str, session: str = "") -> None:
+    """统一发送：dry-run 或无处可发时把载荷 JSON 打 stdout，否则后台发送；失败只落日志。
+
+    走 --route：有路由文件按项目 fanout，没有则退化为默认单渠道。session 用作
+    去抖键（FEIGE_DEBOUNCE_SECONDS>0 时，同会话连续收尾只发最后一张）。
+    """
+    project = str(stats.get("project") or "")
+    title = title or f"{project + ' · ' if project else ''}{agent} 任务完成"
     preview = dry_run()
-    if not preview and not feige.pick_channel():
-        log("no channel configured (webhook/app creds missing), preview only")
+    if not preview and not has_sink(project):
+        log("no channel configured (webhook/app creds/routes missing), preview only")
         preview = True
-    ok, detail = feige.send_report(title, body, stats=stats, status="ok",
-                                   dry_run=preview)
     if preview:
+        _, detail = feige.send_routed(title, body, stats=stats, status="ok",
+                                      project=project, dry_run=True)
         try:
             print(detail, flush=True)  # dry-run：卡片 JSON 打 stdout
         except (ValueError, OSError):
             pass
-    elif ok:
-        log(f"sent: {detail}")
-    else:
-        log(f"send failed (fail-open): {detail}")
+        return
+    spawn_detached(send_argv(title, body, stats, f"{agent}:{session}" if session else ""))
 
 
 def run(main) -> None:

@@ -21,9 +21,9 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TEASER_CHARS = 300; // 摘要是战报不是镜像：正文 ≤300 字
@@ -72,6 +72,10 @@ async function main(raw) {
     `--tools=${summary.tools}`,
     `--context=${summary.context}`,
     `--elapsed=${summary.elapsed}`,
+    // 有路由文件按项目 fanout，没有则退化为默认单渠道
+    "--route",
+    // 去抖键：FEIGE_DEBOUNCE_SECONDS>0 时同会话连续收尾只发最后一张
+    `--debounce-key=zcode:${input.session_id || basename(file)}`,
   ];
   const dryRun = /^(1|true|yes)$/i.test(process.env.FEIGE_DRY_RUN || "");
   if (dryRun) args.push("--dry-run");
@@ -124,11 +128,19 @@ function spawnPython(args, { sync, env }) {
     if (r.status !== 0) log(`feige exited ${r.status}: ${(r.stderr || "").trim()}`);
     return r;
   }
+  // stderr 落日志文件：后台发送失败时还有据可查（口径同 feige.open_log_file）
+  const logPath = env.FEIGE_LOG_FILE || join(tmpdir(), "feige.log");
+  let logFd = "ignore";
+  try {
+    if (existsSync(logPath) && statSync(logPath).size > 1_000_000) renameSync(logPath, `${logPath}.1`);
+    logFd = openSync(logPath, "a");
+  } catch { /* 日志开不了也照发 */ }
   const child = spawn(cmd, [...pre, ...args],
-    { env, detached: true, stdio: "ignore", windowsHide: true });
+    { env, detached: true, stdio: ["ignore", "ignore", logFd], windowsHide: true });
   child.on("error", (e) => log(`spawn failed: ${e.message}`));
   child.unref();
-  log(`feige spawned via ${cmd} (pid ${child.pid})`);
+  if (typeof logFd === "number") closeSync(logFd);
+  log(`feige spawned via ${cmd} (pid ${child.pid}), log: ${logPath}`);
   return child;
 }
 

@@ -55,7 +55,8 @@ def main() -> None:
         "model": codex_model(),
         # token/工具/耗时统计 notify 事件里没有——按约定省略，不硬编
     }
-    send_card("", teaser(text) or "……（本轮无文本输出）", stats, agent="Codex")
+    send_card("", teaser(text) or "……（本轮无文本输出）", stats, agent="Codex",
+              session=str(payload.get("thread-id") or ""))
 
 
 if __name__ == "__main__":

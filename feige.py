@@ -33,6 +33,8 @@ feishu-cardkit，都没有则明确报错（打码后）；钉钉/Telegram 显�
     DINGTALK_WEBHOOK                            钉钉机器人 webhook
     TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID      Telegram bot token / 目标 chat（群为负数）
     FEIGE_ROUTES_FILE                           群路由文件（默认 ~/.feige-routes.json）
+    FEIGE_DEBOUNCE_SECONDS                      收尾去抖秒数（配合 --debounce-key，默认 0 关闭）
+    FEIGE_LOG_FILE                              后台发送的日志文件（默认 <临时目录>/feige.log）
 
 设计不变量（继承自家族踩坑）：摘要是战报不是镜像（正文超长截断）；统计面板只在
 完成态（ok/error）做单次脚注，running 态不堆指标；fail-open——发卡失败只落日志，
@@ -42,10 +44,12 @@ feishu-cardkit，都没有则明确报错（打码后）；钉钉/Telegram 显�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -606,6 +610,56 @@ def send_routed(title: str, body: str, stats: dict | None = None, status: str = 
     return all(ok for ok, _ in results), "\n".join(d for _, d in results)
 
 
+# ── 后台发送支撑：日志文件 + 收尾去抖 ──────────────────────────────────────────
+
+LOG_ROTATE_BYTES = 1_000_000
+
+
+def log_file_path() -> str:
+    """后台发送子进程的 stderr 落点：FEIGE_LOG_FILE > <临时目录>/feige.log。"""
+    return _env("FEIGE_LOG_FILE") or str(Path(tempfile.gettempdir()) / "feige.log")
+
+
+def open_log_file():
+    """以追加方式打开日志文件（超 1MB 先轮转为 .1）；打不开返回 None（fail-open）。"""
+    path = Path(log_file_path())
+    try:
+        if path.is_file() and path.stat().st_size > LOG_ROTATE_BYTES:
+            os.replace(path, str(path) + ".1")
+        return open(path, "a", encoding="utf-8")
+    except OSError:
+        return None
+
+
+def debounce_seconds() -> float:
+    try:
+        return max(float(_env("FEIGE_DEBOUNCE_SECONDS") or 0), 0.0)
+    except ValueError:
+        return 0.0
+
+
+def debounce_wait(key: str, seconds: float) -> bool:
+    """尾沿去抖：同一 key（会话）在 seconds 内又有新的收尾，就放弃本次发送。
+
+    Stop / agent-turn-complete 每轮回复都会触发，而统计口径是全会话累计的——
+    连续多轮时只有最后一张卡有意义。做法：写入本次的戳 → 睡 seconds → 戳还是自己
+    才发。返回 True 表示应发送；戳文件读写失败时照发（fail-open）。
+    """
+    stamp = Path(tempfile.gettempdir()) / "feige-debounce" / hashlib.sha1(
+        key.encode("utf-8")).hexdigest()[:16]
+    token = f"{os.getpid()}-{time.time_ns()}"
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(token, encoding="utf-8")
+    except OSError:
+        return True
+    time.sleep(seconds)
+    try:
+        return stamp.read_text(encoding="utf-8") == token
+    except OSError:
+        return True
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -636,6 +690,10 @@ def _build_parser() -> argparse.ArgumentParser:
                            "路由不可用退化为单渠道")
     send.add_argument("--dry-run", action="store_true",
                       help="只打印将发送的载荷 JSON，不发网络请求")
+    send.add_argument("--debounce-key", default="",
+                      help="收尾去抖键（通常是 agent:会话 id）；同键在去抖窗口内又有新发送则放弃本次")
+    send.add_argument("--debounce", type=float, default=None,
+                      help="去抖窗口秒数（默认读 FEIGE_DEBOUNCE_SECONDS，0 关闭；dry-run 不去抖）")
     return parser
 
 
@@ -647,6 +705,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
     if args.command == "send":
+        wait = args.debounce if args.debounce is not None else debounce_seconds()
+        if args.debounce_key and wait > 0 and not args.dry_run:
+            if not debounce_wait(args.debounce_key, wait):
+                log(f"superseded by a newer stop within {wait:g}s, skipped")
+                return 0
         stats = {
             "project": args.project, "model": args.model,
             "thinking": args.thinking, "tools": args.tools,

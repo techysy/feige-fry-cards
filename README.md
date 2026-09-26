@@ -123,7 +123,8 @@ python feige.py send --title 标题 --body "markdown 正文" \
     [--context 42%] [--elapsed 2m38s] \
     [--status ok|error|running] \
     [--channel feishu-webhook|feishu-cardkit|dingtalk-webhook|telegram] \
-    [--chat-id ...] [--webhook ...] [--route] [--dry-run]
+    [--chat-id ...] [--webhook ...] [--route] [--dry-run] \
+    [--debounce-key KEY] [--debounce N]
 ```
 
 - **状态着色**（与家族一致）：`running` 蓝、`ok` 绿（默认）、`error` 红；
@@ -135,6 +136,8 @@ python feige.py send --title 标题 --body "markdown 正文" \
 - **`--webhook`**：渠道级 webhook 覆盖（feishu-webhook / dingtalk-webhook）；
 - **`--route`**：按 `--project` 解析路由文件做多目标 fanout（见「群路由」），不带则保持单渠道；
 - **`--dry-run`** 只打印将发送的载荷 JSON，不发网络请求、不要求凭据；
+- **`--debounce-key`**：收尾去抖（见「收尾去抖」），窗口秒数取 `--debounce` 或 `FEIGE_DEBOUNCE_SECONDS`；
+- 值以 `-` 开头时用 `--body=-xxx` 写法（argparse 会把 `--body -xxx` 的值误当选项）；
 - **fail-open**：发卡失败只落日志/返回非零退出码，绝不抛炸调用方。
 
 环境变量：
@@ -148,6 +151,8 @@ python feige.py send --title 标题 --body "markdown 正文" \
 | `DINGTALK_WEBHOOK` | 钉钉自定义机器人 webhook |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram bot token / 目标 chat（群为负数 id） |
 | `FEIGE_ROUTES_FILE` | 群路由文件（默认 `~/.feige-routes.json`） |
+| `FEIGE_DEBOUNCE_SECONDS` | 收尾去抖秒数，默认 `0`（关闭，每轮收尾都发卡） |
+| `FEIGE_LOG_FILE` | 后台发送进程的日志（默认 `<临时目录>/feige.log`，超 1MB 轮转为 `.1`） |
 
 库用法（后续 tail 模式 / 各 agent 入口 import 复用）：
 
@@ -200,7 +205,11 @@ feige.send_report("会话收尾", "完成 3 个文件修改",
 - **目标字段**：`channel` 必填；`webhook` / `chat_id` / `token` 为该目标的显式覆盖，
   缺省读各渠道环境变量；整字符串值 `"$NAME"` 引用为环境变量值（秘密不进路由文件）；
 - **fanout**：逐目标独立发送，单目标失败不影响其余，返回聚合结果；目标缺/坏
-  `channel` 会跳过并落日志（打码）。
+  `channel` 会跳过并落日志（只报键名，不打印值）；
+- **`$ENV` 未设置**：该目标直接判失败并在日志里点名缺哪个变量，**绝不**退回默认渠道
+  （否则项目 A 的战报会静默发进默认群）；WebUI 保存路由时也会提示；
+- **三个 agent 入口都自动走路由**：ZCode / Claude Code / Codex 的收尾发卡一律带
+  `--route`——有路由文件就按项目 fanout，没有则就是原来的单渠道行为。
 
 用法（dry-run 是先验证路由的正确姿势）：
 
@@ -258,8 +267,9 @@ feige-fry-cards/
    `FEIGE_HOOK_NOTIFY=1`。之后每个任务收尾自动发卡：hook 从
    `~/.zcode/cli/rollout/model-io-sess_*.jsonl` 定位本会话（payload.session_id 命中文件名，
    否则取 mtime 最新兜底），解析最后一条 `finishReason=="stop"` 行做 ≤300 字摘要，
-   统计全会话的 💭/🔧/上下文水位/⏱️，调用 `feige.py send --status ok …`（detached +
-   unref，绝不阻塞 ZCode；任何异常 exit 0）。
+   统计全会话的 💭/🔧/上下文水位/⏱️，调用 `feige.py send --status ok --route …`（detached +
+   unref，绝不阻塞 ZCode；任何异常 exit 0；后台发送的 stderr 落 `FEIGE_LOG_FILE`）。
+   解释器依次探测 `python`、`py -3`。
 4. **调试**：`FEIGE_DRY_RUN=1` 时 hook 改为同步执行并把 feige 命令与卡片 JSON 打到
    stderr，不发网络；测试可用 `ROLLOUT_DIR=<目录>` 覆盖日志目录。
 
@@ -279,9 +289,19 @@ hook 在 **ZCode 进程内环境**运行，拿到的是 ZCode **启动时**的�
 
 ## 各 agent 安装（Claude Code / Codex）
 
-适配器在 `adapters/`，纯 Python、直接 import feige.py（不走 subprocess）。**全部默认关闭**：
-`FEIGE_HOOK_NOTIFY=1` 才启用；`FEIGE_DRY_RUN=1` 时把卡片 JSON 打到 stdout 不发网络。
-提取口径与 ZCode hook 一致（≤300 字 teaser + 统计脚注，拿不到的字段自动省略，绝不硬编）。
+适配器在 `adapters/`，纯 Python：前台只解析转录/事件（毫秒级），发送交给 detached 的
+`feige.py send --route` 子进程，hook 立刻返回——网络再慢也不卡 agent（stderr 落
+`FEIGE_LOG_FILE`）。**全部默认关闭**：`FEIGE_HOOK_NOTIFY=1` 才启用；`FEIGE_DRY_RUN=1`
+时同步把载荷 JSON 打到 stdout 不发网络。提取口径与 ZCode hook 一致（≤300 字 teaser +
+统计脚注，拿不到的字段自动省略，绝不硬编）。
+
+### 收尾去抖（防刷屏）
+
+三个 agent 的收尾事件（Stop / `agent-turn-complete`）都是**每轮回复结束**触发，不是
+整个会话结束——来回聊 10 轮就是 10 张卡。设 `FEIGE_DEBOUNCE_SECONDS=N` 后，同一会话
+（ZCode/Claude Code 按 session id，Codex 按 thread-id）在 N 秒内又收尾，前一张就放弃，
+只发安静下来后的最后一张；统计本就是全会话累计，最后一张信息最全。代价是卡片晚 N 秒到。
+建议值：连续交互为主设 `90`；长任务丢下就走、要第一时间知道的保持默认 `0`。
 
 ### Claude Code（Stop hook）
 
@@ -331,6 +351,12 @@ token/工具统计，卡片只带 teaser + 项目 + 模型（config.toml 顶层 
 hook/notify 都跑在 **agent 进程的环境快照**里：`setx` 或新改的系统环境变量对已在运行的
 agent 无效。ZCode 插件走 userConfig 注入兜底；Claude Code / Codex 没有插件配置层——
 改完凭据**重启 agent 会话**再验证，排错时先按「联调排错」节核对环境。
+
+## 测试
+
+```bash
+python -m unittest discover -s tests -v   # 纯标准库；含本地假 webhook 的端到端用例，不发外网
+```
 
 ## 联调排错
 
