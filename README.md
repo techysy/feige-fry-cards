@@ -31,49 +31,14 @@
 
 ## 🏗️ 架构与设计原则
 
-```mermaid
-flowchart TD
-    subgraph Ingress["多宿主触发入口 (可插拔 Hook)"]
-        H1["Claude Code (Stop Hook)"]
-        H2["Codex (Notify / Hook)"]
-        H3["ZCode (Stop Hook)"]
-        H4["kimi-code (Stop Hook)"]
-        H5["CLI 手动调用 / Tail 守护"]
-    end
+<div align="center">
 
-    subgraph Core["feige 核心引擎 (feige.py / 纯标准库)"]
-        PARSE["会话转录提取<br/>💭/🔧/🎫/⏱️ 自动归算"]
-        CARD["卡片骨架装配<br/>字节预算控制 / 统一脚注"]
-        DEBOUNCE["收尾防刷去抖<br/>Debounce 机制"]
-        ROUTER["多目标路由 Fanout<br/>(~/.feige-routes.json)"]
-    end
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture.svg">
+  <img src="assets/architecture-light.svg" width="860" alt="feige-fry-cards 架构">
+</picture>
 
-    subgraph Channels["投递渠道矩阵"]
-        C1["飞书 Webhook (CardKit v2.0 交互整卡)"]
-        C2["飞书 CardKit (应用凭据 / 引用直发)"]
-        C3["钉钉 Webhook (Markdown 消息 / 加签)"]
-        C4["Telegram (Bot API 纯文本 / 免转义)"]
-        PAD["&nbsp;<br/>&nbsp;"]
-    end
-
-    H1 --> PARSE
-    H2 --> PARSE
-    H3 --> PARSE
-    H4 --> PARSE
-    H5 --> PARSE
-
-    PARSE --> CARD
-    CARD --> DEBOUNCE
-    DEBOUNCE --> ROUTER
-
-    ROUTER --> C1
-    ROUTER --> C2
-    ROUTER --> C3
-    ROUTER --> C4
-    C4 ~~~ PAD
-
-    style PAD fill:transparent,stroke:none,color:transparent
-```
+</div>
 
 ### 核心设计原则
 - 🎯 **摘要是战报，不是镜像**：卡片正文控制在 300 字级核心提炼，完整交互留在终端，杜绝冗长刷屏。
