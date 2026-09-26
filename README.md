@@ -74,6 +74,25 @@ webhook/skill 形态 + zcode-feishu-bridge 的 CardKit 流式卡核心抽出来�
   （标题 / 摘要正文 / 统计脚注 / 状态），输出各平台消息。
 - **群路由**：一份配置把「项目 → 群 webhook」映射起来，支持一个项目多群。
 
+## 快速开始
+
+```bash
+# 1. 手动发一张战报卡（最快 30 秒见效；凭据见「渠道矩阵」）
+export FEISHU_APP_ID=... FEISHU_APP_SECRET=... FEISHU_NOTIFY_CHAT_ID=oc_...
+python feige.py send --title "hello" --body "**feige 上线**" \
+       --project demo --model kimi-k3 --elapsed 0m30s --dry-run   # 先看载荷,去掉 --dry-run 真发
+
+# 2. 接入你的 agent，收尾自动发
+#    ZCode / Claude Code / Codex → 见「安装与启用」「各 agent 安装」
+
+# 3. 打开设置页（渠道状态、群路由编辑、卡片预览、接入自检）
+python webui.py            # → http://127.0.0.1:8787
+```
+
+完整说明：[CLI 用法](#cli-用法) · [渠道矩阵](#渠道矩阵) · [群路由](#群路由项目--多目标-fanout) ·
+[安装与启用（ZCode）](#安装与启用zcode-插件) · [各 agent 安装](#各-agent-安装claude-code--codex) ·
+[WebUI 设置页](#webui-设置页) · [联调排错](#联调排错)
+
 ## 里程碑
 
 - **M1 发卡核心** ✅（2026-09-26 完成）：从 zcode-feishu-bridge 抽 CardKit 流式卡生命
