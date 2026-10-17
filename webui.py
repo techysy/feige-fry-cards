@@ -44,49 +44,148 @@ import feige  # noqa: E402
 REPO = Path(__file__).resolve().parent
 VERSION = "1.0.0"
 
+# 视觉语言对齐 CreditDaddy / ImgMark（两者同一套：CSS 变量双主题
+# html[data-theme="dark"]、980px 内容列、胶囊导航、14px 圆角卡片、深色主按钮）。
 _CSS = """
-body{font-family:"Microsoft YaHei",system-ui,sans-serif;max-width:1080px;margin:0 auto;
-padding:14px;color:#24292f;background:#f6f8fa}
-header.top{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
-header.top h1{font-size:20px;margin:0}
-header.top .ver{color:#57606a;font-size:12px}
-nav{margin-bottom:14px;border-bottom:2px solid #d0d7de}
-nav a{display:inline-block;padding:6px 14px;margin-right:4px;color:#57606a;
-text-decoration:none;border-radius:6px 6px 0 0;font-size:14px}
-nav a.on{background:#fff;color:#24292f;font-weight:bold;border:1px solid #d0d7de;
-border-bottom:none;margin-bottom:-1px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(430px,1fr));gap:14px}
-.card{background:#fff;border:1px solid #d0d7de;border-radius:8px;padding:14px;margin-bottom:14px}
-.card h3{margin:0 0 10px;font-size:15px}
-table{border-collapse:collapse;width:100%}td,th{border:1px solid #d0d7de;
-padding:6px 8px;text-align:left;font-size:14px}
-input,select,textarea{padding:5px;font-size:14px;border:1px solid #d0d7de;border-radius:4px}
-input[type=text],input[type=password]{width:100%;box-sizing:border-box}
-textarea{width:100%;box-sizing:border-box}
-button{padding:6px 14px;border:1px solid #d0d7de;border-radius:6px;background:#fff;cursor:pointer}
-button:hover{background:#f6f8fa}
-button:disabled{opacity:.4;cursor:not-allowed}
-button.primary{background:#1f883d;border-color:#1a7f37;color:#fff}
-.ok{color:#1a7f37;font-weight:bold}.bad{color:#d1242f;font-weight:bold}
-.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
-background:#eaeef2;color:#57606a}
-.badge.on{background:#dafbe1;color:#1a7f37}
-.err{background:#ffebe9;border:1px solid #ff8182;border-radius:8px;padding:10px;margin-bottom:14px}
-.msg{background:#dafbe1;border:1px solid #2da44e;border-radius:8px;padding:10px;margin-bottom:14px}
-.warn{background:#fff8c5;border:1px solid #d4a72c;border-radius:8px;padding:10px;
-margin-bottom:14px;font-size:13px}
-pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:10px;
-overflow:auto;font-size:13px}
-.bar{height:6px;border-radius:3px 3px 0 0}
-.small{font-size:12px;color:#57606a}
-label.row{display:block;margin:6px 0}
-label.row span{display:inline-block;min-width:130px;color:#57606a;font-size:13px}
-.frow{margin:8px 0}
-.frow .lab{font-size:13px;color:#24292f;margin-bottom:2px}
-.frow .sub{font-size:12px;color:#57606a}
-.frow input[type=text],.frow input[type=password]{margin-top:2px}
-.clearline{font-size:12px;color:#57606a;margin-top:2px}
+:root{
+  --bg:#f5f6f8; --card:#ffffff; --surface-2:#fafafa; --tertiary:#f0f0f0;
+  --hover:#f5f6f8; --active:#eef0f3;
+  --line:#eeeeee; --border-subtle:#eeeeee; --border:#e5e5e5; --border-strong:#cccccc;
+  --txt:#1f1f1f; --muted:#5f6368; --text-3:#999999;
+  --btn-bg:#1f1f1f; --btn-fg:#ffffff;
+  --pri:#22c55e; --pri-dk:#16a34a; --ok:#16a34a; --bad:#dc2626; --warn-c:#d97706;
+  --radius:14px;
+}
+html[data-theme="dark"]{
+  --bg:#0a0a0c; --card:#131316; --surface-2:#17171b; --tertiary:#1b1b20;
+  --hover:rgba(255,255,255,.06); --active:rgba(255,255,255,.1);
+  --line:rgba(255,255,255,.13); --border-subtle:#202025; --border:rgba(255,255,255,.13);
+  --border-strong:#3a3a42;
+  --txt:#e6e6e9; --muted:rgba(230,230,233,.72); --text-3:rgba(230,230,233,.5);
+  --btn-bg:rgba(255,255,255,.92); --btn-fg:#0a0a0c;
+  --pri:#7f77dd; --pri-dk:#8f88e2; --ok:#2ee59d; --bad:#ff6b6b; --warn-c:#f59e0b;
+}
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",
+  "Microsoft YaHei","Segoe UI",sans-serif;background:var(--bg);color:var(--txt);
+  min-height:100vh;-webkit-font-smoothing:antialiased;transition:background .2s}
+button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+a{color:var(--pri-dk)}
+.muted,.small{color:var(--text-3);font-size:12px}
+
+/* header：品牌左、工具右，与导航/内容同收 980px 居中列 */
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  max-width:980px;margin:0 auto;padding:16px 22px 4px}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand .logo-emoji{font-size:26px;line-height:1}
+.brand .title{font-family:"Avenir Next",Avenir,"Segoe UI Variable Display","Segoe UI",sans-serif;
+  font-size:17px;font-weight:750;letter-spacing:-.5px;line-height:1.2;color:var(--txt)}
+.brand .ver{color:var(--text-3);font-size:11px;line-height:1.3}
+.head-right{display:flex;align-items:center;gap:10px}
+.icon-btn{width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;
+  justify-content:center;border:1px solid transparent;background:var(--hover);
+  color:var(--muted);cursor:pointer;transition:all .15s;padding:0;font-size:14px;
+  text-decoration:none}
+.icon-btn:hover{background:var(--active);color:var(--txt)}
+
+/* 胶囊导航：容器卡底 + 激活深底白字（CreditDaddy .nav 同款），
+   左缘对齐居中的 980px 内容列，窄屏退到 22px */
+.nav{display:flex;gap:4px;padding:4px;width:fit-content;max-width:calc(100% - 44px);
+  margin:10px auto 0;background:var(--card);border:1px solid var(--border-subtle);
+  border-radius:12px;overflow-x:auto}
+@supports (margin:10px 0 0 max(22px,1px)){
+  .nav{margin:10px 0 0 max(22px,calc((100% - 980px)/2))}}
+.nav a{display:inline-flex;align-items:center;gap:6px;border:none;background:transparent;
+  color:var(--muted);font-size:13px;font-weight:600;padding:7px 14px;border-radius:9px;
+  cursor:pointer;white-space:nowrap;text-decoration:none;transition:background .15s,color .15s}
+.nav a:hover{color:var(--txt);background:var(--hover)}
+.nav a.on{background:var(--btn-bg);color:var(--btn-fg)}
+
+main{max-width:980px;margin:0 auto;padding:12px 22px 30px;display:flex;
+  flex-direction:column;gap:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:14px;
+  align-items:start}
+@media (max-width:520px){.grid{grid-template-columns:1fr}}
+
+.card{background:var(--card);border:1px solid var(--border-subtle);
+  border-radius:var(--radius);padding:14px 16px}
+.card h2,.card h3{margin:0 0 12px;font-size:13px;font-weight:700}
+.card h3 small{color:var(--text-3);font-weight:normal;font-size:12px;margin-left:6px}
+
+table{border-collapse:collapse;width:100%}
+td,th{border:1px solid var(--border-subtle);padding:6px 8px;text-align:left;font-size:12px}
+th{background:var(--surface-2);color:var(--muted);font-weight:600}
+
+input[type=text],input[type=password],input[type=number],select,textarea{
+  padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:13px;
+  background:var(--surface-2);color:var(--txt)}
+input[type=text],input[type=password],textarea{width:100%}
+textarea{resize:vertical;font-family:inherit}
+input[type=checkbox]{accent-color:var(--pri)}
+select{cursor:pointer}
+
+/* 按钮：元素级基础样式（CreditDaddy .btn 观感），.primary 为深色主按钮。
+   .icon-btn 是 class 选择器，优先级高于 button，主题切换钮不受影响。 */
+button{display:inline-flex;align-items:center;justify-content:center;gap:5px;
+  padding:6px 11px;border:1px solid var(--border);border-radius:8px;
+  background:var(--surface-2);color:var(--muted);font-size:12px;font-weight:600;
+  cursor:pointer;transition:all .15s;line-height:1.2;white-space:nowrap;text-decoration:none}
+button:hover{background:var(--hover);border-color:var(--border-strong);color:var(--txt)}
+button.primary{background:var(--btn-bg);border-color:var(--btn-bg);color:var(--btn-fg)}
+button.primary:hover{opacity:.88}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.tiny{padding:3px 10px;font-size:12px}
+
+.tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;
+  background:var(--tertiary);color:var(--text-3)}
+.tag.on{background:color-mix(in srgb,var(--pri) 12%,transparent);color:var(--pri-dk)}
+.ok{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}
+
+.err{background:color-mix(in srgb,var(--bad) 8%,var(--card));
+  border:1px solid color-mix(in srgb,var(--bad) 35%,transparent);
+  border-radius:12px;padding:10px 12px;font-size:13px}
+.msg{background:color-mix(in srgb,var(--ok) 10%,var(--card));
+  border:1px solid color-mix(in srgb,var(--ok) 35%,transparent);
+  border-radius:12px;padding:10px 12px;font-size:13px}
+.warn{background:color-mix(in srgb,var(--warn-c) 9%,var(--card));
+  border:1px solid color-mix(in srgb,var(--warn-c) 30%,transparent);
+  border-radius:12px;padding:10px 12px;font-size:12px;line-height:1.7}
+
+pre{background:var(--surface-2);border:1px solid var(--border-subtle);border-radius:10px;
+  padding:10px;overflow:auto;font:12px/1.6 Consolas,"Cascadia Mono",monospace}
+code{font:12px/1.4 Consolas,"Cascadia Mono",monospace;background:var(--tertiary);
+  padding:1px 5px;border-radius:5px}
+/* 预览页卡片外观示意的状态条（背景色由内联 style 给） */
+.bar{height:6px;border-radius:12px 12px 0 0}
+
+/* 表单行：12px 灰标签 + 徽章 + 全宽控件 */
+.frow{margin:0 0 12px}
+.frow .lab{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+.frow .lab .sub{color:var(--text-3)}
+.frow input[type=text],.frow input[type=password]{margin-top:0}
+.clearline{font-size:11px;color:var(--text-3);margin-top:3px}
+.clearline label,.checkrow label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+.checkrow{font-size:13px;margin:0 0 12px}
+.card form{display:flex;flex-direction:column}
+.card form p{margin:0 0 10px}
+.card form p:last-child{margin-bottom:0}
+footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
 """
+
+# 主题在样式表加载前确定，避免暗色用户看到白闪（对齐 ImgMark 的 head 引导脚本）
+_THEME_BOOT = ("<script>document.documentElement.dataset.theme="
+               "localStorage.getItem('feige_theme')||"
+               "(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');</script>")
+_THEME_JS = """
+<script>
+(function(){
+  var b=document.getElementById('btn-theme');if(!b)return;
+  function icon(){b.textContent=document.documentElement.dataset.theme==='dark'?'☀':'☾';}
+  icon();
+  b.onclick=function(){var n=document.documentElement.dataset.theme==='dark'?'light':'dark';
+    document.documentElement.dataset.theme=n;localStorage.setItem('feige_theme',n);icon();};
+})();
+</script>"""
 
 # 设置文件键 → 对应环境变量（来源展示与回显用；feige._SETTINGS_ENV 的反向表）
 _ENV_FOR_KEY = {v: k for k, v in feige._SETTINGS_ENV.items()}
@@ -104,17 +203,21 @@ def page(title: str, body: str, tab: str = "") -> bytes:
     def a(href: str, key: str, label: str) -> str:
         cls = " class='on'" if tab == key else ""
         return f"<a href='{href}'{cls}>{label}</a>"
-    nav = ("<nav>" + a("/", "config", "⚙️ 配置") + a("/preview", "preview", "👁️ 预览")
+    nav = ("<nav class='nav'>" + a("/", "config", "⚙️ 配置") + a("/preview", "preview", "👁️ 预览")
            + a("/status", "status", "📊 状态") + a("/routes", "routes", "🧭 群路由")
            + a("/adapters", "adapters", "🔌 接入自检") + "</nav>")
     return (f'<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'{_THEME_BOOT}'
             f'<title>🕊️ feige Studio · {esc(title)}</title><style>{_CSS}</style></head>'
-            f'<body><header class="top"><h1>🕊️ feige Studio</h1>'
-            f'<span class="ver">v{VERSION} · 配置 <code>{esc(feige.settings_file_path())}</code></span>'
-            f'</header>{nav}{body}'
-            f'<p class="small">feige-fry-cards v{VERSION} · {esc(REPO)} · 仅 127.0.0.1</p>'
-            f'</body></html>').encode("utf-8")
+            f'<body><header><div class="brand"><span class="logo-emoji">🕊️</span>'
+            f'<div><div class="title">feige Studio</div>'
+            f'<div class="ver">v{VERSION} · 配置 <code>{esc(feige.settings_file_path())}</code></div></div></div>'
+            f'<div class="head-right"><button class="icon-btn" id="btn-theme" '
+            f'title="切换亮色 / 暗色"></button></div></header>'
+            f'{nav}<main>{body}</main>'
+            f'<footer>feige-fry-cards v{VERSION} · {esc(REPO)} · 仅 127.0.0.1</footer>'
+            f'{_THEME_JS}</body></html>').encode("utf-8")
 
 
 def key_source(skey: str) -> str:
@@ -131,8 +234,8 @@ def key_source(skey: str) -> str:
 
 def _field(skey: str, label: str, placeholder: str = "", hint: str = "") -> str:
     src = key_source(skey)
-    badge = (f"<span class='badge on'>已配置 · {esc(src)}</span>" if src
-             else "<span class='badge'>未配置</span>")
+    badge = (f"<span class='tag on'>已配置 · {esc(src)}</span>" if src
+             else "<span class='tag'>未配置</span>")
     if skey in _SECRET_KEYS:
         field = (f"<input type='password' name='{skey}' autocomplete='new-password' "
                  f"placeholder='留空不修改'>")
@@ -173,8 +276,8 @@ _WARN = ('<div class="warn">💾 保存只写本页白名单键进 <code>~/.feig
 
 def page_studio(msg: str = "", err: str = "") -> bytes:
     llm = feige.llm_config()
-    llm_state = ("<span class='badge on'>已启用</span>" if llm["enabled"]
-                 else "<span class='badge'>未启用（正文超长直接截断）</span>")
+    llm_state = ("<span class='tag on'>已启用</span>" if llm["enabled"]
+                 else "<span class='tag'>未启用（正文超长直接截断）</span>")
     cards = {
         "feishu": (
             "<div class='card'><h3>📲 飞书渠道</h3><form method='post' action='/settings'>"
@@ -235,8 +338,8 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
 
 def _select_field(skey: str, label: str, options: dict, current: str) -> str:
     src = key_source(skey)
-    badge = (f"<span class='badge on'>已配置 · {esc(src)}</span>" if src
-             else "<span class='badge'>默认</span>")
+    badge = (f"<span class='tag on'>已配置 · {esc(src)}</span>" if src
+             else "<span class='tag'>默认</span>")
     opts = "".join(f"<option value='{esc(k)}' {'selected' if current == k else ''}>{esc(v)}</option>"
                    for k, v in options.items())
     return (f"<div class='frow'><div class='lab'>{esc(label)} {badge}</div>"
@@ -514,7 +617,8 @@ def handle_routes_post(body: bytes) -> bytes:
 
 # ── 页面：卡片预览 ────────────────────────────────────────────────────────────
 
-_STATUS_COLOR = {"running": "#0969da", "ok": "#1a7f37", "error": "#d1242f"}
+# 外观示意的状态条配色：ok/error 跟随主题 token，running 用家族蓝（飞书卡蓝头）
+_STATUS_COLOR = {"running": "#3b82f6", "ok": "var(--ok)", "error": "var(--bad)"}
 
 
 def page_preview(q: dict) -> bytes:
