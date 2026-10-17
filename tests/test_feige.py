@@ -464,6 +464,36 @@ class SummarizeTest(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertNotIn("sk-supersecret01", feige.redact("boom sk-supersecret01"))
 
+    def test_fetch_models_parses_response_and_sorts(self):
+        fake_json = json.dumps({
+            "data": [
+                {"id": "openai/gpt-4o", "owned_by": "openai", "context_window": "128000"},
+                {"id": "anthropic/claude-3-5-sonnet", "owned_by": "anthropic", "context_length": 200000},
+                {"id": "deepseek/deepseek-chat", "owned_by": "deepseek"}
+            ]
+        }).encode("utf-8")
+
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return fake_json
+
+        with mock.patch("urllib.request.urlopen", return_value=FakeResp()):
+            res = feige.fetch_models(base_url="https://api.openai.com/v1", api_key="sk-test")
+            self.assertEqual(len(res), 3)
+            self.assertEqual(res[0]["id"], "anthropic/claude-3-5-sonnet")  # 字母顺序排序
+            self.assertEqual(res[0]["context_window"], 200000)
+            self.assertEqual(res[1]["id"], "deepseek/deepseek-chat")
+            self.assertIsNone(res[1]["context_window"])
+            self.assertEqual(res[2]["id"], "openai/gpt-4o")
+            self.assertEqual(res[2]["context_window"], 128000)
+
+    def test_fetch_models_error_handling(self):
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("connection refused")):
+            with self.assertRaises(RuntimeError) as cm:
+                feige.fetch_models(base_url="http://127.0.0.1:9999/v1", api_key="sk-test")
+            self.assertIn("无法连接模型服务", str(cm.exception))
+
 
 class AdapterBodyTest(unittest.TestCase):
     """适配器正文口径：总结未启用 teaser 300 字；启用时放行更长原文给总结器。"""

@@ -299,6 +299,49 @@ class StatsScopeTest(unittest.TestCase):
         webui.handle_settings_post(b"form=llm")  # 不勾 = 回到跟随 key
         self.assertNotIn("summarize", json.loads(self.settings.read_text(encoding="utf-8")))
 
+    def test_fetch_models_api_endpoint(self):
+        """测试 /api/llm/models 路由：成功与错误返回标准 JSON 结构。"""
+        server = webui.Server(("127.0.0.1", 0), webui.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        mock_models = [
+            {"id": "openai/gpt-4o", "owned_by": "openai", "context_window": 128000},
+            {"id": "qwen/qwen-2.5", "owned_by": "alibaba", "context_window": 32000}
+        ]
+
+        try:
+            with mock.patch.object(feige, "fetch_models", return_value=mock_models):
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                payload = json.dumps({"base_url": "https://api.openai.com/v1", "api_key": "sk-test"}).encode("utf-8")
+                conn.request("POST", "/api/llm/models", body=payload,
+                             headers={"Host": f"127.0.0.1:{port}", "Content-Type": "application/json"})
+                resp = conn.getresponse()
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertTrue(data.get("ok"))
+                self.assertEqual(len(data.get("models")), 2)
+                self.assertEqual(data["models"][0]["id"], "openai/gpt-4o")
+                conn.close()
+
+            # 异常时返回 502 并携带错误信息
+            with mock.patch.object(feige, "fetch_models", side_effect=RuntimeError("服务拒绝连接")):
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                payload = json.dumps({"base_url": "https://bad.url"}).encode("utf-8")
+                conn.request("POST", "/api/llm/models", body=payload,
+                             headers={"Host": f"127.0.0.1:{port}", "Content-Type": "application/json"})
+                resp = conn.getresponse()
+                self.assertEqual(resp.status, 502)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertFalse(data.get("ok"))
+                self.assertIn("服务拒绝连接", data.get("error"))
+                conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
 
 if __name__ == "__main__":
     unittest.main()

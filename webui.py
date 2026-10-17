@@ -170,6 +170,38 @@ code{font:12px/1.4 Consolas,"Cascadia Mono",monospace;background:var(--tertiary)
 .card form p{margin:0 0 10px}
 .card form p:last-child{margin-bottom:0}
 footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
+
+.hidden{display:none !important}
+.preset-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.preset-picker{position:relative;flex:1 1 200px;min-width:160px}
+.preset-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);
+  color:var(--txt);cursor:pointer;text-align:left;transition:border-color .15s,background .15s}
+.preset-toggle:hover{border-color:var(--border-strong);background:var(--hover)}
+.preset-toggle.open{border-color:var(--pri)}
+.preset-toggle .pt-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.preset-toggle .pt-caret{width:0;height:0;flex-shrink:0;border-left:4px solid transparent;
+  border-right:4px solid transparent;border-top:5px solid var(--text-3);transition:transform .15s}
+.preset-toggle.open .pt-caret{transform:rotate(180deg)}
+.preset-menu{position:absolute;z-index:40;top:calc(100% + 4px);left:0;right:0;max-height:340px;
+  overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:6px;box-shadow:0 12px 32px rgba(0,0,0,.16);display:flex;flex-direction:column;gap:3px}
+#llm-model-filter{width:100%;box-sizing:border-box;margin-bottom:4px;padding:6px 8px;font-size:12px}
+.mdl-group + .mdl-group{margin-top:8px}
+.mdl-group-head{display:flex;justify-content:space-between;gap:8px;padding:3px 6px 2px;
+  font-size:11px;font-weight:700;color:var(--muted)}
+.mdl-group-head span{color:var(--text-3);font-weight:normal}
+.mdl-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px}
+.mdl-card{display:flex;flex-direction:column;gap:2px;width:100%;text-align:left;cursor:pointer;
+  padding:6px 10px;border:1px solid transparent;border-radius:8px;background:var(--surface-2);color:var(--txt);
+  transition:border-color .15s,background .15s}
+.mdl-card:hover{background:var(--hover);border-color:var(--border-subtle)}
+.mdl-card.on{border-color:var(--pri);background:color-mix(in srgb,var(--pri) 8%,transparent)}
+.pt-item-head{display:flex;align-items:baseline;justify-content:space-between;gap:6px;width:100%}
+.pt-item-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pt-item-time{font-size:10px;color:var(--text-3);flex-shrink:0;font-variant-numeric:tabular-nums}
+.pt-empty{padding:14px 8px;font-size:12px;color:var(--muted);text-align:center}
+@media (max-width:600px){.preset-menu{width:min(340px,calc(100vw - 40px));}}
 """
 
 # 主题在样式表加载前确定，避免暗色用户看到白闪（对齐 ImgMark 的 head 引导脚本）
@@ -184,6 +216,134 @@ _THEME_JS = """
   icon();
   b.onclick=function(){var n=document.documentElement.dataset.theme==='dark'?'light':'dark';
     document.documentElement.dataset.theme=n;localStorage.setItem('feige_theme',n);icon();};
+})();
+
+// 模型拉取与下拉选择器逻辑（对齐 ImgMark）
+(function(){
+  var picker = document.getElementById('llm-model-picker');
+  if(!picker) return;
+  var input = document.getElementById('llm_model');
+  var toggle = document.getElementById('llm-model-toggle');
+  var menu = document.getElementById('llm-model-menu');
+  var filter = document.getElementById('llm-model-filter');
+  var list = document.getElementById('llm-model-list');
+  var refresh = document.getElementById('llm-models-refresh');
+  var models = [];
+  var hasFetched = false;
+
+  function escHtml(s){
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function modelProviderOf(m) {
+    if (m.id.indexOf('/') !== -1) return m.id.split('/')[0];
+    return m.owned_by || '其他';
+  }
+
+  function modelShortName(id) {
+    if (id.indexOf('/') !== -1) return id.split('/').slice(1).join('/');
+    return id;
+  }
+
+  function renderModels(){
+    var q = (filter.value || '').trim().toLowerCase();
+    var filtered = models.filter(function(m){
+      return !q || m.id.toLowerCase().indexOf(q) !== -1 || (m.owned_by && m.owned_by.toLowerCase().indexOf(q) !== -1);
+    });
+    if(!filtered.length){
+      list.innerHTML = '<div class="pt-empty">' + (models.length ? '没有匹配的模型' : '暂无模型，点击「拉取」获取') + '</div>';
+      return;
+    }
+    var groups = {};
+    filtered.forEach(function(m){
+      var p = modelProviderOf(m);
+      if(!groups[p]) groups[p] = [];
+      groups[p].push(m);
+    });
+    var html = '';
+    var currentVal = input.value.trim();
+    Object.keys(groups).sort().forEach(function(prov){
+      var ms = groups[prov];
+      html += '<div class="mdl-group">';
+      html += '<div class="mdl-group-head">' + escHtml(prov) + '<span>' + ms.length + ' 个</span></div>';
+      html += '<div class="mdl-cards">';
+      ms.forEach(function(m){
+        var on = m.id === currentVal ? ' on' : '';
+        var ctxStr = m.context_window ? '<span class="pt-item-time">' + Math.round(m.context_window/1000) + 'k</span>' : '';
+        html += '<button type="button" class="mdl-card' + on + '" data-id="' + escHtml(m.id) + '">';
+        html += '<div class="pt-item-head"><span class="pt-item-name" title="' + escHtml(m.id) + '">' + escHtml(modelShortName(m.id)) + '</span>' + ctxStr + '</div>';
+        html += '</button>';
+      });
+      html += '</div></div>';
+    });
+    list.innerHTML = html;
+  }
+
+  async function fetchModelsList(){
+    list.innerHTML = '<div class="pt-empty">正在拉取模型列表…</div>';
+    refresh.disabled = true;
+    var baseInp = document.querySelector('input[name="llm_base_url"]');
+    var keyInp = document.querySelector('input[name="llm_api_key"]');
+    var baseUrl = (baseInp ? baseInp.value : '').trim();
+    var apiKey = (keyInp ? keyInp.value : '').trim();
+
+    try {
+      var res = await fetch('/api/llm/models', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({base_url: baseUrl, api_key: apiKey})
+      });
+      var data = await res.json().catch(function(){ return {}; });
+      if(!res.ok || !data.ok){
+        throw new Error(data.error || ('HTTP ' + res.status));
+      }
+      models = data.models || [];
+      hasFetched = true;
+      renderModels();
+    } catch(err){
+      list.innerHTML = '<div class="pt-empty" style="color:var(--bad)">拉取失败: ' + escHtml(err.message) + '</div>';
+    } finally {
+      refresh.disabled = false;
+    }
+  }
+
+  toggle.onclick = function(e){
+    e.preventDefault();
+    e.stopPropagation();
+    var open = menu.classList.toggle('hidden') === false;
+    toggle.classList.toggle('open', open);
+    if(open){
+      filter.focus();
+      if(!hasFetched) fetchModelsList();
+      else renderModels();
+    }
+  };
+
+  refresh.onclick = function(e){
+    e.preventDefault();
+    e.stopPropagation();
+    fetchModelsList();
+  };
+
+  filter.oninput = renderModels;
+
+  list.onclick = function(e){
+    var card = e.target.closest('.mdl-card');
+    if(!card) return;
+    var mid = card.getAttribute('data-id');
+    if(mid){
+      input.value = mid;
+      renderModels();
+      menu.classList.add('hidden');
+      toggle.classList.remove('open');
+    }
+  };
+
+  document.addEventListener('click', function(e){
+    if(e.target.closest('#llm-model-picker')) return;
+    menu.classList.add('hidden');
+    toggle.classList.remove('open');
+  });
 })();
 </script>"""
 
@@ -278,6 +438,7 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
     llm = feige.llm_config()
     llm_state = ("<span class='tag on'>已启用</span>" if llm["enabled"]
                  else "<span class='tag'>未启用（正文超长直接截断）</span>")
+    cur_model = feige._env(_ENV_FOR_KEY.get("llm_model", "")) or ""
     cards = {
         "feishu": (
             "<div class='card'><h3>📲 飞书渠道</h3><form method='post' action='/settings'>"
@@ -307,7 +468,20 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
             "<form method='post' action='/settings'>"
             + _field("llm_api_key", "API key", "OpenAI 兼容 chat/completions；配了才启用")
             + _field("llm_base_url", "Base URL", feige.DEFAULT_LLM_BASE_URL)
-            + _field("llm_model", "模型", feige.DEFAULT_LLM_MODEL)
+            + ("<div class='frow'><div class='lab'>模型 <span class='tag on' id='llm-model-badge'>"
+               + (f"已配置 · {esc(key_source('llm_model'))}" if key_source("llm_model") else "默认")
+               + "</span> <span class='sub'>输入或点击下拉拉取模型</span></div>"
+               "<div class='preset-picker' id='llm-model-picker'>"
+               f"<input type='text' id='llm_model' name='llm_model' value='{esc(cur_model)}' "
+               f"placeholder='{esc(feige.DEFAULT_LLM_MODEL)}' autocomplete='off'>"
+               "<button type='button' id='llm-model-toggle' class='btn tiny' title='展开/拉取模型列表' style='position:absolute;right:4px;top:4px;bottom:4px;height:auto;padding:0 8px;z-index:2;background:var(--tertiary);border-color:transparent'>▼</button>"
+               "<div id='llm-model-menu' class='preset-menu hidden'>"
+               "<div style='display:flex;gap:6px;margin-bottom:4px'>"
+               "<input type='text' id='llm-model-filter' placeholder='搜索模型…' style='flex:1'>"
+               "<button type='button' id='llm-models-refresh' class='btn tiny' title='从当前服务地址拉取最新模型'>🔄 拉取</button>"
+               "</div>"
+               "<div id='llm-model-list'><div class='pt-empty'>点击「拉取」或展开菜单从服务端获取模型</div></div>"
+               "</div></div></div>")
             + _field("llm_max_chars", "摘要目标字数", str(feige.LLM_MAX_CHARS), "≥50")
             + "<div class='frow'><label><input type='checkbox' name='llm_off' value='1' "
               + ("checked" if feige.load_settings().get("summarize") is False else "")
@@ -797,6 +971,30 @@ class Handler(BaseHTTPRequestHandler):
             return page("404", "<div class='err'>页面不存在</div>")
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
+        if u.path == "/api/llm/models":
+            try:
+                data = json.loads(body.decode("utf-8", "replace")) if body else {}
+            except Exception:
+                data = {}
+            base_url = str(data.get("base_url") or "").strip()
+            api_key = str(data.get("api_key") or "").strip()
+            try:
+                models = feige.fetch_models(base_url=base_url, api_key=api_key)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                resp_bytes = json.dumps({"ok": True, "models": models}, ensure_ascii=False).encode("utf-8")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+                return b""
+            except Exception as e:
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                err_bytes = json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False).encode("utf-8")
+                self.send_header("Content-Length", str(len(err_bytes)))
+                self.end_headers()
+                self.wfile.write(err_bytes)
+                return b""
         if u.path == "/routes":
             return handle_routes_post(body)
         if u.path == "/test":
@@ -814,7 +1012,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(page("拒绝", f"<div class='err'>{esc(reason)}</div>"), status=403)
             return
         try:
-            self._send(self._dispatch())
+            res = self._dispatch()
+            if res:
+                self._send(res)
         except Exception as exc:  # fail-open：错误条而不是 500 白屏
             try:
                 self._send(page("出错", f"<div class='err'>处理失败：{esc(feige.redact(exc))}</div>"))

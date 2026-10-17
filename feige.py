@@ -264,6 +264,84 @@ def llm_summarize(text: str, cfg: dict | None = None) -> str:
         return ""
 
 
+def fetch_models(base_url: str = "", api_key: str = "", timeout: float = 15) -> list[dict]:
+    """从 OpenAI 兼容的 /models 接口拉取可用模型列表。
+
+    返回 [{"id": str, "owned_by": str, "context_window": int | None}] 列表。
+    调用失败时抛出带有打码信息的 RuntimeError。
+    """
+    cfg = llm_config()
+    burl = (base_url.strip() if base_url is not None and base_url.strip() else (cfg.get("base_url") or DEFAULT_LLM_BASE_URL)).rstrip("/")
+    key = api_key.strip() if api_key and api_key.strip() else (cfg.get("api_key") or "")
+    if not burl:
+        raise RuntimeError("未配置模型服务地址 (base_url)")
+    url = f"{burl}/models"
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        raw_err = e.read().decode("utf-8", "replace")
+        msg = raw_err[:300]
+        try:
+            err_json = json.loads(raw_err)
+            if isinstance(err_json, dict) and "error" in err_json:
+                e_obj = err_json["error"]
+                if isinstance(e_obj, dict) and "message" in e_obj:
+                    msg = str(e_obj["message"])
+                elif isinstance(e_obj, str):
+                    msg = e_obj
+        except Exception:
+            pass
+        raise RuntimeError(f"HTTP {e.code}: {redact(msg)}") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"无法连接模型服务: {redact(e.reason)}") from None
+    except Exception as exc:
+        raise RuntimeError(f"请求失败: {redact(exc)}") from None
+
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except Exception as exc:
+        raise RuntimeError(f"模型列表解析失败: {redact(exc)}") from None
+
+    raw_list = []
+    if isinstance(data, dict):
+        if isinstance(data.get("data"), list):
+            raw_list = data["data"]
+        elif isinstance(data.get("models"), list):
+            raw_list = data["models"]
+    elif isinstance(data, list):
+        raw_list = data
+
+    models = []
+    seen = set()
+    for item in raw_list:
+        if isinstance(item, dict):
+            mid = str(item.get("id") or item.get("name") or "").strip()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            owned = str(item.get("owned_by") or "").strip()
+            ctx = (item.get("context_length") or item.get("context_window")
+                   or (item.get("capabilities") or {}).get("contextWindow"))
+            ctx_int = None
+            if isinstance(ctx, (int, float)) and int(ctx) > 0:
+                ctx_int = int(ctx)
+            elif isinstance(ctx, str) and ctx.isdigit() and int(ctx) > 0:
+                ctx_int = int(ctx)
+            models.append({"id": mid, "owned_by": owned, "context_window": ctx_int})
+        elif isinstance(item, str) and item.strip() and item.strip() not in seen:
+            mid = item.strip()
+            seen.add(mid)
+            models.append({"id": mid, "owned_by": "", "context_window": None})
+
+    models.sort(key=lambda m: m["id"].lower())
+    return models
+
+
 def fit_body(body: str, limit: int = BODY_MAX_BYTES, unit: str = "bytes",
              allow_summarize: bool = True) -> str:
     """正文装得下渠道上限就原样，超了先试 LLM 总结，未启用/失败再硬截断。
