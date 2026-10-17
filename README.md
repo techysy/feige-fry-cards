@@ -9,7 +9,7 @@
 [![Platform](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Linux%20%7C%20macOS%20%7C%20Windows-6b7280)](#快速开始)
 [![Framework](https://img.shields.io/badge/fry--cards-%E5%AE%B6%E6%97%8F%E6%88%90%E5%91%98-f59e0b)](#系列对齐fry-cards-家族)
 
-[特性](#-特性) · [快速开始](#-快速开始) · [渠道矩阵](#-渠道矩阵) · [群路由](#-群路由项目--多目标-fanout) · [插件安装](#-插件安装一份插件五个宿主) · [Studio 设置页](#%EF%B8%8F-feige-studio-设置页) · [正文 LLM 总结](#-正文-llm-总结) · [环境变量](#%EF%B8%8F-环境变量参考) · [项目结构](#-项目结构)
+[特性](#-特性) · [快速开始](#-快速开始) · [渠道矩阵](#-渠道矩阵) · [群路由](#-群路由项目--多目标-fanout) · [插件安装](#-插件安装一份插件五个宿主) · [Studio 设置页](#%EF%B8%8F-feige-studio-设置页) · [正文 LLM 总结](#-正文-llm-总结) · [环境变量](#%EF%B8%8F-环境变量参考) · [项目结构](#-项目结构) · [更新日志](CHANGELOG.md)
 
 </div>
 
@@ -264,6 +264,7 @@ feige-fry-cards/
 ├── tests/                       # 自动化单元测试套件
 ├── feige.py                     # 核心发卡引擎与 CLI 逻辑
 ├── webui.py                     # feige Studio 本地设置页服务
+├── CHANGELOG.md                 # 更新日志（Keep a Changelog 格式）
 └── README.md                    # 项目文档
 ```
 
