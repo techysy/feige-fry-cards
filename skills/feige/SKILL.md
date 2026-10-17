@@ -51,9 +51,18 @@ Claude Code 注入为 CLAUDE_PLUGIN_OPTION_*），也可跑 `python webui.py` �
 Studio 表单化配置（保存即生效，不用环境变量、不用重启宿主）——排查凭据问题时
 三处都要看，环境变量若已设置会遮蔽后两者。
 
-正文超长：配了总结 LLM（`FEIGE_LLM_API_KEY` 或 Studio「正文总结」卡）时，后台发送
+正文超长：配了总结 LLM（`FEIGE_LLM_API_KEY`、`~/.feige-settings.json` 或 Studio「正文总结」卡）时，后台发送
 进程会先自动浓缩成战报摘要再发；未配置/失败则按渠道上限硬截断。即便如此 `--body`
 仍应自己先提炼——总结是兜底不是免责。
+
+典型 LLM 总结配置示例（`~/.feige-settings.json`）：
+```json
+{
+  "llm_base_url": "http://192.168.31.101:20127/v1",
+  "llm_api_key": "sk-...",
+  "llm_model": "longcat/LongCat-2.5-Preview"
+}
+```
 
 发送失败时：读 stderr 里打码后的错误，告诉用户该配哪个变量（webhook URL /
 app 凭据 / chat id），不要猜 chat id、不要重试轰炸。`--dry-run` 先预览卡片 JSON

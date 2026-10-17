@@ -214,13 +214,42 @@ LLM API key 的值：密钥输入框永远是空 password 框，只显「已配�
 正文超过渠道上限时，不再直接硬截断——若配置了总结 LLM，后台发送进程会先调用
 **OpenAI 兼容 `chat/completions`** 把冗长收尾汇报浓缩成战报摘要：
 
+### 配置方式一：写入本地设置文件 `~/.feige-settings.json`（推荐，保存即生效）
+
+```json
+{
+  "llm_base_url": "http://192.168.31.101:20127/v1",
+  "llm_api_key": "sk-...",
+  "llm_model": "longcat/LongCat-2.5-Preview",
+  "llm_max_chars": "400"
+}
+```
+
+> **提示**：未显式指定 `"summarize": false` 时，配置了 `llm_api_key` 即默认自动开启总结。
+
+### 配置方式二：环境变量方式（也可在 Studio「正文总结」卡里填）
+
 ```bash
-# 环境变量方式（也可在 Studio「正文总结」卡里填，保存即生效）
 export FEIGE_LLM_API_KEY="sk-…"                       # 配了才启用
-export FEIGE_LLM_BASE_URL="https://api.openai.com/v1" # 自建/代理网关改这里
-export FEIGE_LLM_MODEL="gpt-4o-mini"
+export FEIGE_LLM_BASE_URL="http://192.168.31.101:20127/v1" # 10Router / 自建 / 代理网关端点
+export FEIGE_LLM_MODEL="longcat/LongCat-2.5-Preview"  # 推荐使用长上下文快速推理模型
 export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
 ```
+
+### 生产级长上下文网关（10Router）接入示例
+
+以配合局域网 10Router AI 网关与 LongCat 模型为例：
+
+1. **设置端点与凭据**：
+   - `FEIGE_LLM_BASE_URL`: `http://192.168.31.101:20127/v1`
+   - `FEIGE_LLM_API_KEY`: `sk-97a8d457f79f700d-ufajv8-ec3ef154`
+   - `FEIGE_LLM_MODEL`: `longcat/LongCat-2.5-Preview`
+2. **战报效果**：
+   - 助手冗长的会话收尾汇报会被模型浓缩为清晰明了的要点战报。
+   - 战报卡片底部自动附带规范的运行统计脚注：
+     ```text
+     📦 10router · claude-code · gemini-3.8-flash-n · 💭2 · 🔧22 · 1.0m/1.0m (97%) · 🎫 2.9k · ⏱️ 8m 40s
+     ```
 
 - **优雅退化**：未配 key、总结失败、或 dry-run/预览路径 → 自动退回硬截断，绝不卡发卡；
 - **零阻塞**：总结只在 `feige.py send` 后台进程执行，宿主 hook 前台不发任何 LLM 网络请求；
