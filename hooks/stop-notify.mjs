@@ -94,6 +94,11 @@ async function main(raw) {
     FEISHU_APP_SECRET: process.env.FEISHU_APP_SECRET || process.env.ZCODE_USER_CONFIG_APP_SECRET || "",
     FEISHU_BASE_URL: process.env.FEISHU_BASE_URL || process.env.ZCODE_USER_CONFIG_BASE_URL || "",
     FEISHU_NOTIFY_CHAT_ID: process.env.FEISHU_NOTIFY_CHAT_ID || process.env.ZCODE_USER_CONFIG_NOTIFY_CHAT_ID || "",
+    FEIGE_LLM_API_KEY: process.env.FEIGE_LLM_API_KEY || process.env.ZCODE_USER_CONFIG_LLM_API_KEY || "",
+    FEIGE_LLM_BASE_URL: process.env.FEIGE_LLM_BASE_URL || process.env.ZCODE_USER_CONFIG_LLM_BASE_URL || "",
+    FEIGE_LLM_MODEL: process.env.FEIGE_LLM_MODEL || process.env.ZCODE_USER_CONFIG_LLM_MODEL || "",
+    FEIGE_LLM_MAX_CHARS: process.env.FEIGE_LLM_MAX_CHARS || process.env.ZCODE_USER_CONFIG_LLM_MAX_CHARS || "",
+    FEIGE_SUMMARIZE: process.env.FEIGE_SUMMARIZE || process.env.ZCODE_USER_CONFIG_SUMMARIZE || "",
   };
 
   if (dryRun) {
@@ -190,6 +195,29 @@ function teaser(text) {
   return text.length <= TEASER_CHARS ? text : text.slice(0, TEASER_CHARS).trimEnd() + " ……";
 }
 
+// 正文总结（口径同 adapters/common.body_for_card）：启用 LLM 总结时传更长原文，
+// 由后台 feige send 进程调 LLM 浓缩；未启用保持 teaser 300 字老口径。
+const FULL_BODY_CHARS = 6000;
+
+function readSettings() {
+  try {
+    return JSON.parse(readFileSync(join(homedir(), ".feige-settings.json"), "utf8"));
+  } catch { return {}; }
+}
+
+function summarizeEnabled() {
+  const key = (process.env.FEIGE_LLM_API_KEY || String(readSettings().llm_api_key || "")).trim();
+  const off = (process.env.FEIGE_SUMMARIZE || String(readSettings().summarize ?? "")).trim().toLowerCase();
+  return !!key && !["0", "false", "no", "off"].includes(off);
+}
+
+function bodyForCard(text) {
+  text = (text || "").trim();
+  if (!text) return "……（本轮无文本输出）";
+  if (!summarizeEnabled()) return teaser(text);
+  return text.length <= FULL_BODY_CHARS ? text : text.slice(0, FULL_BODY_CHARS).trimEnd() + " ……";
+}
+
 function compact(n) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`;
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
@@ -213,6 +241,22 @@ function projectFromPath(p) {
   return seg && seg.length > 1 && !seg.endsWith(":") ? seg : "";
 }
 
+/** 统计口径：FEIGE_STATS_SCOPE / 插件设置 > ~/.feige-settings.json > "turn"（单轮）。 */
+function readStatsScope() {
+  const v = (process.env.FEIGE_STATS_SCOPE || process.env.ZCODE_USER_CONFIG_STATS_SCOPE || "")
+    .trim().toLowerCase();
+  if (v === "turn" || v === "session") return v;
+  const s = String(readSettings().stats_scope || "").trim().toLowerCase();
+  return s === "turn" || s === "session" ? s : "turn";
+}
+
+/** 该 model_io 请求的最新一条消息 role 为 user 时，视作一轮的开始；logs 拿不到 messages 就返回 ""。 */
+function lastMsgRole(entry) {
+  const msgs = ((((entry.request || {}).body) || {}).messages) || [];
+  const m = Array.isArray(msgs) ? msgs[msgs.length - 1] : null;
+  return m && typeof m.role === "string" ? m.role : "";
+}
+
 function findProject(entry) {
   // 权威来源：系统提示里的 `- Primary working directory:`，每个请求都带着
   const req = entry.request || {};
@@ -229,7 +273,10 @@ function findProject(entry) {
   return "";
 }
 
-/** 全文件累计统计 + 最后一条 finishReason=="stop" 行的正文摘要。 */
+/** 单轮口径统计 + 最后一条 finishReason=="stop" 行的正文摘要。
+
+分轮依据：request.body.messages 最新一条 role=="user" 的 model_io 行 = 一轮的开始
+（rollout 拿不到 messages 或 scope=session 时退化为全文件累计）。 */
 function summarizeSession(file) {
   const ctxTotal = Number(
     process.env.FEIGE_CONTEXT_TOTAL || process.env.ZCODE_USER_CONFIG_CONTEXT_TOTAL || 0,
@@ -237,6 +284,7 @@ function summarizeSession(file) {
 
   let firstAt = "", lastAt = "", model = "";
   let reasoningTurns = 0, toolsTotal = 0, tokensTotal = 0, ctx = 0, project = "";
+  let turnReasoning = 0, turnTools = 0, turnTokens = 0, turnStartAt = "", sawTurnStart = false;
   let stopText = "", foundStop = false;
 
   let lines;
@@ -253,26 +301,37 @@ function summarizeSession(file) {
     const resp = entry.response || {};
     if (!project) project = findProject(entry);
 
+    const at = entry.completedAt || "";
+    if (lastMsgRole(entry) === "user") {
+      // 新一轮开始：本轮统计清零重置（这行的响应属于新轮，先清后加）
+      sawTurnStart = true;
+      turnReasoning = 0; turnTools = 0; turnTokens = 0;
+      if (at) turnStartAt = at;
+    }
+
     const usage = resp.usage || {};
     ctx = Number(usage.inputTokens) || ctx;
-    tokensTotal += Number(usage.outputTokens) || 0;
-    if (String(resp.reasoningText || "").trim()) reasoningTurns += 1;
-    toolsTotal += (resp.toolCalls || []).filter((t) => t && t.name).length;
+    const out = Number(usage.outputTokens) || 0;
+    tokensTotal += out; turnTokens += out;
+    if (String(resp.reasoningText || "").trim()) { reasoningTurns += 1; turnReasoning += 1; }
+    const tools = (resp.toolCalls || []).filter((t) => t && t.name).length;
+    toolsTotal += tools; turnTools += tools;
     model = (entry.model || {}).modelId || model;
-    const at = entry.completedAt || "";
     if (at) { firstAt = firstAt || at; lastAt = at; }
 
     if (resp.finishReason === "stop") {
       foundStop = true;
       const text = String(resp.text || "").trim();
-      stopText = isJunkText(text) ? "……（本轮无文本输出）" : teaser(text);
+      stopText = isJunkText(text) ? "……（本轮无文本输出）" : bodyForCard(text);
     }
   }
   if (!foundStop) return null;
 
+  const perTurn = readStatsScope() === "turn" && sawTurnStart;
+
   let elapsed = "";
   try {
-    const t0 = new Date(firstAt).getTime(), t1 = new Date(lastAt).getTime();
+    const t0 = new Date((perTurn && turnStartAt) || firstAt).getTime(), t1 = new Date(lastAt).getTime();
     if (t1 >= t0) elapsed = fmtElapsed((t1 - t0) / 1000);
   } catch { /* 时间戳脏了就不带耗时 */ }
 
@@ -281,11 +340,12 @@ function summarizeSession(file) {
     title: `${project ? project + " · " : ""}ZCode 任务完成`,
     body: stopText || "……（本轮无文本输出）",
     project,
-    model,
-    thinking: reasoningTurns,
-    tools: toolsTotal,
+    // 约定：CLI/Mirasim 场景模型名前带工具名
+    model: model ? `zcode · ${model}` : "zcode",
+    thinking: perTurn ? turnReasoning : reasoningTurns,
+    tools: perTurn ? turnTools : toolsTotal,
     context: ctx ? `${compact(ctx)}/${compact(ctxTotal)} (${pct.toFixed(0)}%)` : "",
-    tokens: tokensTotal,
+    tokens: perTurn ? turnTokens : tokensTotal,
     elapsed,
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "feige-fry-cards",
-  "version": "0.7.0",
+  "version": "0.9.0",
   "description": "🕊️ 飞鸽卡片：agent 无关的结果汇报插件。每轮收尾把摘要战报卡（标题 + ≤300 字摘要 + 模型/💭/🔧/上下文/🎫输出 token/⏱️ 统计脚注）直发飞书 / 钉钉 / Telegram 群。同一插件可装进 Claude Code、Codex、ZCode；kimi-code 走 config.toml 手挂（注册即开启、⏱️ 单轮用时）。Stop hook 默认关，在插件设置里打开 hook_notify。",
   "author": {
     "name": "techysy"
@@ -61,6 +61,36 @@
       "title": "收尾去抖秒数 / Debounce seconds",
       "description": "同一会话 N 秒内又收尾就只发最后一张，0 = 每轮都发（默认）。Only send the last card when turns finish within N seconds; 0 = every turn.",
       "default": 0
+    },
+    "stats_scope": {
+      "type": "string",
+      "title": "统计口径 / Stats scope",
+      "description": "turn = 💭/🔧/🎫/⏱️ 只算最后一轮（默认）；session = 整个会话累计。turn = last-turn stats (default); session = whole-session totals.",
+      "default": "turn"
+    },
+    "llm_api_key": {
+      "type": "string",
+      "title": "正文总结 API key / Summarize API key",
+      "description": "配了才启用：正文超长时先让 LLM（OpenAI 兼容 chat/completions）浓缩成摘要，失败再截断。留空 = 直接截断。Set to enable LLM summarization of over-long card bodies; empty = plain truncation.",
+      "sensitive": true
+    },
+    "llm_base_url": {
+      "type": "string",
+      "title": "总结 API base / Summarize base URL",
+      "description": "默认 https://api.openai.com/v1；自建/代理网关改这里。Default https://api.openai.com/v1.",
+      "default": ""
+    },
+    "llm_model": {
+      "type": "string",
+      "title": "总结模型 / Summarize model",
+      "description": "默认 gpt-4o-mini。Default gpt-4o-mini.",
+      "default": ""
+    },
+    "llm_max_chars": {
+      "type": "string",
+      "title": "摘要目标字数 / Summary max chars",
+      "description": "总结后的目标字数，默认 400。Target summary length in chars; default 400.",
+      "default": ""
     },
     "routes_file": {
       "type": "file",

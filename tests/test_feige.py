@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -290,9 +291,221 @@ class ZcodeHookLiveTest(E2EBase):
         self.assertEqual([p for p, _ in got], ["/zroute"])
         self.assertIn("zcode 战报", json.dumps(got[0][1], ensure_ascii=False))
 
+    def test_per_turn_stats_and_session_scope(self):
+        """mjs 分轮：messages 末条 role==user 的行 = 一轮开始；scope=session 全程累计。"""
+        Path(self.env["FEIGE_ROUTES_FILE"]).write_text(json.dumps(
+            {"routes": {"*": [{"channel": "feishu-webhook", "webhook": self.url + "/zturn"}]}}),
+            encoding="utf-8")
+
+        def entry(sec, last_role, out, reasoning="", tools=0, text=""):
+            return {"type": "model_io", "model": {"modelId": "m1"},
+                    "completedAt": f"2026-09-26T00:00:{sec:02d}Z",
+                    "request": {"body": {"messages": [{"role": last_role, "content": "…"}]}},
+                    "response": {"finishReason": "stop", "text": text, "reasoningText": reasoning,
+                                 "toolCalls": [{"name": "Bash"}] * tools,
+                                 "usage": {"inputTokens": 100, "outputTokens": out}}}
+
+        lines = [entry(0, "user", 100, reasoning="r", tools=1),
+                 entry(1, "tool", 20, tools=1),
+                 entry(2, "user", 30, reasoning="r", tools=1, text="第二轮战报")]
+        Path(self.tmp.name, "model-io-sess_z.jsonl").write_text(
+            "\n".join(json.dumps(x) for x in lines), encoding="utf-8")
+        self.env["ROLLOUT_DIR"] = self.tmp.name
+
+        r = subprocess.run(["node", str(REPO / "hooks" / "stop-notify.mjs")], input="{}",
+                           capture_output=True, env=self.env, encoding="utf-8", timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = self.wait_for(1)
+        card = json.dumps(got[0][1], ensure_ascii=False)
+        self.assertIn("💭1 · 🔧1", card)     # 只算第二轮那一条
+        self.assertIn("🎫 30", card)
+        self.assertIn("zcode · m1", card)    # 模型脚注带工具名前缀
+
+        self.handler.got.clear()
+        env2 = dict(self.env, FEIGE_STATS_SCOPE="session")
+        r = subprocess.run(["node", str(REPO / "hooks" / "stop-notify.mjs")], input="{}",
+                           capture_output=True, env=env2, encoding="utf-8", timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = self.wait_for(1)
+        card = json.dumps(got[0][1], ensure_ascii=False)
+        self.assertIn("💭2 · 🔧3", card)     # 全程累计
+        self.assertIn("🎫 150", card)
+
+
+class SummarizeTest(unittest.TestCase):
+    """正文 LLM 总结：配置解析、fit_body 优先级、dry-run 零网络、失败兜底。"""
+
+    LONG = "冗长战报" * 5_000  # 远超 BODY_MAX_BYTES
+
+    def _clean_env(self, **extra):
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("FEIGE_", "FEISHU_", "LARK_", "DINGTALK_", "TELEGRAM_"))}
+        settings = Path(self.tmp.name) / "settings.json"
+        env["FEIGE_SETTINGS_FILE"] = str(settings)
+        env.update(extra)
+        return env, settings
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_disabled_without_key(self):
+        env, _ = self._clean_env()
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertFalse(feige.llm_config()["enabled"])
+            with mock.patch.object(feige, "llm_summarize") as ls:
+                out = feige.fit_body(self.LONG)
+        ls.assert_not_called()  # 未启用连总结器都不进
+        self.assertIn("内容过长已截断", out)
+
+    def test_enabled_with_env_key(self):
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test-123")
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = feige.llm_config()
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["model"], feige.DEFAULT_LLM_MODEL)
+        self.assertEqual(cfg["base_url"], feige.DEFAULT_LLM_BASE_URL)
+
+    def test_settings_file_config_and_explicit_off(self):
+        env, settings = self._clean_env()
+        settings.write_text(json.dumps({"llm_api_key": "sk-from-settings",
+                                        "llm_model": "glm-4-flash",
+                                        "llm_max_chars": "200"}), encoding="utf-8")
+        with mock.patch.dict(os.environ, env, clear=True):
+            cfg = feige.llm_config()
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual((cfg["model"], cfg["max_chars"]), ("glm-4-flash", 200))
+        # 显式关闭：summarize=false 即使有 key 也不启用（False 不能被当「未配置」）
+        settings.write_text(json.dumps({"llm_api_key": "sk-x", "summarize": False}),
+                            encoding="utf-8")
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertFalse(feige.llm_config()["enabled"])
+
+    def test_fit_body_uses_summary_when_over_limit(self):
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(feige, "llm_summarize", return_value="浓缩版战报") as ls:
+            out = feige.fit_body(self.LONG)
+        ls.assert_called_once()
+        self.assertEqual(out, "浓缩版战报")
+
+    def test_fit_body_falls_back_when_summarizer_fails(self):
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(feige, "llm_summarize", return_value=""):
+            out = feige.fit_body(self.LONG)
+        self.assertIn("内容过长已截断", out)
+
+    def test_short_body_never_hits_summarizer(self):
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(feige, "llm_summarize") as ls:
+            self.assertEqual(feige.fit_body("短正文"), "短正文")
+        ls.assert_not_called()
+
+    def test_dry_run_never_calls_llm(self):
+        """回归：dry-run/预览在 hook 前台同步执行，绝不能在这里发起 LLM 网络调用。"""
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test")
+        for channel in ("feishu-webhook", "dingtalk-webhook", "telegram"):
+            with self.subTest(channel=channel), \
+                    mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(feige, "llm_summarize") as ls:
+                ok, out = feige.send_report("t", self.LONG, channel=channel, dry_run=True)
+                self.assertTrue(ok)
+                ls.assert_not_called()
+                self.assertIn("内容过长已截断", out)
+
+    def test_real_send_uses_llm(self):
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test",
+                                 FEISHU_CARD_WEBHOOK="https://fake.invalid/hook/x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(feige, "llm_summarize", return_value="摘要版"), \
+                mock.patch.object(feige, "_post_json", return_value={"code": 0}) as post:
+            ok, detail = feige.send_report("t", self.LONG, channel="feishu-webhook")
+        self.assertTrue(ok, detail)
+        sent = json.dumps(post.call_args[0][1], ensure_ascii=False)
+        self.assertIn("摘要版", sent)
+        self.assertNotIn("内容过长已截断", sent)
+
+    def test_llm_summarize_request_shape_and_failure_swallowed(self):
+        captured = {}
+
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return json.dumps(
+                {"choices": [{"message": {"content": " 摘要结果 "}}]}).encode()
+
+        def fake_urlopen(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["auth"] = req.get_header("Authorization")
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeResp()
+
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-abcd1234",
+                                 FEIGE_LLM_BASE_URL="https://gw.local/v1/",
+                                 FEIGE_LLM_MODEL="m-x", FEIGE_LLM_MAX_CHARS="120")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.assertEqual(feige.llm_summarize("长" * 30_000), "摘要结果")
+        self.assertEqual(captured["url"], "https://gw.local/v1/chat/completions")
+        self.assertEqual(captured["auth"], "Bearer sk-abcd1234")
+        self.assertEqual(captured["body"]["model"], "m-x")
+        self.assertLessEqual(len(captured["body"]["messages"][1]["content"]),
+                             feige.LLM_INPUT_MAX_CHARS)
+        # 网络炸了 → 空串 + 打码日志，绝不抛
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen",
+                           side_effect=urllib.error.URLError("refused")):
+            self.assertEqual(feige.llm_summarize("x"), "")
+
+    def test_redact_covers_llm_key(self):
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-supersecret01")
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertNotIn("sk-supersecret01", feige.redact("boom sk-supersecret01"))
+
+
+class AdapterBodyTest(unittest.TestCase):
+    """适配器正文口径：总结未启用 teaser 300 字；启用时放行更长原文给总结器。"""
+
+    def setUp(self):
+        sys.path.insert(0, str(REPO / "adapters"))
+        import common
+        self.common = common
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("FEIGE_")}
+        env["FEIGE_SETTINGS_FILE"] = str(Path(self.tmp.name) / "s.json")
+        self._patch = mock.patch.dict(os.environ, env, clear=True)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def test_teaser_when_summarize_off(self):
+        out = self.common.body_for_card("长" * 1000)
+        self.assertEqual(out, "长" * 300 + " ……")
+
+    def test_full_body_when_summarize_on(self):
+        os.environ["FEIGE_LLM_API_KEY"] = "sk-test"
+        out = self.common.body_for_card("长" * 1000)
+        self.assertEqual(out, "长" * 1000)  # ≤6000 字原样放行
+        big = self.common.body_for_card("长" * 9000)
+        self.assertEqual(len(big), self.common.FULL_BODY_CHARS + 3)  # 截到上限带省略号
+
+    def test_empty_text_keeps_placeholder(self):
+        self.assertEqual(self.common.body_for_card("   "), "……（本轮无文本输出）")
+
 
 class ClipTest(unittest.TestCase):
     LONG = "战报正文" * 10_000  # 40k 汉字 ≈ 120KB
+
+    def setUp(self):
+        # 本机真配了总结 LLM 也不能让截断用例走网络：清空 key + 设置文件指向不存在路径
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("FEIGE_LLM_API_KEY", "FEIGE_SUMMARIZE")}
+        env["FEIGE_SETTINGS_FILE"] = str(Path(tempfile.gettempdir()) / "feige-no-such-settings.json")
+        self._patch = mock.patch.dict(os.environ, env, clear=True)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
 
     def test_short_untouched(self):
         self.assertEqual(feige.clip("短"), "短")
@@ -414,7 +627,9 @@ class ClaudeTranscriptTest(unittest.TestCase):
     def test_context_counts_cache_creation(self):
         """真机实测发现：首轮几乎全是 cache_creation，漏算时上下文显示成个位数。"""
         mod = _load_module(REPO / "adapters" / "claude-code" / "stop_notify.py", "feige_cc_t")
-        with tempfile.TemporaryDirectory() as d:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "FEIGE_CONTEXT_TOTAL")}
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, env, clear=True):
             entry = {"type": "assistant", "timestamp": "2026-09-26T00:00:00Z",
                      "message": {"model": "m", "content": [{"type": "text", "text": "hi"}],
                                  "usage": {"input_tokens": 10, "cache_creation_input_tokens": 20000,
@@ -435,8 +650,13 @@ class AdaptersPageTest(unittest.TestCase):
             (home / ".codex" / "config.toml").write_text(
                 'notify = ["x.exe"]\n[plugins."feige-fry-cards@feige-fry-cards"]\nenabled = true\n',
                 encoding="utf-8")
+            (home / ".kimi-code").mkdir()
+            (home / ".kimi-code" / "config.toml").write_text(
+                '[[hooks]]\nevent = "Stop"\ncommand = \'python "C:/repo/adapters/kimi-code/stop_notify.py"\'\n',
+                encoding="utf-8")
             html_ = webui.page_adapters(home).decode("utf-8")
         self.assertEqual(html_.count("已安装 feige-fry-cards 插件"), 3)
+        self.assertIn("已手挂 Stop hook", html_)
         self.assertNotIn("未接入", html_)
 
 
@@ -582,6 +802,17 @@ class ClaudePerTurnTest(unittest.TestCase):
             self.assertEqual(s["body"], "第二轮")
             self.assertEqual(s["model"], "claude-code · claude-x")
 
+    def test_session_scope_uses_whole_file(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"FEIGE_STATS_SCOPE": "session"}):
+            path = self.write(d, [
+                {"type": "user", "timestamp": "2026-09-26T00:00:00Z", "message": {"content": "任务一"}},
+                self.asst(1, thinking=True, tools=2, out=100),
+                self.asst(2, text="第二轮", out=50),
+            ])
+            s = self.claude.summarize_transcript(path)
+        self.assertEqual((s["thinking"], s["tools"], s["tokens"]), (1, 2, 150))
+
     def test_no_user_prompt_falls_back_to_whole_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = self.write(d, [
@@ -591,6 +822,38 @@ class ClaudePerTurnTest(unittest.TestCase):
             s = self.claude.summarize_transcript(path)
             self.assertEqual((s["thinking"], s["tools"], s["tokens"]), (1, 1, 15))
             self.assertEqual(s["elapsed"], "5.0s")
+
+    def test_compact_summary_does_not_break_turn(self):
+        """转录压缩摘要行 (isCompactSummary) 不算真实用户提问，不应重置分轮。"""
+        with tempfile.TemporaryDirectory() as d:
+            path = self.write(d, [
+                {"type": "user", "timestamp": "2026-09-26T00:00:00Z",
+                 "message": {"content": "真实提问"}},
+                self.asst(1, thinking=True, tools=2, out=50),
+                {"type": "user", "timestamp": "2026-09-26T00:00:02Z",
+                 "isCompactSummary": True, "isVisibleInTranscriptOnly": True,
+                 "message": {"content": "This session is being continued..."}},
+                self.asst(3, thinking=True, tools=1, out=30),
+            ])
+            s = self.claude.summarize_transcript(path)
+            # 真实提问后跨过 compact summary 累计为 2 思考、3 工具、80 token
+            self.assertEqual((s["thinking"], s["tools"], s["tokens"]), (2, 3, 80))
+            self.assertEqual(s["elapsed"], "3.0s")
+
+    def test_context_window_and_formatting(self):
+        """上下文格式化：已知模型带分母与百分比，未知模型退化为纯水位。"""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "FEIGE_CONTEXT_TOTAL")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(self.claude.context_window("gemini-3.8-flash"), 1_048_576)
+            self.assertEqual(self.claude.context_window("claude-3-7-sonnet"), 200_000)
+            self.assertEqual(self.claude.context_window("claude-fable-5-1"), 1_048_576)
+            self.assertEqual(self.claude.context_window("unknown-model-xyz"), 0)
+
+        # fmt_context
+        self.assertEqual(self.claude.fmt_context(218_828, 1_048_576), "218.8k/1.0m (21%)")
+        self.assertEqual(self.claude.fmt_context(218_828, 0), "218.8k")
+        self.assertEqual(self.claude.fmt_context(0, 1_048_576), "")
 
 
 if __name__ == "__main__":

@@ -24,17 +24,70 @@ transcript schema 已拿本机真实转录（~/.claude/projects/**）验证：
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import compact, fmt_elapsed, log, project_label, read_payload, run, send_card, teaser  # noqa: E402
+from common import (body_for_card, compact, fmt_elapsed, log, project_label,  # noqa: E402
+                    read_payload, run, send_card, stats_scope)
+
+# 常见模型上下文窗口表（单位 token）；未知模型退化为绝对水位 compact(ctx)
+KNOWN_CONTEXT_WINDOWS: list[tuple[re.Pattern, int]] = [
+    # Gemini 系列 (1.5 / 2.0 / 2.5 / 3.0 / 3.8 / flash / pro)
+    (re.compile(r"gemini-(?:1\.5-pro|2\.\d+-pro|3\.\d+-pro)", re.I), 2_097_152),
+    (re.compile(r"gemini", re.I), 1_048_576),
+    # Claude 系列
+    (re.compile(r"claude-(?:fable-5|opus-5|sonnet-5|haiku-4-5)", re.I), 1_048_576),
+    (re.compile(r"claude-.*-1m", re.I), 1_048_576),
+    (re.compile(r"claude-(?:3|4|sonnet-4|opus-4|haiku-4)", re.I), 200_000),
+    (re.compile(r"claude", re.I), 200_000),
+    # OpenAI 系列
+    (re.compile(r"gpt-4o(?:-mini)?", re.I), 128_000),
+    (re.compile(r"gpt-4-turbo", re.I), 128_000),
+    (re.compile(r"gpt-5", re.I), 400_000),
+    (re.compile(r"o[134](?:-mini)?", re.I), 200_000),
+    # Kimi
+    (re.compile(r"kimi-k3|k3\b", re.I), 1_048_576),
+    (re.compile(r"kimi-for-coding", re.I), 262_144),
+    # DeepSeek / Qwen / GLM
+    (re.compile(r"deepseek", re.I), 131_072),
+    (re.compile(r"qwen", re.I), 131_072),
+    (re.compile(r"glm", re.I), 128_000),
+]
+
+
+def context_window(model: str) -> int:
+    """根据模型名称解析上下文窗口（token 数）；未知返回 0。支持环境变量覆盖。"""
+    for env_var in ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "FEIGE_CONTEXT_TOTAL"):
+        val = (os.environ.get(env_var) or "").strip()
+        if val.isdigit() and int(val) > 0:
+            return int(val)
+    if not model:
+        return 0
+    raw = model.split("·")[-1].strip().split("/")[-1].strip()
+    for pat, limit in KNOWN_CONTEXT_WINDOWS:
+        if pat.search(raw):
+            return limit
+    return 0
+
+
+def fmt_context(ctx: int, limit: int) -> str:
+    """上下文水位：有分母 `213.7k/1.0m (21%)`，无分母退化为 `213.7k`。"""
+    if not ctx:
+        return ""
+    if not limit:
+        return compact(ctx)
+    return f"{compact(ctx)}/{compact(limit)} ({round(100 * ctx / limit)}%)"
 
 
 def _is_user_turn_start(entry: dict) -> bool:
-    """真实用户提问 = 一轮的开始；tool_result/meta/sidechain 都不算。"""
+    """真实用户提问 = 一轮的开始；tool_result/meta/sidechain/压缩摘要都不算。"""
     if entry.get("type") != "user" or entry.get("isSidechain") or entry.get("isMeta"):
+        return False
+    if entry.get("isCompactSummary") or entry.get("isVisibleInTranscriptOnly"):
         return False
     content = (entry.get("message") or {}).get("content")
     if isinstance(content, str):
@@ -125,8 +178,9 @@ def summarize_transcript(path: str) -> dict | None:
     if not saw_assistant:
         return None
 
-    if turn_ts is None:  # 没有提问行的转录：退化为全文件统计
+    if turn_ts is None or stats_scope() == "session":  # 全程口径 / 没有提问行：全文件统计
         thinking_turns, tools_total, tokens_total = all_thinking, all_tools, all_tokens
+        turn_ts = None
 
     elapsed = ""
     try:
@@ -138,14 +192,14 @@ def summarize_transcript(path: str) -> dict | None:
         pass
 
     return {
-        "body": teaser(last_text) or "……（本轮无文本输出）",
+        "body": body_for_card(last_text),
         # 约定：CLI/Mirasim 场景模型名前带工具名
         "model": f"claude-code · {model}" if model else "claude-code",
         "thinking": thinking_turns,
         "tools": tools_total,
         "tokens": tokens_total,
-        # Claude 上下文窗口因模型/计划而异，硬编码百分比不靠谱——只报绝对水位
-        "context": compact(ctx) if ctx else "",
+        # 上下文水位：已知模型/环境变量给分母 `213.7k/1.0m (21%)`，未知退化为 `213.7k`
+        "context": fmt_context(ctx, context_window(model)),
         "elapsed": elapsed,
     }
 

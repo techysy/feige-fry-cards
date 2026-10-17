@@ -37,7 +37,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import compact, fmt_elapsed, log, project_label, read_payload, send_card, teaser  # noqa: E402
+from common import (body_for_card, compact, fmt_elapsed, log, project_label,  # noqa: E402
+                    read_payload, send_card, stats_scope)
 
 _OFF = ("0", "false", "no", "off")
 _MODEL_PLACEHOLDERS = {"__kimi_env_model__", "agent-loop"}
@@ -199,7 +200,9 @@ def summarize_wire(path: Path) -> dict | None:
     if not saw_turn:
         return None
 
-    # 💭/🔧/🎫 只算最后一轮（无 turnId 的老格式保留全文件统计）
+    # 💭/🔧/🎫 只算最后一轮（全程口径 / 无 turnId 的老格式保留全文件统计）
+    if stats_scope() == "session":
+        last_turn = None
     if last_turn is not None:
         tools = turn_tools.get(last_turn, 0)
         thinking = turn_thinking.get(last_turn, 0)
@@ -218,7 +221,7 @@ def summarize_wire(path: Path) -> dict | None:
         elapsed = fmt_elapsed((last_t - first_t) / 1000.0)
 
     return {
-        "body": teaser(last_text) or "……（本轮无文本输出）",
+        "body": body_for_card(last_text),
         # 约定：CLI/Mirasim 场景模型名前带工具名
         "model": f"kimi-code · {model}" if model else "kimi-code",
         "raw_model": model,

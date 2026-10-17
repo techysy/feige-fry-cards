@@ -48,6 +48,12 @@ PLUGIN_OPTION_ENV = {
     "NOTIFY_CHAT_ID": "FEISHU_NOTIFY_CHAT_ID",
     "DEBOUNCE_SECONDS": "FEIGE_DEBOUNCE_SECONDS",
     "ROUTES_FILE": "FEIGE_ROUTES_FILE",
+    "STATS_SCOPE": "FEIGE_STATS_SCOPE",
+    "LLM_API_KEY": "FEIGE_LLM_API_KEY",
+    "LLM_BASE_URL": "FEIGE_LLM_BASE_URL",
+    "LLM_MODEL": "FEIGE_LLM_MODEL",
+    "LLM_MAX_CHARS": "FEIGE_LLM_MAX_CHARS",
+    "SUMMARIZE": "FEIGE_SUMMARIZE",
 }
 
 
@@ -71,6 +77,11 @@ def hook_enabled() -> bool:
     return (os.environ.get("FEIGE_HOOK_NOTIFY") or "").strip().lower() in _ON
 
 
+def stats_scope() -> str:
+    """统计口径：turn（单轮，默认）| session（全程）；解析见 feige.stats_scope。"""
+    return feige.stats_scope()
+
+
 def dry_run() -> bool:
     return (os.environ.get("FEIGE_DRY_RUN") or "").strip().lower() in _ON
 
@@ -78,6 +89,27 @@ def dry_run() -> bool:
 def teaser(text: str, limit: int = TEASER_CHARS) -> str:
     text = (text or "").strip()
     return text if len(text) <= limit else text[:limit].rstrip() + " ……"
+
+
+# 总结启用时给 feige 的原文上限：够 LLM 浓缩出像样的战报，又不至于把命令行
+# 参数撑爆（Windows CreateProcess 命令行上限 ~32k，argv 走 subprocess 列表也受此限）。
+FULL_BODY_CHARS = 6_000
+
+
+def summarize_enabled() -> bool:
+    """正文总结是否启用（env/设置文件解析口径见 feige.llm_config）。"""
+    return feige.llm_config()["enabled"]
+
+
+def body_for_card(text: str, empty_note: str = "……（本轮无文本输出）") -> str:
+    """卡片正文：总结未启用保持 teaser 300 字老口径；启用时传更长原文，
+    由后台发送进程（feige.py send）调 LLM 总结，失败再退化硬截断。"""
+    text = (text or "").strip()
+    if not text:
+        return empty_note
+    if not summarize_enabled():
+        return teaser(text)
+    return text if len(text) <= FULL_BODY_CHARS else text[:FULL_BODY_CHARS].rstrip() + " ……"
 
 
 def compact(n: int | float) -> str:

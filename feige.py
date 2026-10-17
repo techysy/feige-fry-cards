@@ -38,10 +38,21 @@ feishu-cardkit，都没有则明确报错（打码后）；钉钉/Telegram 显�
     FEIGE_ROUTES_FILE                           群路由文件（默认 ~/.feige-routes.json）
     FEIGE_DEBOUNCE_SECONDS                      收尾去抖秒数（配合 --debounce-key，默认 0 关闭）
     FEIGE_LOG_FILE                              后台发送的日志文件（默认 <临时目录>/feige.log）
+    FEIGE_LLM_API_KEY                           正文总结 LLM 的 API key（OpenAI 兼容，可选）
+    FEIGE_LLM_BASE_URL                          总结 API base，默认 https://api.openai.com/v1
+    FEIGE_LLM_MODEL                             总结模型，默认 gpt-4o-mini
+    FEIGE_LLM_MAX_CHARS                         总结目标字数，默认 400
+    FEIGE_SUMMARIZE                             0/false 显式关闭总结（即使已配 key）
 
-设计不变量（继承自家族踩坑）：摘要是战报不是镜像（正文超长截断）；统计面板只在
-完成态（ok/error）做单次脚注，running 态不堆指标；fail-open——发卡失败只落日志，
-绝不抛炸调用方；密钥只走环境变量，错误信息里 token/secret/webhook 一律打码。
+配置来源（优先级从高到低）：真实环境变量 > 插件 userConfig（落到环境变量）>
+设置文件 ~/.feige-settings.json（Studio 配置页写入，键名见 _SETTINGS_ENV）。
+渠道凭据、总结 LLM、行为开关都能只配在设置文件里，不必再碰环境变量。
+
+设计不变量（继承自家族踩坑）：摘要是战报不是镜像（正文超长先试 LLM 总结，未配置/
+失败退化为硬截断）；统计面板只在完成态（ok/error）做单次脚注，running 态不堆指标；
+fail-open——发卡失败只落日志，绝不抛炸调用方；密钥只走环境变量或本地设置文件
+（绝不入库），错误信息与页面回显里 token/secret/webhook/api key 一律打码。总结只在
+后台发送进程里跑（dry-run/预览在 hook 前台同步执行，绝不发起 LLM 网络调用，不阻塞宿主）。
 """
 
 from __future__ import annotations
@@ -75,10 +86,45 @@ STATUS_PREFIX = {"running": "🛠️", "ok": "✅", "error": "❌"}
 
 # ── 通用小件 ─────────────────────────────────────────────────────────────────
 
+# 环境变量名 → ~/.feige-settings.json 键（Studio 配置页写设置文件；环境变量优先）。
+_SETTINGS_ENV = {
+    "FEISHU_CARD_WEBHOOK": "feishu_webhook",
+    "FEISHU_WEBHOOK_SECRET": "feishu_webhook_secret",
+    "FEISHU_APP_ID": "feishu_app_id",
+    "FEISHU_APP_SECRET": "feishu_app_secret",
+    "FEISHU_BASE_URL": "feishu_base_url",
+    "FEISHU_NOTIFY_CHAT_ID": "feishu_chat_id",
+    "DINGTALK_WEBHOOK": "dingtalk_webhook",
+    "DINGTALK_SECRET": "dingtalk_secret",
+    "TELEGRAM_BOT_TOKEN": "telegram_bot_token",
+    "TELEGRAM_CHAT_ID": "telegram_chat_id",
+    "FEIGE_LLM_API_KEY": "llm_api_key",
+    "FEIGE_LLM_BASE_URL": "llm_base_url",
+    "FEIGE_LLM_MODEL": "llm_model",
+    "FEIGE_LLM_MAX_CHARS": "llm_max_chars",
+    "FEIGE_STATS_SCOPE": "stats_scope",
+    "FEIGE_DEBOUNCE_SECONDS": "debounce_seconds",
+    "FEIGE_ROUTES_FILE": "routes_file",
+}
+
+
 def _env(*names: str) -> str:
-    """取第一个非空环境变量值。"""
+    """取第一个非空值：环境变量（含插件 userConfig 落进来的）> 设置文件。
+
+    设置文件里的密钥同样参与 redact 打码（redact 就是逐个 _env 取值替换的）。
+    """
     for name in names:
         value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    settings = None
+    for name in names:
+        key = _SETTINGS_ENV.get(name)
+        if not key:
+            continue
+        if settings is None:
+            settings = load_settings()
+        value = str(settings.get(key) or "").strip()
         if value:
             return value
     return ""
@@ -104,6 +150,7 @@ def redact(text: str) -> str:
         _env("DINGTALK_WEBHOOK"),
         _env("DINGTALK_SECRET"),
         _env("TELEGRAM_BOT_TOKEN"),
+        _env("FEIGE_LLM_API_KEY"),
     ):
         if len(secret) >= 6:
             s = s.replace(secret, "***")
@@ -142,6 +189,96 @@ def clip(text: str, limit: int = BODY_MAX_BYTES, unit: str = "bytes") -> str:
         else:
             hi = mid - 1
     return text[:lo].rstrip() + TRUNC_NOTE
+
+
+# ── 正文超长 → LLM 总结（可配置，失败退化硬截断）───────────────────────────────
+
+DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_LLM_MODEL = "gpt-4o-mini"
+LLM_MAX_CHARS = 400        # 总结目标字数（近似值，最终仍按渠道字节上限兜底）
+LLM_INPUT_MAX_CHARS = 24_000  # 送进总结请求的原文上限，防超长上下文把请求撑炸
+LLM_TIMEOUT = 20           # 秒；只在后台发送进程里等，不碰 hook 前台
+
+
+def llm_config() -> dict:
+    """总结 LLM 配置：{"enabled", "api_key", "base_url", "model", "max_chars"}。
+
+    取值口径统一走 _env（环境变量 > 设置文件）。没配 api_key 即未启用
+    （enabled=False）——未配置是常态，不叫错误。
+    """
+    settings = load_settings()
+    max_chars_raw = _env("FEIGE_LLM_MAX_CHARS")
+    try:
+        max_chars = max(int(max_chars_raw), 50) if max_chars_raw else LLM_MAX_CHARS
+    except ValueError:
+        max_chars = LLM_MAX_CHARS
+    api_key = _env("FEIGE_LLM_API_KEY")
+    raw_off = settings.get("summarize")  # 注意 False 是显式关闭，不能当「未配置」
+    off = (_env("FEIGE_SUMMARIZE")
+           or ("" if raw_off is None else str(raw_off))).strip().lower()
+    return {
+        "enabled": bool(api_key) and off not in ("0", "false", "no", "off"),
+        "api_key": api_key,
+        "base_url": (_env("FEIGE_LLM_BASE_URL") or DEFAULT_LLM_BASE_URL).rstrip("/"),
+        "model": _env("FEIGE_LLM_MODEL") or DEFAULT_LLM_MODEL,
+        "max_chars": max_chars,
+    }
+
+
+def llm_summarize(text: str, cfg: dict | None = None) -> str:
+    """调 OpenAI 兼容 chat/completions 把正文浓缩成 ≤max_chars 字战报摘要。
+
+    任何失败（网络/非 0 状态码/空返回）都返回空串，由 fit_body 退化硬截断；
+    只落打码后的日志，绝不抛。
+    """
+    cfg = cfg or llm_config()
+    if not cfg["enabled"]:
+        return ""
+    payload = {
+        "model": cfg["model"],
+        "max_tokens": max(cfg["max_chars"] * 2, 200),  # 中文一字 ≈ 1-2 token，留余量
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system",
+             "content": "你是任务战报摘要器。把助手冗长的收尾汇报浓缩成不超过"
+                        f"{cfg['max_chars']}字的中文摘要：保留结论、关键改动、"
+                        "文件/命令名与数字，删去寒暄、过程性叙述与重复内容，"
+                        "用 markdown 列表或短句。只输出摘要本身。"},
+            {"role": "user", "content": text[:LLM_INPUT_MAX_CHARS]},
+        ],
+    }
+    req = urllib.request.Request(
+        cfg["base_url"] + "/chat/completions",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {cfg['api_key']}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+        content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        return str(content).strip()
+    except Exception as exc:  # fail-open：总结失败不拖发卡
+        log(f"llm summarize failed (falling back to clip): {redact(exc)}")
+        return ""
+
+
+def fit_body(body: str, limit: int = BODY_MAX_BYTES, unit: str = "bytes",
+             allow_summarize: bool = True) -> str:
+    """正文装得下渠道上限就原样，超了先试 LLM 总结，未启用/失败再硬截断。
+
+    allow_summarize=False 用于 dry-run/预览（hook 前台同步路径）：绝不在这条路上
+    发起 LLM 网络调用。
+    """
+    body = body or ""
+    if _size(body, unit) <= limit:
+        return body
+    if allow_summarize and llm_config()["enabled"]:
+        summary = llm_summarize(body)
+        if summary:
+            return clip(summary, limit, unit)
+    return clip(body, limit, unit)
 
 
 # ── 统一卡片模型 ─────────────────────────────────────────────────────────────
@@ -195,11 +332,13 @@ def compact_count(value: int) -> str:
 
 
 def build_card(title: str, body: str, stats: dict | None = None,
-               status: str = "ok", streaming: bool = False) -> dict:
+               status: str = "ok", streaming: bool = False,
+               allow_summarize: bool = True) -> dict:
     """统一卡片模型 → 飞书 Card 2.0 JSON。
 
     - 标题按状态加前缀（🛠️/✅/❌），header 按状态着色（蓝/绿/红）；
-    - 正文 markdown；streaming=True 时正文元素带 STREAMING_ELEMENT_ID 并开流式配置，
+    - 正文 markdown，超长时按 fit_body 处理（LLM 总结 → 硬截断兜底）；
+      streaming=True 时正文元素带 STREAMING_ELEMENT_ID 并开流式配置，
       供后续 CardKit update_content 打字机更新；
     - 统计面板只在完成态（ok/error）做 notation 脚注单次呈现，running 态不出现。
     """
@@ -222,7 +361,7 @@ def build_card(title: str, body: str, stats: dict | None = None,
 
     element: dict = {
         "tag": "markdown",
-        "content": clip(body.strip()) or "（空内容）",
+        "content": fit_body(body.strip(), allow_summarize=allow_summarize) or "（空内容）",
         "text_align": "left",
         "text_size": "normal_v2",
         "margin": "0px 0px 0px 0px",
@@ -444,16 +583,18 @@ def send_feishu_cardkit(title: str, body: str, stats: dict | None = None,
 # ── 渠道三：dingtalk-webhook（钉钉自定义机器人，markdown 消息）────────────────
 
 def render_dingtalk(title: str, body: str, stats: dict | None = None,
-                    status: str = "ok") -> dict:
+                    status: str = "ok", allow_summarize: bool = True) -> dict:
     """统一卡片模型 → 钉钉 markdown 消息载荷。
 
     钉钉自定义机器人没有交互卡/CardKit，markdown 就是全部版面：
     标题行 + 正文 + --- + 统计脚注一行（脚注仍只在完成态出现）。
+    正文超长按 fit_body 处理（LLM 总结 → 硬截断兜底）。
     """
     if status not in STATUS_TEMPLATE:
         raise ValueError(f"unknown status: {status!r} (expect running/ok/error)")
     full_title = f"{STATUS_PREFIX[status]} {title.strip() or '通知'}"
-    parts = [f"### {full_title}", "", clip(body.strip()) or "（空内容）"]
+    parts = [f"### {full_title}", "",
+             fit_body(body.strip(), allow_summarize=allow_summarize) or "（空内容）"]
     footer = stats_footer(stats)
     if status != "running" and footer:
         parts += ["", "---", footer]
@@ -496,10 +637,11 @@ def send_dingtalk_webhook(payload: dict, webhook: str = "", secret: str = "") ->
 # ── 渠道四：telegram（Bot API sendMessage，纯文本版式）──────────────────────
 
 def render_telegram_text(title: str, body: str, stats: dict | None = None,
-                         status: str = "ok") -> str:
+                         status: str = "ok", allow_summarize: bool = True) -> str:
     """统一卡片模型 → Telegram 纯文本（不启 parse_mode，避开 MarkdownV2 转义地雷）。
 
     标题、正文按原文、统计一行、「———」分隔；脚注仍只在完成态出现。
+    正文超长按 fit_body 处理（LLM 总结 → 硬截断兜底），截的是正文，脚注保住。
     """
     if status not in STATUS_TEMPLATE:
         raise ValueError(f"unknown status: {status!r} (expect running/ok/error)")
@@ -507,7 +649,8 @@ def render_telegram_text(title: str, body: str, stats: dict | None = None,
     footer = stats_footer(stats)
     tail = f"\n\n———\n{footer}" if status != "running" and footer else ""
     budget = TELEGRAM_MAX_UNITS - _size(head + tail, "utf16")
-    text = head + (clip(body.strip(), max(budget, 0), "utf16") or "（空内容）") + tail
+    text = head + (fit_body(body.strip(), max(budget, 0), "utf16",
+                            allow_summarize=allow_summarize) or "（空内容）") + tail
     return clip(text, TELEGRAM_MAX_UNITS, "utf16")  # 标题/脚注本身超长时的最后兜底
 
 
@@ -565,9 +708,12 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
         channel = "-"  # dry-run 无渠道配置：只展开卡片 JSON
     try:
         eff_stats = stats if status != "running" else None
+        # dry-run/预览在 hook 前台同步执行：绝不在这里发起 LLM 总结的网络调用
+        allow_sum = not dry_run
         # 规范化汇报载荷（title/body/stats/status）按渠道各自渲染
         if channel == "dingtalk-webhook":
-            payload = render_dingtalk(title, body, eff_stats, status)
+            payload = render_dingtalk(title, body, eff_stats, status,
+                                      allow_summarize=allow_sum)
             if dry_run:
                 return True, json.dumps({"channel": channel, "lifecycle": "one-shot",
                                          "signed": bool(dingtalk_secret(webhook, secret)),
@@ -575,14 +721,16 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
             return True, send_dingtalk_webhook(payload, webhook, secret)
         if channel == "telegram":
             payload = {"chat_id": chat_id or _env("TELEGRAM_CHAT_ID") or "<TELEGRAM_CHAT_ID>",
-                       "text": render_telegram_text(title, body, eff_stats, status)}
+                       "text": render_telegram_text(title, body, eff_stats, status,
+                                                    allow_summarize=allow_sum)}
             if dry_run:
                 return True, json.dumps({"channel": channel, "lifecycle": "one-shot",
                                          "payload": payload}, ensure_ascii=False, indent=2)
             return True, send_telegram(title, body, stats=stats, status=status,
                                        chat_id=chat_id, token=token)
         # feishu 两渠道（含 "-" 无渠道 dry-run 预览）：Card 2.0 终态卡
-        card = build_card(title, body, stats=eff_stats, status=status)
+        card = build_card(title, body, stats=eff_stats, status=status,
+                          allow_summarize=allow_sum)
         if dry_run:
             if channel == "feishu-webhook":
                 out = {"msg_type": "interactive", "card": card}
@@ -603,12 +751,54 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
 # ── 群路由（项目 → 多目标 fanout）───────────────────────────────────────────
 
 def routes_file_path(env: dict | None = None) -> str:
-    """路由文件路径：FEIGE_ROUTES_FILE > ~/.feige-routes.json。"""
+    """路由文件路径：FEIGE_ROUTES_FILE > 设置文件 routes_file > ~/.feige-routes.json。
+
+    显式传 env（测试注入）时只看该字典，不掺设置文件。
+    """
+    if env is not None:
+        override = str(env.get("FEIGE_ROUTES_FILE") or "").strip()
+    else:
+        override = _env("FEIGE_ROUTES_FILE")
+    return override or str(Path.home() / ".feige-routes.json")
+
+
+def settings_file_path(env: dict | None = None) -> str:
+    """设置文件路径：FEIGE_SETTINGS_FILE > ~/.feige-settings.json。"""
     env = env if env is not None else os.environ
-    override = str(env.get("FEIGE_ROUTES_FILE") or "").strip()
+    override = str(env.get("FEIGE_SETTINGS_FILE") or "").strip()
     if override:
         return override
-    return str(Path.home() / ".feige-routes.json")
+    return str(Path.home() / ".feige-settings.json")
+
+
+def load_settings(path: str = "") -> dict:
+    """读设置文件；不存在/损坏返回 {}（fail-open，未配置是常态）。
+
+    不缓存：Studio 保存后后台发送进程要立刻读到新值（发送路径每键一查，
+    小 JSON 文件读取成本可忽略，缓存的 mtime 粒度反而可能在 Windows 上读到旧值）。
+    """
+    try:
+        doc = json.loads(Path(path or settings_file_path()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+_STATS_SCOPES = ("turn", "session")
+
+
+def stats_scope(env: dict | None = None, settings: dict | None = None) -> str:
+    """统计口径：turn（单轮，默认）| session（全程）。
+
+    优先级：FEIGE_STATS_SCOPE（插件设置经 common.apply_plugin_options 也落到这里）
+    > ~/.feige-settings.json 的 stats_scope > turn。
+    """
+    env = env if env is not None else os.environ
+    v = str(env.get("FEIGE_STATS_SCOPE") or "").strip().lower()
+    if v in _STATS_SCOPES:
+        return v
+    v = str((load_settings() if settings is None else settings).get("stats_scope") or "").strip().lower()
+    return v if v in _STATS_SCOPES else "turn"
 
 
 def load_routes(path: str = "") -> dict | None:

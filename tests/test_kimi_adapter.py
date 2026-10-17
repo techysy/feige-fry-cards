@@ -83,6 +83,13 @@ class SummarizeWireTest(WireFixtureMixin, unittest.TestCase):
         self.assertEqual(self.summary["tools"], 1)
         self.assertEqual(self.summary["thinking"], 1)
 
+    def test_session_scope_uses_whole_file(self):
+        with mock.patch.dict(os.environ, {"FEIGE_STATS_SCOPE": "session"}):
+            self.setUp()
+            s = self.summary
+        self.assertEqual((s["tools"], s["thinking"], s["tokens"]), (2, 2, 800))
+        self.assertEqual(s["elapsed"], "1m 44s")  # 全文件跨度
+
     def test_no_turnid_falls_back_to_whole_file(self):
         # 无 turnId 的老格式：💭/🔧/🎫 退化为全文件统计（全部计入）
         with tempfile.TemporaryDirectory() as d:

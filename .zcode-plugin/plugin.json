@@ -5,7 +5,7 @@
     "en": "Feige cards: agent-agnostic result reporter. On ZCode session stop, builds a summary battle-report card (title + <=300-char teaser + model/reasoning/tools/context/elapsed stats footer) and sends it to a Feishu group via webhook or CardKit. Ships an optional Stop hook (off by default), the feige send CLI and a feige skill.",
     "zh-CN": "🕊️ 飞鸽卡片：agent 无关的结果汇报插件。ZCode 会话收尾时自动生成摘要战报卡（标题 + ≤300 字摘要 + 模型/💭/🔧/上下文/⏱️ 统计脚注），经 webhook 或 CardKit 直发飞书群。内置 Stop hook（默认关）、feige send CLI 与 feige 技能。"
   },
-  "version": "0.7.0",
+  "version": "0.9.0",
   "author": {
     "name": "techysy"
   },
@@ -65,6 +65,37 @@
       "description": "上下文水位百分比用的窗口大小，默认 1000000。Model context window for the usage footer; default 1000000.",
       "type": "string",
       "default": "1000000"
+    },
+    "stats_scope": {
+      "title": "统计口径 / Stats scope",
+      "description": "turn = 💭/🔧/🎫/⏱️ 只算最后一轮（默认）；session = 整个会话累计。turn = last-turn stats (default); session = whole-session totals.",
+      "type": "string",
+      "default": "turn"
+    },
+    "llm_api_key": {
+      "title": "正文总结 API key / Summarize API key",
+      "description": "配了才启用：正文超长时先让 LLM（OpenAI 兼容 chat/completions）浓缩成摘要，失败再截断。留空 = 直接截断。Set to enable LLM summarization of over-long card bodies; empty = plain truncation.",
+      "type": "string",
+      "default": "",
+      "sensitive": true
+    },
+    "llm_base_url": {
+      "title": "总结 API base / Summarize base URL",
+      "description": "默认 https://api.openai.com/v1；自建/代理网关改这里。Default https://api.openai.com/v1.",
+      "type": "string",
+      "default": ""
+    },
+    "llm_model": {
+      "title": "总结模型 / Summarize model",
+      "description": "默认 gpt-4o-mini。Default gpt-4o-mini.",
+      "type": "string",
+      "default": ""
+    },
+    "llm_max_chars": {
+      "title": "摘要目标字数 / Summary max chars",
+      "description": "总结后的目标字数，默认 400。Target summary length in chars; default 400.",
+      "type": "string",
+      "default": ""
     },
     "hook_notify": {
       "title": "Stop hook 战报 / Stop hook notify",
