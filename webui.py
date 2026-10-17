@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
-"""🕊️ feige-fry-cards WebUI —— 独立设置页（M5）。
+"""🕊️ feige Studio —— 设置页（M9，对齐 fry-cards Studio 体验）。
 
     python webui.py [--port 8787]
 
-纯 Python 标准库（http.server 手写），只绑 127.0.0.1——无鉴权，切勿对外暴露端口。
-另校验 Host（防 DNS rebinding）与 POST 的 Origin/Referer（防 CSRF），见 request_allowed。
+配置 / 预览 / 状态 三个标签页：渠道凭据、正文总结 LLM、行为开关全部表单化，
+保存写 ~/.feige-settings.json（原子写 + .bak，只写本页白名单键，其余原样保留）。
+feige._env 统一「环境变量 > 设置文件」优先级——保存即生效（后台发送进程每次重新
+读取），不必再配任何环境变量；环境变量若已设置则优先，页面上标出来源。
 
 页面：
-  GET  /          总览：4 渠道凭据状态（只显"已配置/未配置"，绝不回显密钥值）、
-                  路由文件状态、仓库路径；附各渠道测试发送按钮（未配置禁用）
+  GET  /          配置：分卡片表单（飞书 / 钉钉 / Telegram / 正文总结 / 行为）
+  GET  /preview   预览：feige dry-run 载荷 JSON + 朴素 HTML 外观示意
+  GET  /status    状态：渠道凭据状态（含来源）、路由/总结概况、测试发送、接入自检入口
   GET+POST /routes 群路由表单化编辑（校验 + .bak 备份 + 原子写；$ENV 引用原样保留）
-  GET  /preview   卡片预览：feige dry-run 载荷 JSON + 朴素 HTML 外观示意
+  POST /settings  保存配置卡片（form=<卡片 id>，按卡片白名单更新）
   POST /test      测试发送一张固定内容卡片（结果打码后展示）
-  GET  /adapters  接入状态自检（ZCode/Claude Code/Codex，只读，绝不写用户配置）
+  GET  /adapters  接入状态自检（ZCode/Claude Code/Codex/kimi-code，只读）
 
-secrets 硬规则（与 feige.redact 同级）：任何响应体不得出现 FEISHU_APP_SECRET /
-bot token / webhook key 的值。例外：群路由页为可编辑会回显路由文件里的明文值——
-路由里的密钥请写成 $ENV 引用。
+secrets 硬规则（与 feige.redact 同级）：任何响应体不得出现渠道密钥 / bot token /
+webhook key / FEIGE_LLM_API_KEY 的值——密钥与 webhook 输入框永远是空 password 框，
+只显「已配置」徽章；留空 = 不修改，勾选「清除」才删除。例外：群路由页为可编辑会
+回显路由文件里的明文值——路由里的密钥请写成 $ENV 引用。
+
+纯 Python 标准库（http.server 手写），只绑 127.0.0.1——无鉴权，切勿对外暴露端口。
+另校验 Host（防 DNS rebinding）与 POST 的 Origin/Referer（防 CSRF），见 request_allowed。
 """
 
 from __future__ import annotations
@@ -35,40 +42,310 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import feige  # noqa: E402
 
 REPO = Path(__file__).resolve().parent
-VERSION = "0.7.0"
+VERSION = "0.9.0"
 
 _CSS = """
-body{font-family:"Microsoft YaHei",system-ui,sans-serif;max-width:860px;margin:0 auto;padding:12px;color:#24292f;background:#f6f8fa}
-nav{margin-bottom:14px}nav a{margin-right:14px;color:#0969da;text-decoration:none}
+body{font-family:"Microsoft YaHei",system-ui,sans-serif;max-width:1080px;margin:0 auto;
+padding:14px;color:#24292f;background:#f6f8fa}
+header.top{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
+header.top h1{font-size:20px;margin:0}
+header.top .ver{color:#57606a;font-size:12px}
+nav{margin-bottom:14px;border-bottom:2px solid #d0d7de}
+nav a{display:inline-block;padding:6px 14px;margin-right:4px;color:#57606a;
+text-decoration:none;border-radius:6px 6px 0 0;font-size:14px}
+nav a.on{background:#fff;color:#24292f;font-weight:bold;border:1px solid #d0d7de;
+border-bottom:none;margin-bottom:-1px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(430px,1fr));gap:14px}
 .card{background:#fff;border:1px solid #d0d7de;border-radius:8px;padding:14px;margin-bottom:14px}
-table{border-collapse:collapse;width:100%}td,th{border:1px solid #d0d7de;padding:6px 8px;text-align:left;font-size:14px}
+.card h3{margin:0 0 10px;font-size:15px}
+table{border-collapse:collapse;width:100%}td,th{border:1px solid #d0d7de;
+padding:6px 8px;text-align:left;font-size:14px}
 input,select,textarea{padding:5px;font-size:14px;border:1px solid #d0d7de;border-radius:4px}
-input[type=text]{width:100%;box-sizing:border-box}textarea{width:100%;box-sizing:border-box}
+input[type=text],input[type=password]{width:100%;box-sizing:border-box}
+textarea{width:100%;box-sizing:border-box}
 button{padding:6px 14px;border:1px solid #d0d7de;border-radius:6px;background:#fff;cursor:pointer}
+button:hover{background:#f6f8fa}
 button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:#1f883d;border-color:#1a7f37;color:#fff}
 .ok{color:#1a7f37;font-weight:bold}.bad{color:#d1242f;font-weight:bold}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
+background:#eaeef2;color:#57606a}
+.badge.on{background:#dafbe1;color:#1a7f37}
 .err{background:#ffebe9;border:1px solid #ff8182;border-radius:8px;padding:10px;margin-bottom:14px}
 .msg{background:#dafbe1;border:1px solid #2da44e;border-radius:8px;padding:10px;margin-bottom:14px}
-pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:10px;overflow:auto;font-size:13px}
+.warn{background:#fff8c5;border:1px solid #d4a72c;border-radius:8px;padding:10px;
+margin-bottom:14px;font-size:13px}
+pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:10px;
+overflow:auto;font-size:13px}
 .bar{height:6px;border-radius:3px 3px 0 0}
 .small{font-size:12px;color:#57606a}
+label.row{display:block;margin:6px 0}
+label.row span{display:inline-block;min-width:130px;color:#57606a;font-size:13px}
+.frow{margin:8px 0}
+.frow .lab{font-size:13px;color:#24292f;margin-bottom:2px}
+.frow .sub{font-size:12px;color:#57606a}
+.frow input[type=text],.frow input[type=password]{margin-top:2px}
+.clearline{font-size:12px;color:#57606a;margin-top:2px}
 """
+
+# 设置文件键 → 对应环境变量（来源展示与回显用；feige._SETTINGS_ENV 的反向表）
+_ENV_FOR_KEY = {v: k for k, v in feige._SETTINGS_ENV.items()}
+# 密钥类键：页面永不回显值，输入框空 password + 留空不修改 + 清除勾选
+_SECRET_KEYS = {"feishu_webhook", "feishu_webhook_secret", "feishu_app_secret",
+                "dingtalk_webhook", "dingtalk_secret", "telegram_bot_token",
+                "llm_api_key"}
 
 
 def esc(s) -> str:
     return html.escape(str(s), quote=True)
 
 
-def page(title: str, body: str) -> bytes:
-    nav = ('<nav><a href="/">总览</a><a href="/routes">群路由</a>'
-           '<a href="/preview">卡片预览</a><a href="/adapters">接入自检</a></nav>')
+def page(title: str, body: str, tab: str = "") -> bytes:
+    def a(href: str, key: str, label: str) -> str:
+        cls = " class='on'" if tab == key else ""
+        return f"<a href='{href}'{cls}>{label}</a>"
+    nav = ("<nav>" + a("/", "config", "⚙️ 配置") + a("/preview", "preview", "👁️ 预览")
+           + a("/status", "status", "📊 状态") + a("/routes", "routes", "🧭 群路由")
+           + a("/adapters", "adapters", "🔌 接入自检") + "</nav>")
     return (f'<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>🕊️ feige · {esc(title)}</title><style>{_CSS}</style></head>'
-            f'<body>{nav}<h2>🕊️ feige · {esc(title)}</h2>{body}'
+            f'<title>🕊️ feige Studio · {esc(title)}</title><style>{_CSS}</style></head>'
+            f'<body><header class="top"><h1>🕊️ feige Studio</h1>'
+            f'<span class="ver">v{VERSION} · 配置 <code>{esc(feige.settings_file_path())}</code></span>'
+            f'</header>{nav}{body}'
             f'<p class="small">feige-fry-cards v{VERSION} · {esc(REPO)} · 仅 127.0.0.1</p>'
             f'</body></html>').encode("utf-8")
 
+
+def key_source(skey: str) -> str:
+    """键的生效来源：环境变量（优先）/ 设置文件 / 空（未配置）。"""
+    env = _ENV_FOR_KEY.get(skey)
+    if env and os.environ.get(env, "").strip():
+        return "环境变量"
+    if str(feige.load_settings().get(skey) or "").strip():
+        return "设置文件"
+    return ""
+
+
+# ── 表单控件小件 ─────────────────────────────────────────────────────────────
+
+def _field(skey: str, label: str, placeholder: str = "", hint: str = "") -> str:
+    src = key_source(skey)
+    badge = (f"<span class='badge on'>已配置 · {esc(src)}</span>" if src
+             else "<span class='badge'>未配置</span>")
+    if skey in _SECRET_KEYS:
+        field = (f"<input type='password' name='{skey}' autocomplete='new-password' "
+                 f"placeholder='留空不修改'>")
+        clear = (f"<div class='clearline'><label><input type='checkbox' "
+                 f"name='clear_{skey}' value='1'> 清除已存值</label></div>")
+    else:
+        cur = feige._env(_ENV_FOR_KEY[skey]) if skey in _ENV_FOR_KEY else ""
+        field = (f"<input type='text' name='{skey}' value='{esc(cur)}' "
+                 f"placeholder='{esc(placeholder)}'>")
+        clear = ""
+    sub = f" <span class='sub'>{esc(hint)}</span>" if hint else ""
+    return (f"<div class='frow'><div class='lab'>{esc(label)} {badge}{sub}</div>"
+            f"{field}{clear}</div>")
+
+
+def _save_btn(card_id: str) -> str:
+    return (f"<p><input type='hidden' name='form' value='{card_id}'>"
+            f"<button class='primary' type='submit'>💾 保存本卡片</button></p>")
+
+
+def _banner(msg: str, err: str) -> str:
+    out = ""
+    if err:
+        out += f'<div class="err">⚠️ {esc(err)}</div>'
+    if msg:
+        out += f'<div class="msg">✅ {esc(msg)}</div>'
+    return out
+
+
+# ── 页面：配置（Studio 主页）──────────────────────────────────────────────────
+
+_WARN = ('<div class="warn">💾 保存只写本页白名单键进 <code>~/.feige-settings.json</code>'
+         '（写前自动备份 <code>.bak</code>），其余内容原样保留；保存即生效——后台发送'
+         '进程每次发卡重新读取，无需重启宿主。<br>🔐 密钥与 webhook 只显「已配置」徽章，'
+         '输入框永不回显：留空 = 不修改，勾选「清除」才删除。已配环境变量时环境变量优先'
+         '（徽章标注来源），此处改动对被遮蔽的键不生效。</div>')
+
+
+def page_studio(msg: str = "", err: str = "") -> bytes:
+    llm = feige.llm_config()
+    llm_state = ("<span class='badge on'>已启用</span>" if llm["enabled"]
+                 else "<span class='badge'>未启用（正文超长直接截断）</span>")
+    cards = {
+        "feishu": (
+            "<div class='card'><h3>📲 飞书渠道</h3><form method='post' action='/settings'>"
+            + _field("feishu_webhook", "自定义机器人 webhook",
+                     "https://open.feishu.cn/open-apis/bot/v2/hook/…", "填了就走 webhook 通道")
+            + _field("feishu_webhook_secret", "webhook 签名密钥", hint="机器人开「签名校验」才需要")
+            + _field("feishu_app_id", "App ID（CardKit）", "cli_…", "不用 webhook 时填")
+            + _field("feishu_app_secret", "App Secret（CardKit）")
+            + _field("feishu_base_url", "飞书域名", feige.DEFAULT_BASE_URL, "Lark 国际版填 open.larksuite.com")
+            + _field("feishu_chat_id", "接收群 chat_id", "oc_…", "CardKit 通道必配")
+            + _save_btn("feishu") + "</form></div>"),
+        "dingtalk": (
+            "<div class='card'><h3>📎 钉钉渠道</h3><form method='post' action='/settings'>"
+            + _field("dingtalk_webhook", "机器人 webhook")
+            + _field("dingtalk_secret", "加签密钥", hint="SEC 开头，安全设置选「加签」才需要")
+            + "<p class='small'>钉钉无交互卡，发 markdown 消息；需显式 <code>--channel</code> "
+              "或群路由指定。</p>"
+            + _save_btn("dingtalk") + "</form></div>"),
+        "telegram": (
+            "<div class='card'><h3>✈️ Telegram 渠道</h3><form method='post' action='/settings'>"
+            + _field("telegram_bot_token", "Bot token", hint="BotFather 发放，形如 123456:ABC-…")
+            + _field("telegram_chat_id", "目标 chat", "-100…（群）或个人 id")
+            + "<p class='small'>纯文本版式（≤4096 UTF-16 单元）；需显式渠道或路由指定。</p>"
+            + _save_btn("telegram") + "</form></div>"),
+        "llm": (
+            f"<div class='card'><h3>🧠 正文总结（LLM）{llm_state}</h3>"
+            "<form method='post' action='/settings'>"
+            + _field("llm_api_key", "API key", "OpenAI 兼容 chat/completions；配了才启用")
+            + _field("llm_base_url", "Base URL", feige.DEFAULT_LLM_BASE_URL)
+            + _field("llm_model", "模型", feige.DEFAULT_LLM_MODEL)
+            + _field("llm_max_chars", "摘要目标字数", str(feige.LLM_MAX_CHARS), "≥50")
+            + "<div class='frow'><label><input type='checkbox' name='llm_off' value='1' "
+              + ("checked" if feige.load_settings().get("summarize") is False else "")
+              + "> 显式关闭总结（即使配了 key 也只截断）</label></div>"
+            + "<p class='small'>正文超长时先由后台发送进程调 LLM 浓缩成战报摘要，"
+              "未配置/失败退化为硬截断；宿主 hook 前台零网络阻塞。</p>"
+            + _save_btn("llm") + "</form></div>"),
+        "behavior": (
+            "<div class='card'><h3>🛠️ 行为开关</h3><form method='post' action='/settings'>"
+            + _select_field("stats_scope", "统计口径",
+                            {"turn": "单轮（💭/🔧/🎫/⏱️ 只算最后一轮）",
+                             "session": "全程（整个会话累计）"},
+                            feige.stats_scope())
+            + _field("debounce_seconds", "收尾去抖秒数", "0", "同会话 N 秒内又收尾只发最后一张；0=每轮都发")
+            + _field("routes_file", "群路由文件路径", "~/.feige-routes.json", "留空用默认")
+            + "<p class='small'>宿主 hook 的启用开关（hook_notify）与凭据在各自插件设置里"
+              "也有入口——插件设置注入为环境变量，优先于本页。</p>"
+            + _save_btn("behavior") + "</form></div>"),
+    }
+    body = (_banner(msg, err) + _WARN
+            + "<div class='grid'>" + cards["feishu"] + cards["llm"]
+            + cards["dingtalk"] + cards["telegram"] + cards["behavior"] + "</div>"
+            + "<div class='card'><h3>🧭 群路由</h3><p class='small'>项目 → 多群 fanout "
+              "（钉钉 / Telegram 的凭据配在这里）。路由文件里的密钥建议写 <code>$ENV</code> 引用。</p>"
+              "<p><a href='/routes'>编辑群路由 →</a></p></div>")
+    return page("配置", body, tab="config")
+
+
+def _select_field(skey: str, label: str, options: dict, current: str) -> str:
+    src = key_source(skey)
+    badge = (f"<span class='badge on'>已配置 · {esc(src)}</span>" if src
+             else "<span class='badge'>默认</span>")
+    opts = "".join(f"<option value='{esc(k)}' {'selected' if current == k else ''}>{esc(v)}</option>"
+                   for k, v in options.items())
+    return (f"<div class='frow'><div class='lab'>{esc(label)} {badge}</div>"
+            f"<select name='{skey}'>{opts}</select></div>")
+
+
+# ── POST /settings：按卡片白名单保存 ─────────────────────────────────────────
+
+_CARD_KEYS = {
+    "feishu": ["feishu_webhook", "feishu_webhook_secret", "feishu_app_id",
+               "feishu_app_secret", "feishu_base_url", "feishu_chat_id"],
+    "dingtalk": ["dingtalk_webhook", "dingtalk_secret"],
+    "telegram": ["telegram_bot_token", "telegram_chat_id"],
+    "llm": ["llm_api_key", "llm_base_url", "llm_model", "llm_max_chars"],
+    "behavior": ["stats_scope", "debounce_seconds", "routes_file"],
+}
+_CARD_TITLES = {"feishu": "飞书渠道", "dingtalk": "钉钉渠道", "telegram": "Telegram",
+                "llm": "正文总结", "behavior": "行为开关"}
+
+
+def _set_text(form: dict, settings: dict, key: str) -> None:
+    """普通键：有值写入，空值删除（回默认）。"""
+    v = (form.get(key) or [""])[0].strip()
+    if v:
+        settings[key] = v
+    else:
+        settings.pop(key, None)
+
+
+def _set_secret(form: dict, settings: dict, key: str) -> None:
+    """密钥键：勾选清除才删；有值才写；留空保持现状。"""
+    if (form.get("clear_" + key) or [""])[0]:
+        settings.pop(key, None)
+        return
+    v = (form.get(key) or [""])[0].strip()
+    if v:
+        settings[key] = v
+
+
+def apply_settings_card(form: dict, settings: dict) -> str:
+    """纯函数：卡片表单 → 更新 settings（原地）；返回错误信息，空串成功。"""
+    card = (form.get("form") or [""])[0]
+    if card not in _CARD_KEYS:
+        return f"未知设置卡片：{card or '(空)'}"
+    for key in _CARD_KEYS[card]:
+        if key == "stats_scope":
+            v = (form.get(key) or [""])[0].strip().lower()
+            if not v:
+                continue  # 表单没带这个键（手搓请求）：保持现状
+            if v not in feige._STATS_SCOPES:
+                return f"非法统计口径：{v}"
+            settings[key] = v
+            continue
+        if key in _SECRET_KEYS:
+            _set_secret(form, settings, key)
+            continue
+        if key == "llm_max_chars":
+            v = (form.get(key) or [""])[0].strip()
+            if v:
+                try:
+                    v = str(max(int(v), 50))
+                except ValueError:
+                    return f"非法摘要目标字数：{v}（须为 ≥50 的整数）"
+                settings[key] = v
+            else:
+                settings.pop(key, None)
+            continue
+        if key == "debounce_seconds":
+            v = (form.get(key) or [""])[0].strip()
+            if v:
+                try:
+                    v = str(max(float(v), 0.0))
+                except ValueError:
+                    return f"非法去抖秒数：{v}（须为数字）"
+                settings[key] = v
+            else:
+                settings.pop(key, None)
+            continue
+        _set_text(form, settings, key)
+    if card == "llm":
+        if (form.get("llm_off") or [""])[0]:
+            settings["summarize"] = False
+        else:
+            settings.pop("summarize", None)  # 回到「跟随 key 配置」
+    return ""
+
+
+def handle_settings_post(body: bytes) -> bytes:
+    form = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+    settings = dict(feige.load_settings())  # 拷贝：load_settings 返回的是缓存对象，不能原地改
+    err = apply_settings_card(form, settings)
+    if err:
+        return page_studio(err=err)
+    path = Path(feige.settings_file_path())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file():
+            shutil.copy2(path, str(path) + ".bak")  # 先备份
+        tmp = str(path) + ".tmp"
+        Path(tmp).write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8")
+        os.replace(tmp, path)  # 原子写
+    except OSError as exc:
+        return page_studio(err=f"设置保存失败：{feige.redact(exc)}")
+    card = (form.get("form") or [""])[0]
+    return page_studio(msg=f"{_CARD_TITLES[card]}已保存")
+
+
+# ── 页面：状态 ────────────────────────────────────────────────────────────────
 
 def channel_status() -> dict:
     """4 渠道凭据状态：只报 True/False，绝不取值。"""
@@ -81,9 +358,7 @@ def channel_status() -> dict:
     }
 
 
-# ── 页面：总览 ────────────────────────────────────────────────────────────────
-
-def page_overview(msg: str = "") -> bytes:
+def page_status(msg: str = "") -> bytes:
     status = channel_status()
     rows = "".join(
         f"<tr><td><code>{esc(ch)}</code></td>"
@@ -98,13 +373,25 @@ def page_overview(msg: str = "") -> bytes:
                     if isinstance(v, list)) if doc else 0
     routes_info = (f"路径 <code>{esc(routes_path)}</code> · "
                    f"{'存在，' + (str(len(doc.get('routes', {}))) + ' 个项目 · ' + str(n_targets) + ' 个目标') if doc else '不存在（按需到「群路由」页创建）'}")
+    llm = feige.llm_config()
+    llm_info = (f"{'🟢 已启用' if llm['enabled'] else '⚪ 未启用'} · 模型 "
+                f"<code>{esc(llm['model'])}</code> · base <code>{esc(llm['base_url'])}</code> · "
+                f"目标 ≤{llm['max_chars']} 字 · key 来源："
+                f"{esc(key_source('llm_api_key') or '未配置')}")
     banner = f'<div class="msg">{esc(msg)}</div>' if msg else ""
-    body = (f"{banner}<div class='card'><h3>渠道状态</h3>"
+    body = (f"{banner}<div class='card'><h3>渠道凭据</h3>"
             f"<table><tr><th>渠道</th><th>凭据</th><th>测试</th></tr>{rows}</table>"
-            f"<p class='small'>凭据只显示配置与否，密钥值与 webhook 内容永不回显。</p></div>"
+            f"<p class='small'>凭据只显示配置与否（环境变量或设置文件），密钥值与 webhook "
+            f"内容永不回显。配置请去「配置」页。</p></div>"
+            f"<div class='card'><h3>正文总结（LLM）</h3><p>{llm_info}</p></div>"
             f"<div class='card'><h3>群路由</h3><p>{routes_info}</p>"
-            f"<p><a href='/routes'>编辑路由 →</a></p></div>")
-    return page("总览", body)
+            f"<p><a href='/routes'>编辑路由 →</a></p></div>"
+            f"<div class='card'><h3>行为</h3><p>统计口径：<code>{esc(feige.stats_scope())}</code> · "
+            f"去抖：<code>{feige.debounce_seconds():g}s</code> · "
+            f"日志：<code>{esc(feige.log_file_path())}</code></p></div>"
+            f"<div class='card'><h3>接入自检</h3><p class='small'>ZCode / Claude Code / "
+            f"Codex / kimi-code 的 hook 安装状态。</p><p><a href='/adapters'>查看接入自检 →</a></p></div>")
+    return page("状态", body, tab="status")
 
 
 # ── 页面：群路由编辑 ──────────────────────────────────────────────────────────
@@ -139,9 +426,9 @@ const CH=["feishu-webhook","feishu-cardkit","dingtalk-webhook","telegram"];
 function trow(i,j){return `<tr><td><select name="ch_${i}_${j}">`+
  CH.map(c=>`<option>${c}</option>`).join("")+`</select></td>`+
  `<td><input type="text" name="wh_${i}_${j}" placeholder="$ENV 或 webhook"></td>`+
- `<td><input type="text" name="cid_${i}_${j}" placeholder="oc_… / -100…"></td>`+
- `<td><input type="text" name="tok_${i}_${j}" placeholder="$ENV 或 token"></td>`+
- `<td><input type="text" name="sec_${i}_${j}" placeholder="$ENV（签名/加签密钥）"></td></tr>`;}
+ `<td><input type="text" name="cid_${i}_{j}" placeholder="oc_… / -100…"></td>`+
+ `<td><input type="text" name="tok_${i}_{j}" placeholder="$ENV 或 token"></td>`+
+ `<td><input type="text" name="sec_${i}_{j}" placeholder="$ENV（签名/加签密钥）"></td></tr>`;}
 function addTarget(i){const t=document.getElementById("tbl_"+i);
  t.insertAdjacentHTML("beforeend",trow(i,t.rows.length-1));}
 function addProject(){const f=document.getElementById("rt");const i=window._n++;
@@ -156,7 +443,7 @@ function addProject(){const f=document.getElementById("rt");const i=window._n++;
             f"<p class='small'>channel 必填；整行留空会被丢弃。整字符串 <code>$NAME</code> "
             f"表示引用环境变量，保存时原样保留不展开。保存前自动备份为 .bak。</p>"
             f"<script>window._n={n};</script>{js}")
-    return page("群路由", body)
+    return page("群路由", body, tab="routes")
 
 
 def _parse_routes_form(form: dict) -> tuple[dict | None, str]:
@@ -274,7 +561,7 @@ def page_preview(q: dict) -> bytes:
             f"<p>上下文 <input type='text' name='context' value='{esc(gv('context'))}' style='width:160px'> "
             f"⏱️ <input type='text' name='elapsed' value='{esc(gv('elapsed'))}' style='width:100px'> "
             f"<button type='submit'>预览</button></p></form></div>")
-    return page("卡片预览", form + result_html)
+    return page("预览", form + result_html, tab="preview")
 
 
 # ── POST：测试发送 ────────────────────────────────────────────────────────────
@@ -284,15 +571,15 @@ def handle_test_post(body: bytes) -> bytes:
     channel = (form.get("channel") or [""])[0]
     status = channel_status()
     if channel not in feige.CHANNELS or not status.get(channel):
-        return page_overview(msg=f"渠道 {channel or '?'} 未配置，已跳过测试发送")
+        return page_status(msg=f"渠道 {channel or '?'} 未配置，已跳过测试发送")
     ok, detail = feige.send_report(
-        "🕊️ feige WebUI 测试卡",
-        "这是一张来自 feige WebUI 的固定内容测试卡——收到即说明该渠道凭据与版面均正常。",
+        "🕊️ feige Studio 测试卡",
+        "这是一张来自 feige Studio 的固定内容测试卡——收到即说明该渠道凭据与版面均正常。",
         stats={"project": "feige-fry-cards", "model": "", "thinking": 0,
                "tools": 0, "context": "", "elapsed": ""},
         status="ok", channel=channel)
     msg = f"[{channel}] 测试卡{'发送成功' if ok else '发送失败'}：{feige.redact(detail)}"
-    return page_overview(msg=msg)
+    return page_status(msg=msg)
 
 
 # ── 页面：接入状态自检 ────────────────────────────────────────────────────────
@@ -305,7 +592,7 @@ def _read(path: Path) -> str:
 
 
 def page_adapters(home: Path | None = None) -> bytes:
-    """三家的接入方式都读各自真实的安装记录（插件优先，手动配置兜底），只读不写。"""
+    """四家的接入方式都读各自真实的安装记录（插件优先，手动配置兜底），只读不写。"""
     home = home or Path.home()
     rows = []
     plugin = "feige-fry-cards"
@@ -338,13 +625,20 @@ def page_adapters(home: Path | None = None) -> bytes:
         x_note = "未接入（codex plugin marketplace add 本仓库目录后安装）"
     rows.append(("Codex CLI", x_note, x_plugin or x_notify, "README「插件安装 → Codex」"))
 
-    body = "<div class='card'><table><tr><th>agent</th><th>状态</th><th>说明 / 指引</th></tr>"
+    k_cfg = _read(home / ".kimi-code" / "config.toml")
+    k_ok = "stop_notify.py" in k_cfg.replace("\\", "/") or "hooks/stop.py" in k_cfg.replace("\\", "/")
+    rows.append(("kimi-code", "已手挂 Stop hook" if k_ok
+                 else "未接入（~/.kimi-code/config.toml 手挂，见 README「插件安装 → kimi-code」）",
+                 k_ok, "README「插件安装 → kimi-code」"))
+
+    body = ("<div class='card'><table><tr><th>agent</th><th>状态</th><th>说明 / 指引</th></tr>")
     for name, note, ok, guide in rows:
         body += (f"<tr><td>{esc(name)}</td>"
                  f"<td class={'ok' if ok else 'bad'}>{'已接入' if ok else '未接入'}</td>"
                  f"<td>{note}<br><span class='small'>→ {esc(guide)}</span></td></tr>")
-    body += "</table><p class='small'>本页只读检测，绝不写任何用户配置文件。</p></div>"
-    return page("接入状态自检", body)
+    body += ("</table><p class='small'>本页只读检测，绝不写任何用户配置文件。"
+             "hook 跑在 agent 启动时的环境快照里——改过环境变量请重启宿主。</p></div>")
+    return page("接入自检", body, tab="adapters")
 
 
 # ── HTTP 骨架 ─────────────────────────────────────────────────────────────────
@@ -370,7 +664,7 @@ def request_allowed(method: str, host: str, origin: str, referer: str, port: int
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "feige-webui/0.6"
+    server_version = "feige-webui/0.9"
 
     def log_message(self, fmt, *args):  # 静默访问日志（避免路径里的业务参数刷屏）
         pass
@@ -387,11 +681,13 @@ class Handler(BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(u.query or "")
         if self.command == "GET":
             if u.path in ("/", ""):
-                return page_overview()
-            if u.path == "/routes":
-                return _routes_form(feige.load_routes())
+                return page_studio()
             if u.path == "/preview":
                 return page_preview(q)
+            if u.path == "/status":
+                return page_status()
+            if u.path == "/routes":
+                return _routes_form(feige.load_routes())
             if u.path == "/adapters":
                 return page_adapters()
             return page("404", "<div class='err'>页面不存在</div>")
@@ -401,6 +697,8 @@ class Handler(BaseHTTPRequestHandler):
             return handle_routes_post(body)
         if u.path == "/test":
             return handle_test_post(body)
+        if u.path == "/settings":
+            return handle_settings_post(body)
         return page("404", "<div class='err'>页面不存在</div>")
 
     def _handle(self) -> None:
@@ -429,7 +727,7 @@ class Server(ThreadingHTTPServer):
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="🕊️ feige WebUI（仅 127.0.0.1，勿暴露端口）")
+    ap = argparse.ArgumentParser(description="🕊️ feige Studio（仅 127.0.0.1，勿暴露端口）")
     ap.add_argument("--port", type=int, default=8787)
     args = ap.parse_args()
     try:
@@ -441,7 +739,7 @@ def main() -> None:
         srv = Server(("127.0.0.1", args.port), Handler)
     except OSError as exc:
         sys.exit(f"🕊️ 端口 {args.port} 不可用（{exc}），换一个：python webui.py --port <N>")
-    print(f"🕊️ feige WebUI: http://127.0.0.1:{args.port} （Ctrl+C 退出）")
+    print(f"🕊️ feige Studio: http://127.0.0.1:{args.port} （Ctrl+C 退出）")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

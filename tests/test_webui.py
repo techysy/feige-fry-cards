@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -42,16 +43,23 @@ class WebuiPagesTest(unittest.TestCase):
         })
         self.assertTrue(all(type(value) is bool for value in result.values()))
 
-    def test_overview_shows_configuration_without_secret_values(self):
+    def test_studio_shows_configuration_without_secret_values(self):
         marker = "never-render-this-secret"
-        with mock.patch.object(webui.feige, "webhook_url", return_value=marker), \
-                mock.patch.object(webui.feige, "_env", return_value=""), \
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("FEIGE_", "FEISHU_"))}
+        env["FEISHU_CARD_WEBHOOK"] = marker
+        with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(webui.feige, "routes_file_path", return_value="routes.json"), \
                 mock.patch.object(webui.feige, "load_routes", return_value=None):
-            rendered = webui.page_overview().decode("utf-8")
+            rendered = webui.page_studio().decode("utf-8")
 
-        self.assertIn("feishu-webhook", rendered)
-        self.assertNotIn(marker, rendered)
+        self.assertIn("飞书渠道", rendered)
+        self.assertNotIn(marker, rendered)  # webhook 值绝不回显，只显已配置徽章
+
+    def test_status_page_lists_channels_and_test_buttons(self):
+        rendered = webui.page_status().decode("utf-8")
+        for ch in webui.feige.CHANNELS:
+            self.assertIn(ch, rendered)
+        self.assertIn("发送测试卡", rendered)
 
     def test_routes_form_escapes_user_values(self):
         doc = {"routes": {"<project>": [{
@@ -180,12 +188,12 @@ class WebuiHttpTest(unittest.TestCase):
         return result
 
     def test_overview_http_response(self):
-        with mock.patch.object(webui, "page_overview", return_value=b"overview"):
+        with mock.patch.object(webui, "page_studio", return_value=b"studio"):
             status, content_type, body = self.request("GET", "/")
 
         self.assertEqual(status, 200)
         self.assertEqual(content_type, "text/html; charset=utf-8")
-        self.assertEqual(body, "overview")
+        self.assertEqual(body, "studio")
 
     def test_cross_site_post_is_rejected_before_dispatch(self):
         headers = {
@@ -205,6 +213,91 @@ class WebuiHttpTest(unittest.TestCase):
 
         self.assertEqual(status, 403)
         self.assertIn("Host 不被允许", body)
+
+
+class StatsScopeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = Path(self.tmp.name) / "s.json"
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("FEIGE_", "FEISHU_", "LARK_", "DINGTALK_", "TELEGRAM_"))}
+        env["FEIGE_SETTINGS_FILE"] = str(self.settings)
+        self._patch = mock.patch.dict(os.environ, env, clear=True)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def test_scope_resolution_order(self):
+        """env FEIGE_STATS_SCOPE > 设置文件 > 默认 turn。"""
+        self.assertEqual(feige.stats_scope(), "turn")
+        self.settings.write_text('{"stats_scope": "session"}', encoding="utf-8")
+        self.assertEqual(feige.stats_scope(), "session")
+        self.settings.write_text('{"stats_scope": "bogus"}', encoding="utf-8")
+        self.assertEqual(feige.stats_scope(), "turn")
+        with mock.patch.dict(os.environ, {"FEIGE_STATS_SCOPE": "session"}):
+            self.assertEqual(feige.stats_scope(), "session")
+
+    def test_handle_settings_post(self):
+        resp = webui.handle_settings_post(b"form=behavior&stats_scope=session").decode("utf-8")
+        self.assertIn("行为开关已保存", resp)
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["stats_scope"], "session")
+        self.assertFalse(Path(str(self.settings) + ".tmp").exists())  # 原子写不留临时文件
+        # 首次保存没有旧文件可备份；第二次才产生 .bak
+        webui.handle_settings_post(b"form=behavior&stats_scope=turn&debounce_seconds=5")
+        self.assertEqual(json.loads(Path(str(self.settings) + ".bak").read_text(encoding="utf-8"))["stats_scope"],
+                         "session")
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["stats_scope"], "turn")
+        resp = webui.handle_settings_post(b"form=behavior&stats_scope=bogus").decode("utf-8")
+        self.assertIn("非法统计口径", resp)
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["stats_scope"], "turn")
+
+    def test_secret_keys_never_render_and_keep_on_empty(self):
+        """密钥：保存后页面不回显值；留空不修改；勾选清除才删。"""
+        body = urllib.parse.urlencode({"form": "llm", "llm_api_key": "sk-studio-1"}).encode()
+        resp = webui.handle_settings_post(body).decode("utf-8")
+        self.assertIn("正文总结已保存", resp)
+        self.assertNotIn("sk-studio-1", resp)
+        doc = json.loads(self.settings.read_text(encoding="utf-8"))
+        self.assertEqual(doc["llm_api_key"], "sk-studio-1")
+        # 空提交：保持现状
+        webui.handle_settings_post(b"form=llm")
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["llm_api_key"],
+                         "sk-studio-1")
+        # 清除
+        webui.handle_settings_post(b"form=llm&clear_llm_api_key=1")
+        self.assertNotIn("llm_api_key", json.loads(self.settings.read_text(encoding="utf-8")))
+        page = webui.page_studio().decode("utf-8")
+        self.assertNotIn("sk-studio-1", page)
+
+    def test_studio_page_shows_current_values_and_badges(self):
+        self.settings.write_text(json.dumps({"feishu_app_id": "cli_123",
+                                             "llm_api_key": "sk-page-keep",
+                                             "llm_model": "glm-4", "stats_scope": "session"}),
+                                 encoding="utf-8")
+        page = webui.page_studio().decode("utf-8")
+        self.assertIn("cli_123", page)          # 非敏感值回显
+        self.assertIn("glm-4", page)
+        self.assertNotIn("sk-page-keep", page)  # 密钥绝不回显
+        self.assertIn("已配置 · 设置文件", page)
+        self.assertIn("value='session' selected", page)
+        # 环境变量优先来源标注
+        os.environ["FEISHU_APP_ID"] = "cli_env"
+        page = webui.page_studio().decode("utf-8")
+        self.assertIn("已配置 · 环境变量", page)
+
+    def test_unknown_card_and_validation_errors(self):
+        resp = webui.handle_settings_post(b"form=nope").decode("utf-8")
+        self.assertIn("未知设置卡片", resp)
+        resp = webui.handle_settings_post(b"form=llm&llm_max_chars=abc").decode("utf-8")
+        self.assertIn("非法摘要目标字数", resp)
+        resp = webui.handle_settings_post(b"form=behavior&debounce_seconds=x").decode("utf-8")
+        self.assertIn("非法去抖秒数", resp)
+
+    def test_llm_off_toggle_writes_and_clears_summarize(self):
+        webui.handle_settings_post(b"form=llm&llm_api_key=sk-1&llm_off=1")
+        self.assertIs(json.loads(self.settings.read_text(encoding="utf-8"))["summarize"], False)
+        webui.handle_settings_post(b"form=llm")  # 不勾 = 回到跟随 key
+        self.assertNotIn("summarize", json.loads(self.settings.read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":
