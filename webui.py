@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import feige  # noqa: E402
 
 REPO = Path(__file__).resolve().parent
-VERSION = "0.9.0"
+VERSION = "1.0.0"
 
 _CSS = """
 body{font-family:"Microsoft YaHei",system-ui,sans-serif;max-width:1080px;margin:0 auto;
@@ -664,7 +664,7 @@ def request_allowed(method: str, host: str, origin: str, referer: str, port: int
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "feige-webui/0.9"
+    server_version = f"feige-webui/{VERSION}"
 
     def log_message(self, fmt, *args):  # 静默访问日志（避免路径里的业务参数刷屏）
         pass

@@ -43,10 +43,17 @@ python <plugin root>/feige.py send \
 渠道自动选择：有 `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL` 走自定义机器人
 webhook（一次性整卡）；否则有 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 走 CardKit
 （建卡 → 按引用发群，目标群 `FEISHU_NOTIFY_CHAT_ID` 或 `--chat-id`）。
-机器人开了签名校验就配 `FEISHU_WEBHOOK_SECRET`。正文超长会按渠道上限自动截断，
-但仍应自己先提炼。
-也可在插件设置里填（ZCode 注入为 ZCODE_USER_CONFIG_*，Claude Code 注入为
-CLAUDE_PLUGIN_OPTION_*，Stop hook 会自动映射；手动调 CLI 时仍以环境变量为准）。
+机器人开了签名校验就配 `FEISHU_WEBHOOK_SECRET`。
+
+配置来源优先级（feige._env 统一口径）：**环境变量 > 插件设置 > 设置文件
+`~/.feige-settings.json`**。用户可在插件设置里填（ZCode 注入为 ZCODE_USER_CONFIG_*，
+Claude Code 注入为 CLAUDE_PLUGIN_OPTION_*），也可跑 `python webui.py` 打开 feige
+Studio 表单化配置（保存即生效，不用环境变量、不用重启宿主）——排查凭据问题时
+三处都要看，环境变量若已设置会遮蔽后两者。
+
+正文超长：配了总结 LLM（`FEIGE_LLM_API_KEY` 或 Studio「正文总结」卡）时，后台发送
+进程会先自动浓缩成战报摘要再发；未配置/失败则按渠道上限硬截断。即便如此 `--body`
+仍应自己先提炼——总结是兜底不是免责。
 
 发送失败时：读 stderr 里打码后的错误，告诉用户该配哪个变量（webhook URL /
 app 凭据 / chat id），不要猜 chat id、不要重试轰炸。`--dry-run` 先预览卡片 JSON
