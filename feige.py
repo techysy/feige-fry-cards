@@ -105,6 +105,7 @@ _SETTINGS_ENV = {
     "FEIGE_STATS_SCOPE": "stats_scope",
     "FEIGE_DEBOUNCE_SECONDS": "debounce_seconds",
     "FEIGE_ROUTES_FILE": "routes_file",
+    "FEIGE_FOOTER_FIELDS": "footer_fields",
 }
 
 
@@ -361,29 +362,48 @@ def fit_body(body: str, limit: int = BODY_MAX_BYTES, unit: str = "bytes",
 
 # ── 统一卡片模型 ─────────────────────────────────────────────────────────────
 
-def stats_footer(stats: dict | None) -> str:
+DEFAULT_FOOTER_FIELDS = ("project", "model", "thinking", "tools", "context", "tokens", "elapsed")
+
+def stats_footer(stats: dict | None, fields: list[str] | tuple[str, ...] | None = None) -> str:
     """拼装统计脚注行：「📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 token · ⏱️耗时」。
 
     约定与家族统一面板口径一致；空字段自动省略。
+    可按 fields 列表/元组自定义字段与出现顺序。若未传，则读取设置中的 footer_fields 或默认顺序。
     """
     if not stats:
         return ""
-    parts = []
+    if fields is None:
+        cfg_fields = None
+        env_val = os.environ.get("FEIGE_FOOTER_FIELDS", "").strip()
+        if env_val:
+            try:
+                cfg_fields = [x.strip() for x in env_val.split(",") if x.strip()]
+            except Exception:
+                pass
+        if cfg_fields is None:
+            saved = load_settings().get("footer_fields")
+            if isinstance(saved, list):
+                cfg_fields = [str(x).strip() for x in saved if str(x).strip()]
+            elif isinstance(saved, str) and saved.strip():
+                cfg_fields = [str(x).strip() for x in saved.split(",") if str(x).strip()]
+        fields = cfg_fields if cfg_fields is not None else DEFAULT_FOOTER_FIELDS
+
+    field_map = {}
     project = str(stats.get("project") or "").strip()
     if project:
-        parts.append(f"📦 {project}")
+        field_map["project"] = f"📦 {project}"
     model = str(stats.get("model") or "").strip()
     if model:
-        parts.append(model.split("/")[-1])  # 只留模型名末段，渠道前缀太吵
+        field_map["model"] = model.split("/")[-1]  # 只留模型名末段，渠道前缀太吵
     thinking = stats.get("thinking")
     if thinking is not None and str(thinking).strip() and str(thinking) != "0":
-        parts.append(f"💭{thinking}")
+        field_map["thinking"] = f"💭{thinking}"
     tools = stats.get("tools")
     if tools is not None and str(tools).strip() and str(tools) != "0":
-        parts.append(f"🔧{tools}")
+        field_map["tools"] = f"🔧{tools}"
     context = str(stats.get("context") or "").strip()
     if context:
-        parts.append(context)  # 形如 "42%" 或 "86.5k/200.0k (43%)"，上游已格式化
+        field_map["context"] = context  # 形如 "42%" 或 "86.5k/200.0k (43%)"，上游已格式化
     tokens = stats.get("tokens")
     if tokens is not None and str(tokens).strip():
         try:
@@ -393,10 +413,15 @@ def stats_footer(stats: dict | None) -> str:
         else:
             token_label = compact_count(token_count) if token_count > 0 else ""
         if token_label:
-            parts.append(f"🎫 {token_label}")
+            field_map["tokens"] = f"🎫 {token_label}"
     elapsed = str(stats.get("elapsed") or "").strip()
     if elapsed:
-        parts.append(f"⏱️ {elapsed}")
+        field_map["elapsed"] = f"⏱️ {elapsed}"
+
+    parts = []
+    for f in fields:
+        if f in field_map:
+            parts.append(field_map[f])
     return " · ".join(parts)
 
 

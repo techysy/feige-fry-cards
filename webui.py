@@ -202,6 +202,25 @@ footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
 .pt-item-time{font-size:10px;color:var(--text-3);flex-shrink:0;font-variant-numeric:tabular-nums}
 .pt-empty{padding:14px 8px;font-size:12px;color:var(--muted);text-align:center}
 @media (max-width:600px){.preset-menu{width:min(340px,calc(100vw - 40px));}}
+
+/* ---------- 字段 chips（点按显隐 + 拖动排序 — 对齐 fry-cards Studio / CreditDaddy） ---------- */
+.field-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 10px; }
+.field-tip { color: var(--muted); font-size: 12px; margin-bottom: 4px; display: block; }
+.field-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); background: var(--card); color: var(--txt);
+  border-radius: 999px; padding: 4px 12px 4px 8px; font-size: 12px; font-weight: 600;
+  cursor: grab; user-select: none;
+  transition: border-color .15s, background .15s, color .15s, opacity .15s;
+}
+.field-chip:hover { border-color: var(--border-strong); }
+.field-chip .drag-handle { color: var(--text-3); flex-shrink: 0; }
+.field-chip.off { background: var(--surface-2); color: var(--text-3); font-weight: 500; opacity: .75; border-style: dashed; }
+.field-chip.dragging { opacity: .4; cursor: grabbing; }
+.field-chip.drop-mark { border-left: 3px solid var(--pri); padding-left: 5px; }
+
+/* SVG 线性图标标准样式 */
+.ic { display: inline-block; vertical-align: middle; flex-shrink: 0; margin-right: 4px; }
 """
 
 # 主题在样式表加载前确定，避免暗色用户看到白闪（对齐 ImgMark 的 head 引导脚本）
@@ -212,7 +231,9 @@ _THEME_JS = """
 <script>
 (function(){
   var b=document.getElementById('btn-theme');if(!b)return;
-  function icon(){b.textContent=document.documentElement.dataset.theme==='dark'?'☀':'☾';}
+  var sunSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>';
+  var moonSvg = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+  function icon(){b.innerHTML=document.documentElement.dataset.theme==='dark'?sunSvg:moonSvg;}
   icon();
   b.onclick=function(){var n=document.documentElement.dataset.theme==='dark'?'light':'dark';
     document.documentElement.dataset.theme=n;localStorage.setItem('feige_theme',n);icon();};
@@ -345,7 +366,101 @@ _THEME_JS = """
     toggle.classList.remove('open');
   });
 })();
+
+// 字段 chips（点按显隐 + 拖动排序，对齐 fry-cards Studio / CreditDaddy）
+(function(){
+  var box = document.getElementById('footer-chips-box');
+  if(!box) return;
+  var hiddenInput = document.getElementById('footer_fields_val');
+  var dragChip = null;
+
+  function updateValue(){
+    var picked = [];
+    box.querySelectorAll('.field-chip').forEach(function(c){
+      if(!c.classList.contains('off')) picked.push(c.dataset.field);
+    });
+    if(hiddenInput) hiddenInput.value = picked.join(',');
+  }
+
+  box.addEventListener('click', function(e){
+    var chip = e.target.closest('.field-chip');
+    if(!chip) return;
+    var off = chip.classList.toggle('off');
+    chip.setAttribute('aria-pressed', off ? 'false' : 'true');
+    updateValue();
+  });
+
+  function dropRefChip(b, x, y) {
+    var chips = Array.prototype.slice.call(b.querySelectorAll('.field-chip')).filter(function(c){ return c !== dragChip; });
+    for(var i=0; i<chips.length; i++){
+      var r = chips[i].getBoundingClientRect();
+      if(y > r.bottom) continue;
+      if(y >= r.top && x >= r.left + r.width / 2) continue;
+      return chips[i];
+    }
+    return null;
+  }
+
+  box.addEventListener('dragstart', function(e){
+    var chip = e.target.closest('.field-chip');
+    if(!chip) { e.preventDefault(); return; }
+    dragChip = chip;
+    chip.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', chip.dataset.field);
+  });
+  box.addEventListener('dragover', function(e){
+    if(!dragChip) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    box.querySelectorAll('.field-chip.drop-mark').forEach(function(c){ c.classList.remove('drop-mark'); });
+    var ref = dropRefChip(box, e.clientX, e.clientY);
+    if(ref) ref.classList.add('drop-mark');
+  });
+  box.addEventListener('drop', function(e){
+    if(!dragChip) return;
+    e.preventDefault();
+    var ref = dropRefChip(box, e.clientX, e.clientY);
+    if(ref) box.insertBefore(dragChip, ref);
+    else box.appendChild(dragChip);
+    updateValue();
+  });
+  box.addEventListener('dragleave', function(e){
+    if(e.relatedTarget && box.contains(e.relatedTarget)) return;
+    box.querySelectorAll('.field-chip.drop-mark').forEach(function(c){ c.classList.remove('drop-mark'); });
+  });
+  box.addEventListener('dragend', function(){
+    box.querySelectorAll('.field-chip.drop-mark').forEach(function(c){ c.classList.remove('drop-mark'); });
+    if(dragChip) dragChip.classList.remove('dragging');
+    dragChip = null;
+  });
+})();
 </script>"""
+
+# ── SVG 图标集（对齐 ImgMark / CreditDaddy：使用标准规范线性矢量图标，减少 Emoji） ──────
+def _svg_icon(path_d: str, w: int = 14, h: int = 14, extra: str = "") -> str:
+    return (f'<svg class="ic{(" " + extra) if extra else ""}" viewBox="0 0 24 24" width="{w}" height="{h}" '
+            f'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+            f'aria-hidden="true">{path_d}</svg>')
+
+ICONS = {
+    "dove": _svg_icon('<path d="M16 7h.01"/><path d="M3.4 18c1.3 0 2.6-.5 3.5-1.5L16 7.5a3.5 3.5 0 0 0-5-5L6 7.5A5 5 0 0 0 4.5 11c0 1.5.5 3 1.5 4.1L3.4 18z"/><path d="m14 10 5.5 5.5a2.5 2.5 0 0 1 0 3.5l-.5.5a2.5 2.5 0 0 1-3.5 0L10 14"/>', 18, 18),
+    "config": _svg_icon('<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>'),
+    "preview": _svg_icon('<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
+    "status": _svg_icon('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+    "routes": _svg_icon('<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>'),
+    "adapters": _svg_icon('<path d="M12 2v6"/><path d="m19 13-4-4"/><path d="M10 20v-6"/><path d="m5 13 4-4"/><path d="M15 11a4 4 0 0 1-6 0"/>'),
+    "feishu": _svg_icon('<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>'),
+    "dingtalk": _svg_icon('<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>'),
+    "telegram": _svg_icon('<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>'),
+    "llm": _svg_icon('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>'),
+    "behavior": _svg_icon('<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="1" x2="7" y1="14" y2="14"/><line x1="9" x2="15" y1="8" y2="8"/><line x1="17" x2="23" y1="16" y2="16"/>'),
+    "save": _svg_icon('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>'),
+    "refresh": _svg_icon('<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>'),
+    "check": _svg_icon('<path d="M20 6 9 17l-5-5"/>'),
+    "alert": _svg_icon('<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>'),
+    "lock": _svg_icon('<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
+}
 
 # 设置文件键 → 对应环境变量（来源展示与回显用；feige._SETTINGS_ENV 的反向表）
 _ENV_FOR_KEY = {v: k for k, v in feige._SETTINGS_ENV.items()}
@@ -363,14 +478,16 @@ def page(title: str, body: str, tab: str = "") -> bytes:
     def a(href: str, key: str, label: str) -> str:
         cls = " class='on'" if tab == key else ""
         return f"<a href='{href}'{cls}>{label}</a>"
-    nav = ("<nav class='nav'>" + a("/", "config", "⚙️ 配置") + a("/preview", "preview", "👁️ 预览")
-           + a("/status", "status", "📊 状态") + a("/routes", "routes", "🧭 群路由")
-           + a("/adapters", "adapters", "🔌 接入自检") + "</nav>")
+    nav = ("<nav class='nav'>" + a("/", "config", f"{ICONS['config']}配置")
+           + a("/preview", "preview", f"{ICONS['preview']}预览")
+           + a("/status", "status", f"{ICONS['status']}状态")
+           + a("/routes", "routes", f"{ICONS['routes']}群路由")
+           + a("/adapters", "adapters", f"{ICONS['adapters']}接入自检") + "</nav>")
     return (f'<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'{_THEME_BOOT}'
-            f'<title>🕊️ feige Studio · {esc(title)}</title><style>{_CSS}</style></head>'
-            f'<body><header><div class="brand"><span class="logo-emoji">🕊️</span>'
+            f'<title>feige Studio · {esc(title)}</title><style>{_CSS}</style></head>'
+            f'<body><header><div class="brand"><span class="logo-emoji">{ICONS["dove"]}</span>'
             f'<div><div class="title">feige Studio</div>'
             f'<div class="ver">v{VERSION} · 配置 <code>{esc(feige.settings_file_path())}</code></div></div></div>'
             f'<div class="head-right"><button class="icon-btn" id="btn-theme" '
@@ -411,27 +528,79 @@ def _field(skey: str, label: str, placeholder: str = "", hint: str = "") -> str:
             f"{field}{clear}</div>")
 
 
+
+FOOTER_FIELD_NAMES = {
+    "project": "项目",
+    "model": "模型",
+    "thinking": "思考数",
+    "tools": "工具数",
+    "context": "上下文",
+    "tokens": "Tokens",
+    "elapsed": "耗时",
+}
+
+def _footer_chips_html() -> str:
+    saved = feige.load_settings().get("footer_fields")
+    if saved is None:
+        saved_list = list(feige.DEFAULT_FOOTER_FIELDS)
+    else:
+        saved_list = [str(x).strip() for x in saved if str(x).strip()]
+
+    chips = []
+    active_keys = set()
+    for k in saved_list:
+        if k in FOOTER_FIELD_NAMES:
+            chips.append((k, FOOTER_FIELD_NAMES[k], True))
+            active_keys.add(k)
+    for k in feige.DEFAULT_FOOTER_FIELDS:
+        if k not in active_keys:
+            chips.append((k, FOOTER_FIELD_NAMES[k], False))
+
+    grip_svg = ('<svg class="drag-handle" viewBox="0 0 16 16" width="10" height="12" fill="currentColor" aria-hidden="true">'
+                '<circle cx="5" cy="3.2" r="1.4"/><circle cx="11" cy="3.2" r="1.4"/>'
+                '<circle cx="5" cy="8" r="1.4"/><circle cx="11" cy="8" r="1.4"/>'
+                '<circle cx="5" cy="12.8" r="1.4"/><circle cx="11" cy="12.8" r="1.4"/></svg>')
+
+    chips_html = []
+    for k, name, is_on in chips:
+        on_cls = "" if is_on else " off"
+        aria_p = "true" if is_on else "false"
+        chips_html.append(f'<button type="button" class="field-chip{on_cls}" draggable="true" '
+                          f'data-field="{esc(k)}" aria-pressed="{aria_p}">'
+                          f'{grip_svg}<span>{esc(name)}</span></button>')
+
+    active_val = ",".join(k for k, _, is_on in chips if is_on)
+    return (
+        "<div class='frow'>"
+        f"<div class='lab'>脚注字段（footer） <span class='tag on'>可拖动排序</span></div>"
+        "<span class='field-tip'>点按切换显隐（置灰 = 隐藏）；按住拖动调整展示顺序。</span>"
+        f"<div class='field-chips' id='footer-chips-box'>{''.join(chips_html)}</div>"
+        f"<input type='hidden' name='footer_fields' id='footer_fields_val' value='{esc(active_val)}'>"
+        "</div>"
+    )
+
 def _save_btn(card_id: str) -> str:
     return (f"<p><input type='hidden' name='form' value='{card_id}'>"
-            f"<button class='primary' type='submit'>💾 保存本卡片</button></p>")
+            f"<button class='primary' type='submit'>{ICONS['save']} 保存本卡片</button></p>")
 
 
 def _banner(msg: str, err: str) -> str:
     out = ""
     if err:
-        out += f'<div class="err">⚠️ {esc(err)}</div>'
+        out += f'<div class="err">{ICONS["alert"]} {esc(err)}</div>'
     if msg:
-        out += f'<div class="msg">✅ {esc(msg)}</div>'
+        out += f'<div class="msg">{ICONS["check"]} {esc(msg)}</div>'
     return out
 
 
 # ── 页面：配置（Studio 主页）──────────────────────────────────────────────────
 
-_WARN = ('<div class="warn">💾 保存只写本页白名单键进 <code>~/.feige-settings.json</code>'
-         '（写前自动备份 <code>.bak</code>），其余内容原样保留；保存即生效——后台发送'
-         '进程每次发卡重新读取，无需重启宿主。<br>🔐 密钥与 webhook 只显「已配置」徽章，'
-         '输入框永不回显：留空 = 不修改，勾选「清除」才删除。已配环境变量时环境变量优先'
-         '（徽章标注来源），此处改动对被遮蔽的键不生效。</div>')
+def _warn_html() -> str:
+    return (f'<div class="warn">{ICONS["save"]} 保存只写本页白名单键进 <code>~/.feige-settings.json</code>'
+            '（写前自动备份 <code>.bak</code>），其余内容原样保留；保存即生效——后台发送'
+            f'进程每次发卡重新读取，无需重启宿主。<br>{ICONS["lock"]} 密钥与 webhook 只显「已配置」徽章，'
+            '输入框永不回显：留空 = 不修改，勾选「清除」才删除。已配环境变量时环境变量优先'
+            '（徽章标注来源），此处改动对被遮蔽的键不生效。</div>')
 
 
 def page_studio(msg: str = "", err: str = "") -> bytes:
@@ -441,7 +610,7 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
     cur_model = feige._env(_ENV_FOR_KEY.get("llm_model", "")) or ""
     cards = {
         "feishu": (
-            "<div class='card'><h3>📲 飞书渠道</h3><form method='post' action='/settings'>"
+            f"<div class='card'><h3>{ICONS['feishu']} 飞书渠道</h3><form method='post' action='/settings'>"
             + _field("feishu_webhook", "自定义机器人 webhook",
                      "https://open.feishu.cn/open-apis/bot/v2/hook/…", "填了就走 webhook 通道")
             + _field("feishu_webhook_secret", "webhook 签名密钥", hint="机器人开「签名校验」才需要")
@@ -451,20 +620,20 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
             + _field("feishu_chat_id", "接收群 chat_id", "oc_…", "CardKit 通道必配")
             + _save_btn("feishu") + "</form></div>"),
         "dingtalk": (
-            "<div class='card'><h3>📎 钉钉渠道</h3><form method='post' action='/settings'>"
+            f"<div class='card'><h3>{ICONS['dingtalk']} 钉钉渠道</h3><form method='post' action='/settings'>"
             + _field("dingtalk_webhook", "机器人 webhook")
             + _field("dingtalk_secret", "加签密钥", hint="SEC 开头，安全设置选「加签」才需要")
             + "<p class='small'>钉钉无交互卡，发 markdown 消息；需显式 <code>--channel</code> "
               "或群路由指定。</p>"
             + _save_btn("dingtalk") + "</form></div>"),
         "telegram": (
-            "<div class='card'><h3>✈️ Telegram 渠道</h3><form method='post' action='/settings'>"
+            f"<div class='card'><h3>{ICONS['telegram']} Telegram 渠道</h3><form method='post' action='/settings'>"
             + _field("telegram_bot_token", "Bot token", hint="BotFather 发放，形如 123456:ABC-…")
             + _field("telegram_chat_id", "目标 chat", "-100…（群）或个人 id")
             + "<p class='small'>纯文本版式（≤4096 UTF-16 单元）；需显式渠道或路由指定。</p>"
             + _save_btn("telegram") + "</form></div>"),
         "llm": (
-            f"<div class='card'><h3>🧠 正文总结（LLM）{llm_state}</h3>"
+            f"<div class='card'><h3>{ICONS['llm']} 正文总结（LLM）{llm_state}</h3>"
             "<form method='post' action='/settings'>"
             + _field("llm_api_key", "API key", "OpenAI 兼容 chat/completions；配了才启用")
             + _field("llm_base_url", "Base URL", feige.DEFAULT_LLM_BASE_URL)
@@ -478,7 +647,7 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
                "<div id='llm-model-menu' class='preset-menu hidden'>"
                "<div style='display:flex;gap:6px;margin-bottom:4px'>"
                "<input type='text' id='llm-model-filter' placeholder='搜索模型…' style='flex:1'>"
-               "<button type='button' id='llm-models-refresh' class='btn tiny' title='从当前服务地址拉取最新模型'>🔄 拉取</button>"
+               f"<button type='button' id='llm-models-refresh' class='btn tiny' title='从当前服务地址拉取最新模型'>{ICONS['refresh']} 拉取</button>"
                "</div>"
                "<div id='llm-model-list'><div class='pt-empty'>点击「拉取」或展开菜单从服务端获取模型</div></div>"
                "</div></div></div>")
@@ -490,21 +659,22 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
               "未配置/失败退化为硬截断；宿主 hook 前台零网络阻塞。</p>"
             + _save_btn("llm") + "</form></div>"),
         "behavior": (
-            "<div class='card'><h3>🛠️ 行为开关</h3><form method='post' action='/settings'>"
+            f"<div class='card'><h3>{ICONS['behavior']} 行为开关</h3><form method='post' action='/settings'>"
             + _select_field("stats_scope", "统计口径",
-                            {"turn": "单轮（💭/🔧/🎫/⏱️ 只算最后一轮）",
+                            {"turn": "单轮（只算最后一轮）",
                              "session": "全程（整个会话累计）"},
                             feige.stats_scope())
+            + _footer_chips_html()
             + _field("debounce_seconds", "收尾去抖秒数", "0", "同会话 N 秒内又收尾只发最后一张；0=每轮都发")
             + _field("routes_file", "群路由文件路径", "~/.feige-routes.json", "留空用默认")
             + "<p class='small'>宿主 hook 的启用开关（hook_notify）与凭据在各自插件设置里"
               "也有入口——插件设置注入为环境变量，优先于本页。</p>"
             + _save_btn("behavior") + "</form></div>"),
     }
-    body = (_banner(msg, err) + _WARN
+    body = (_banner(msg, err) + _warn_html()
             + "<div class='grid'>" + cards["feishu"] + cards["llm"]
             + cards["dingtalk"] + cards["telegram"] + cards["behavior"] + "</div>"
-            + "<div class='card'><h3>🧭 群路由</h3><p class='small'>项目 → 多群 fanout "
+            + f"<div class='card'><h3>{ICONS['routes']} 群路由</h3><p class='small'>项目 → 多群 fanout "
               "（钉钉 / Telegram 的凭据配在这里）。路由文件里的密钥建议写 <code>$ENV</code> 引用。</p>"
               "<p><a href='/routes'>编辑群路由 →</a></p></div>")
     return page("配置", body, tab="config")
@@ -528,7 +698,7 @@ _CARD_KEYS = {
     "dingtalk": ["dingtalk_webhook", "dingtalk_secret"],
     "telegram": ["telegram_bot_token", "telegram_chat_id"],
     "llm": ["llm_api_key", "llm_base_url", "llm_model", "llm_max_chars"],
-    "behavior": ["stats_scope", "debounce_seconds", "routes_file"],
+    "behavior": ["stats_scope", "debounce_seconds", "routes_file", "footer_fields"],
 }
 _CARD_TITLES = {"feishu": "飞书渠道", "dingtalk": "钉钉渠道", "telegram": "Telegram",
                 "llm": "正文总结", "behavior": "行为开关"}
@@ -580,6 +750,13 @@ def apply_settings_card(form: dict, settings: dict) -> str:
                 settings[key] = v
             else:
                 settings.pop(key, None)
+            continue
+        if key == "footer_fields":
+            v = (form.get(key) or [""])[0].strip()
+            if v:
+                settings[key] = [x.strip() for x in v.split(",") if x.strip()]
+            else:
+                settings[key] = []
             continue
         if key == "debounce_seconds":
             v = (form.get(key) or [""])[0].strip()
@@ -880,13 +1057,18 @@ def page_adapters(home: Path | None = None) -> bytes:
                  else "未安装插件（ZCode 插件市场添加本仓库目录后安装）",
                  z_ok, "README「插件安装 → ZCode」"))
 
-    c_plugin = plugin in _read(home / ".claude" / "plugins" / "installed_plugins.json")
+    c_plugin = (
+        plugin in _read(home / ".claude" / "plugins" / "installed_plugins.json")
+        or plugin in _read(home / ".claude.json")
+        or (home / ".claude" / "plugins" / "data" / "feige-fry-cards-inline").exists()
+    )
     settings = _read(home / ".claude" / "settings.json")
     c_manual = "stop_notify.py" in settings or "hooks/stop.py" in settings
+    c_ok = c_plugin or c_manual
     c_note = ("已安装 feige-fry-cards 插件" if c_plugin
               else "已手动配置 Stop hook" if c_manual
               else "未接入（/plugin marketplace add 本仓库目录后安装）")
-    rows.append(("Claude Code", c_note, c_plugin or c_manual, "README「插件安装 → Claude Code」"))
+    rows.append(("Claude Code", c_note, c_ok, "README「插件安装 → Claude Code」"))
 
     toml = _read(home / ".codex" / "config.toml")
     notify = next((ln.strip() for ln in toml.splitlines() if ln.strip().startswith("notify")), "")
@@ -904,7 +1086,8 @@ def page_adapters(home: Path | None = None) -> bytes:
     rows.append(("Codex CLI", x_note, x_plugin or x_notify, "README「插件安装 → Codex」"))
 
     k_cfg = _read(home / ".kimi-code" / "config.toml")
-    k_ok = "stop_notify.py" in k_cfg.replace("\\", "/") or "hooks/stop.py" in k_cfg.replace("\\", "/")
+    k_norm = k_cfg.replace(chr(92), "/")
+    k_ok = any(x in k_norm for x in ("stop_notify.py", "hooks/stop.py", "feige_kimi_stop.py", "feige"))
     rows.append(("kimi-code", "已手挂 Stop hook" if k_ok
                  else "未接入（~/.kimi-code/config.toml 手挂，见 README「插件安装 → kimi-code」）",
                  k_ok, "README「插件安装 → kimi-code」"))
