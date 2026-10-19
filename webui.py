@@ -617,7 +617,10 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
             + _field("feishu_app_id", "App ID（CardKit）", "cli_…", "不用 webhook 时填")
             + _field("feishu_app_secret", "App Secret（CardKit）")
             + _field("feishu_base_url", "飞书域名", feige.DEFAULT_BASE_URL, "Lark 国际版填 open.larksuite.com")
-            + _field("feishu_chat_id", "接收群 chat_id", "oc_…", "CardKit 通道必配")
+            + _field("feishu_chat_id", "接收群 chat_id", "oc_…", "CardKit 通道必配（全项目默认群）")
+            # 每群一个接收群：键名 feishu_chat_id__<项目名>，项目名必须与路由标签逐字一致
+            + _field("feishu_chat_id__10router", "10Router 群 chat_id（按项目覆盖）", "oc_…",
+                     "键名 feishu_chat_id__<项目名>：留空则该项目沿用上面的默认群")
             + _save_btn("feishu") + "</form></div>"),
         "dingtalk": (
             f"<div class='card'><h3>{ICONS['dingtalk']} 钉钉渠道</h3><form method='post' action='/settings'>"
@@ -694,7 +697,9 @@ def _select_field(skey: str, label: str, options: dict, current: str) -> str:
 
 _CARD_KEYS = {
     "feishu": ["feishu_webhook", "feishu_webhook_secret", "feishu_app_id",
-               "feishu_app_secret", "feishu_base_url", "feishu_chat_id"],
+               "feishu_app_secret", "feishu_base_url", "feishu_chat_id",
+               # 按项目覆盖接收群：键名 feishu_chat_id__<项目名>（与路由标签逐字一致）
+               "feishu_chat_id__10router"],
     "dingtalk": ["dingtalk_webhook", "dingtalk_secret"],
     "telegram": ["telegram_bot_token", "telegram_chat_id"],
     "llm": ["llm_api_key", "llm_base_url", "llm_model", "llm_max_chars"],
@@ -850,8 +855,15 @@ def page_status(msg: str = "") -> bytes:
 
 # ── 页面：群路由编辑 ──────────────────────────────────────────────────────────
 
+def _auto_projects() -> set[str]:
+    """设置文件里已开启自动战报的项目名（auto_notify_projects 字符串数组）。"""
+    raw = feige.load_settings().get("auto_notify_projects")
+    return {str(p).strip() for p in raw if str(p).strip()} if isinstance(raw, list) else set()
+
+
 def _routes_form(doc: dict, msg: str = "", err: str = "") -> bytes:
     routes = (doc or {}).get("routes", {})
+    auto_on = _auto_projects()
     blocks = []
     for i, (proj, targets) in enumerate(sorted(routes.items())):
         trows = "".join(
@@ -865,9 +877,14 @@ def _routes_form(doc: dict, msg: str = "", err: str = "") -> bytes:
             f"<td><input type='text' name='sec_{i}_{j}' value='{esc(t.get('secret', ''))}' placeholder='$ENV（签名/加签密钥）'></td>"
             "</tr>"
             for j, t in enumerate(targets if isinstance(targets, list) else []))
+        checked = " checked" if proj in auto_on else ""
+        auto_tip = ("该项目每轮收尾自动发战报" if proj in auto_on
+                    else "不勾 = 只保留路由，不自动发（可在会话里手动 --route）")
         blocks.append(
             f"<div class='card'><h3>项目 <input type='text' name='proj_{i}' value='{esc(proj)}' "
-            f"style='width:280px'></h3>"
+            f"style='width:280px' oninput=\"syncAuto(this)\">"
+            f"<label class='small' style='margin-left:12px' title=\"{esc(auto_tip)}\">"
+            f"<input type='checkbox' name='auto_{esc(proj)}' value='1'{checked}> 自动战报</label></h3>"
             f"<table id='tbl_{i}'><tr><th>channel</th><th>webhook</th><th>chat_id</th><th>token</th><th>secret</th></tr>"
             f"{trows}</table>"
             f"<button type='button' onclick=\"addTarget({i})\">＋目标</button></div>")
@@ -880,13 +897,17 @@ const CH=["feishu-webhook","feishu-cardkit","dingtalk-webhook","telegram"];
 function trow(i,j){return `<tr><td><select name="ch_${i}_${j}">`+
  CH.map(c=>`<option>${c}</option>`).join("")+`</select></td>`+
  `<td><input type="text" name="wh_${i}_${j}" placeholder="$ENV 或 webhook"></td>`+
- `<td><input type="text" name="cid_${i}_{j}" placeholder="oc_… / -100…"></td>`+
- `<td><input type="text" name="tok_${i}_{j}" placeholder="$ENV 或 token"></td>`+
- `<td><input type="text" name="sec_${i}_{j}" placeholder="$ENV（签名/加签密钥）"></td></tr>`;}
+ `<td><input type="text" name="cid_${i}_${j}" placeholder="oc_… / -100…"></td>`+
+ `<td><input type="text" name="tok_${i}_${j}" placeholder="$ENV 或 token"></td>`+
+ `<td><input type="text" name="sec_${i}_${j}" placeholder="$ENV（签名/加签密钥）"></td></tr>`;}
 function addTarget(i){const t=document.getElementById("tbl_"+i);
  t.insertAdjacentHTML("beforeend",trow(i,t.rows.length-1));}
+// 项目名输入即同步「自动战报」复选框的 name，保存后新项目立刻能被勾上
+function syncAuto(el){const box=el.parentNode.querySelector("input[type=checkbox]");
+ if(box) box.name="auto_"+el.value.trim();}
 function addProject(){const f=document.getElementById("rt");const i=window._n++;
- f.insertAdjacentHTML("beforeend",`<div class="card"><h3>项目 <input type="text" name="proj_${i}" style="width:280px"></h3>`+
+ f.insertAdjacentHTML("beforeend",`<div class="card"><h3>项目 <input type="text" name="proj_${i}" style="width:280px" oninput="syncAuto(this)">`+
+ `<label class="small" style="margin-left:12px"><input type="checkbox" name="auto_" value="1"> 自动战报</label></h3>`+
  `<table id="tbl_${i}"><tr><th>channel</th><th>webhook</th><th>chat_id</th><th>token</th><th>secret</th></tr></table>`+
  `<button type="button" onclick="addTarget(${i})">＋目标</button></div>`);addTarget(i);}
 </script>"""
@@ -939,16 +960,49 @@ def _parse_routes_form(form: dict) -> tuple[dict | None, str]:
     return doc, ""
 
 
+def _save_auto_projects(names: set[str]) -> tuple[set[str], str]:
+    """把「自动战报」勾选结果写进设置文件的 auto_notify_projects（字符串数组）。
+
+    只动这一个键：路由表单一个 POST 提交，其它设置项原样保留。
+    失败返回 (原值, 错误信息)，调用方继续保存路由（开关失败不该连累路由）。
+    """
+    settings = dict(feige.load_settings())
+    current = settings.get("auto_notify_projects")
+    keep = sorted({str(p).strip() for p in current if str(p).strip()}) if isinstance(current, list) else []
+    wanted = sorted(names)
+    if keep == wanted:
+        return set(wanted), ""
+    settings["auto_notify_projects"] = wanted
+    path = Path(feige.settings_file_path())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file():
+            shutil.copy2(path, str(path) + ".bak")
+        tmp = str(path) + ".tmp"
+        Path(tmp).write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        return set(keep), f"自动开关保存失败：{feige.redact(exc)}"
+    return set(wanted), ""
+
+
 def handle_routes_post(body: bytes) -> bytes:
     form = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
     doc, err = _parse_routes_form(form)
     if err:
         return _routes_form(feige.load_routes(), err=err)
+    # 自动战报开关：勾了就写进设置文件（per-project），取消勾选即删除
+    auto_on = {name for name in doc["routes"]
+               if (form.get(f"auto_{name}") or [""])[0].strip() in ("on", "1", "true")}
+    saved_auto, auto_err = _save_auto_projects(auto_on)
     # 冒烟：保存后语义与 feige.resolve_routes 一致，先 dry 一遍计数
     def _smoke(p: str) -> str:
         targets = feige.resolve_routes(p, doc)
         bad = sum(1 for t in targets if t.get("_unresolved"))
-        return f"{p}: {len(targets)} 目标" + (f"（{bad} 个引用了未设置的 $ENV，发送时将跳过）" if bad else "")
+        flag = "自动发" if p in auto_on else "仅手动"
+        return f"{p}: {len(targets)} 目标 · {flag}" + (
+            f"（{bad} 个引用了未设置的 $ENV，发送时将跳过）" if bad else "")
     smoke = ", ".join(_smoke(p) for p in doc["routes"])
     path = feige.routes_file_path()
     try:
@@ -963,7 +1017,9 @@ def handle_routes_post(body: bytes) -> bytes:
     except OSError as exc:
         return _routes_form(feige.load_routes(),
                             err=f"保存失败：{feige.redact(exc)}")
-    return _routes_form(doc, msg=f"已保存（冒烟：{smoke or '空路由'}），原文件备份为 .bak")
+    note = (f"已保存（冒烟：{smoke or '空路由'}），原文件备份为 .bak"
+            + (f"；自动开启：{', '.join(sorted(saved_auto))}" if saved_auto else "；未开启自动战报"))
+    return _routes_form(doc, msg=note, err=auto_err)
 
 
 # ── 页面：卡片预览 ────────────────────────────────────────────────────────────

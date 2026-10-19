@@ -1,7 +1,8 @@
 """🕊️ feige-fry-cards 适配器公共件：开关、项目标签、teaser、fail-open 发送。
 
 约定（与 M2 ZCode hook 一致）：
-- FEIGE_HOOK_NOTIFY=1 才启用，默认关闭；
+- FEIGE_HOOK_NOTIFY=1 才启用，默认关闭；已在路由文件里配了群的项目**自动开启**
+  （per-project 开关，见 routes_auto_enabled）；
 - FEIGE_DRY_RUN=1 把卡片 JSON 打到 stderr，不发网络；
 - 插件 userConfig（CLAUDE_PLUGIN_OPTION_* / ZCODE_USER_CONFIG_*）映射为 feige 环境变量；
 - 正式发送走后台子进程（feige.py send --route），hook 立刻返回；
@@ -126,7 +127,11 @@ def fmt_elapsed(seconds: float) -> str:
 
 
 def project_label(cwd: str) -> str:
-    """从 cwd 提取项目标签：GitHub Files\\X / workspace\\X 一级目录，否则目录末段。"""
+    """从 cwd 提取项目标签：GitHub Files\\X / workspace\\X 一级目录，否则目录末段。
+
+    这是**路由键**：~/.feige-routes.json 的 routes 键必须与它逐字相同（大小写、
+    空格都算），否则命不中、只能落到 "*" 兜底（那就等于「所有项目发同一个群」）。
+    """
     p = (cwd or "").strip().rstrip("/\\").replace("/", "\\")
     if not p:
         return ""
@@ -138,6 +143,17 @@ def project_label(cwd: str) -> str:
                 return seg
     seg = p.split("\\")[-1]
     return seg if len(seg) > 1 and not seg.endswith(":") else ""
+
+
+def routes_auto_enabled(project: str) -> bool:
+    """该项目的自动战报是否开启：有路由目标就发，没有就不发（per-project 总闸）。
+
+    与 has_sink 的区别：has_sink 是「**能不能**发」（默认渠道或路由），这里是
+    「**该不该**发」。用户要求按群自动开关——同一个宿主里 A 项目发、B 项目不发，
+    只能由路由决定：配了 routes[project] 即视为自动开启，未配置则不自动发。
+    环境变量 FEIGE_HOOK_NOTIFY=0 / 插件设置 hook_notify 关闭仍是全局硬闸，先判。
+    """
+    return bool(feige.resolve_routes(project, feige.load_routes()))
 
 
 def read_payload() -> dict:
@@ -230,8 +246,14 @@ def send_card(title: str, body: str, stats: dict, agent: str, session: str = "")
     spawn_detached(send_argv(title, body, stats, f"{agent}:{session}" if session else ""))
 
 
-def run(main) -> None:
-    """驱动入口：默认关 directly return；任何异常 exit 0。"""
+def run(main, project: str | None = None) -> None:
+    """驱动入口：默认关 directly return；任何异常 exit 0。
+
+    project 非空时按「每群自动开关」判定：该项目在路由文件里有目标 → 自动发送
+    （即使 FEIGE_HOOK_NOTIFY 未开）；没有目标 → 只有全局开关显式打开时才发。
+    全局关闭（FEIGE_HOOK_NOTIFY=0/插件 hook_notify 关）永远是硬闸，per-project
+    只在「没配全局值」时生效——否则用户关不掉。
+    """
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -242,7 +264,14 @@ def run(main) -> None:
     except Exception:
         pass
     if not hook_enabled():
-        return
+        auto = False
+        if project:
+            try:
+                auto = routes_auto_enabled(project)
+            except Exception:
+                auto = False
+        if not auto:
+            return
     try:
         main()
     except Exception:

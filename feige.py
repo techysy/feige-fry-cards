@@ -570,6 +570,34 @@ def default_chat_id() -> str:
     return _env("FEISHU_NOTIFY_CHAT_ID", "FEISHU_CARD_CHAT_ID")
 
 
+_PROJECT_CHAT_PREFIX = "feishu_chat_id__"  # 设置文件里按项目覆盖的键前缀
+
+def project_chat_id(project: str) -> str:
+    """按项目覆盖接收群：设置文件 `"feishu_chat_id__<项目名>": "oc_xxx"`。
+
+    回退链：环境变量 `FEISHU_CHAT_ID__<项目名>`（先取，供插件设置注入）
+    > 设置文件 `feishu_chat_id__<项目名>` > default_chat_id()（全局默认群）。
+    项目名为空时直接走默认群。
+
+    这条链解决「一个宿主里不同项目发不同群但只想用一条全局配置」的场景：
+    ChatID 只有在路由目标显式给了 chat_id 时才会被目标覆盖，没给就落到这里。
+    命名用双下划线而不是 `项目.feishu_chat_id`——后者会被 load_settings 里的
+    点号嵌套语义拆开，也便于在 Studio 表单里按前缀扫描。
+    """
+    name = (project or "").strip()
+    if not name:
+        return default_chat_id()
+    env_key = f"FEISHU_CHAT_ID__{name}"
+    value = (os.environ.get(env_key) or "").strip()
+    if value:
+        return value
+    settings = load_settings()
+    value = str(settings.get(_PROJECT_CHAT_PREFIX + name) or "").strip()
+    if value:
+        return value
+    return default_chat_id()
+
+
 def get_tenant_token() -> str:
     """tenant_access_token 获取与缓存（提前 60 秒续期）。"""
     app_id = _env("FEISHU_APP_ID", "LARK_APP_ID")
@@ -962,14 +990,17 @@ def send_routed(title: str, body: str, stats: dict | None = None, status: str = 
                 doc: dict | None = None) -> tuple[bool, str]:
     """按路由 fanout：每个目标独立发送（单目标失败不影响其余），返回聚合结果。
 
-    无路由文件 / 文件损坏 / 项目无匹配且无 "*" 兜底：退化为现有单渠道行为。
+    无路由文件 / 文件损坏 / 项目无匹配且无 "*" 兜底：退化为现有单渠道行为，
+    但目标群仍按项目解析（project_chat_id）——「只配项目群、不配路由」是最轻量的
+    每群开关用法，不能因为没写路由文件就发进全局默认群。
     """
     doc = load_routes() if doc is None else doc
     targets = resolve_routes(project, doc) if doc else []
     if not targets:
         if doc is not None:
             log(f"no route for project {project or '(none)'!r} (no \"*\" fallback), single-channel")
-        return send_report(title, body, stats=stats, status=status, dry_run=dry_run)
+        return send_report(title, body, stats=stats, status=status, dry_run=dry_run,
+                           chat_id=project_chat_id(project) if project else "")
     results: list[tuple[bool, str]] = []
     for t in targets:
         channel = str(t.get("channel") or "").strip()
@@ -986,7 +1017,11 @@ def send_routed(title: str, body: str, stats: dict | None = None, status: str = 
             continue
         ok, detail = send_report(
             title, body, stats=stats, status=status, channel=channel,
-            chat_id=str(t.get("chat_id") or ""), webhook=str(t.get("webhook") or ""),
+            # 目标没写 chat_id → 落到「本项目对应的群」（没配项目键则是全局默认群），
+            # 而不是空串：空串会被 send_report 当成「用默认」，但默认群恰恰是
+            # 用户想按项目分开的那个值。
+            chat_id=str(t.get("chat_id") or "") or (project_chat_id(project) if project else ""),
+            webhook=str(t.get("webhook") or ""),
             token=str(t.get("token") or ""), secret=str(t.get("secret") or ""),
             dry_run=dry_run)
         results.append((ok, f"[{channel}] {detail}"))

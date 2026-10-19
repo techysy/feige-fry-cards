@@ -9,6 +9,19 @@
 
 ### Added
 
+- **每群自动开启（per-project 自动战报开关）**：路由文件里配了目标的项目，即使没开
+  全局 `FEIGE_HOOK_NOTIFY`，每轮收尾也会自动发卡；没配路由的项目照旧不发。
+  全局开关仍是硬闸（显式 `FEIGE_HOOK_NOTIFY=0` / 插件 hook_notify 关闭时，
+  未配路由的项目一律静默），不会出现「关不掉」。
+  Studio「群路由」页每个项目新增「自动战报」勾选框，勾选结果存
+  `~/.feige-settings.json` 的 `auto_notify_projects`，保存路由时一并写入。
+- **按项目覆盖接收群**：设置文件支持 `"feishu_chat_id__<项目名>": "oc_xxx"`
+  （环境变量同名为 `FEISHU_CHAT_ID__<项目名>`）。路由目标没写 `chat_id` 时落到
+  该项目的群，没配项目键再落回全局默认群；目标里显式写的 `chat_id` 优先级最高。
+  Studio 飞书渠道卡新增 10Router 群输入框。
+
+### Added
+
 - **模型在线拉取（对齐 ImgMark）**：feige Studio 总结 LLM 支持从 OpenAI 兼容服务的 `/models` 接口拉取可用模型列表；支持按厂商/前缀自动分组、上下文长度角标呈现、模糊搜索过滤，点击卡片即刻填入配置。
 
 ## [1.0.0] - 2026-10-17 — 🕊️ 从首飞到 1.0

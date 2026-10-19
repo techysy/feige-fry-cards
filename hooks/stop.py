@@ -93,7 +93,8 @@ def main() -> None:
 
     if host == "codex":
         adapter = _load(ADAPTERS / "codex" / "notify.py", "feige_codex")
-        common.run(lambda: adapter.main_hook(payload))
+        # 每群自动开关：路由文件里配了本项目 → 即使未开全局 hook 也发
+        common.run(lambda: adapter.main_hook(payload), project=common.project_label(str(payload.get("cwd") or "")))
     elif host == "kimi-code":
         # kimi 适配器自带开关（注册即开启），不走 common.run 的 FEIGE_HOOK_NOTIFY 默认关
         adapter = _load(ADAPTERS / "kimi-code" / "stop_notify.py", "feige_kimi_code")
@@ -104,7 +105,7 @@ def main() -> None:
             log(f"kimi adapter failed (fail-open): {exc}")
     else:
         adapter = _load(ADAPTERS / "claude-code" / "stop_notify.py", "feige_claude_code")
-        common.run(lambda: adapter.main(payload))
+        common.run(lambda: adapter.main(payload), project=common.project_label(str(payload.get("cwd") or "")))
 
 
 if __name__ == "__main__":

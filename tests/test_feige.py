@@ -92,6 +92,80 @@ class RoutesTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertNotIn("secret", " ".join(str(c) for c in lg.call_args_list))
 
+    def test_target_without_chat_id_uses_project_chat(self):
+        """每群自动：目标只写 channel 时，群应落到「本项目」的 chat_id，而非全局默认群。"""
+        doc = {"routes": {"proj": [{"channel": "feishu-cardkit"}]}}
+        with mock.patch.dict(os.environ, {"FEISHU_CHAT_ID__proj": "oc_project",
+                                          "FEISHU_NOTIFY_CHAT_ID": "oc_default"}, clear=True), \
+             mock.patch.object(feige, "send_report", return_value=(True, "ok")) as sr:
+            feige.send_routed("t", "b", project="proj", doc=doc)
+        self.assertEqual(sr.call_args.kwargs["chat_id"], "oc_project")
+
+    def test_target_chat_id_wins_over_project_chat(self):
+        doc = {"routes": {"proj": [{"channel": "feishu-cardkit", "chat_id": "oc_explicit"}]}}
+        with mock.patch.dict(os.environ, {"FEISHU_CHAT_ID__proj": "oc_project"}, clear=True), \
+             mock.patch.object(feige, "send_report", return_value=(True, "ok")) as sr:
+            feige.send_routed("t", "b", project="proj", doc=doc)
+        self.assertEqual(sr.call_args.kwargs["chat_id"], "oc_explicit")
+
+    def test_project_chat_falls_back_to_default(self):
+        doc = {"routes": {"proj": [{"channel": "feishu-cardkit"}]}}
+        with mock.patch.dict(os.environ, {"FEISHU_NOTIFY_CHAT_ID": "oc_default"}, clear=True), \
+             mock.patch.object(feige, "load_settings", return_value={}), \
+             mock.patch.object(feige, "send_report", return_value=(True, "ok")) as sr:
+            feige.send_routed("t", "b", project="proj", doc=doc)
+        self.assertEqual(sr.call_args.kwargs["chat_id"], "oc_default")
+
+    def test_project_chat_from_settings_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, "s.json")
+            path.write_text(json.dumps({"feishu_chat_id__proj": "oc_from_file"}), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"FEIGE_SETTINGS_FILE": str(path)}, clear=True):
+                self.assertEqual(feige.project_chat_id("proj"), "oc_from_file")
+                self.assertEqual(feige.project_chat_id(""), "")  # 无全局默认 → 空
+
+
+class AutoNotifyTest(unittest.TestCase):
+    """「每个群自动开启」：路由里配了项目 → 未开全局 hook 也自动发。"""
+
+    def test_routes_auto_enabled_by_project(self):
+        sys.path.insert(0, str(REPO / "adapters"))
+        import common
+        doc = {"routes": {"proj": [{"channel": "feishu-cardkit"}]}}
+        with mock.patch.object(feige, "load_routes", return_value=doc):
+            self.assertTrue(common.routes_auto_enabled("proj"))
+            self.assertFalse(common.routes_auto_enabled("other"))
+
+    def test_run_skips_when_no_route_and_hook_off(self):
+        sys.path.insert(0, str(REPO / "adapters"))
+        import common
+        called = []
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(common, "apply_plugin_options", lambda *a, **k: None), \
+             mock.patch.object(common, "routes_auto_enabled", return_value=False):
+            common.run(lambda: called.append(1), project="proj")
+        self.assertEqual(called, [])
+
+    def test_run_fires_when_route_present_even_hook_off(self):
+        sys.path.insert(0, str(REPO / "adapters"))
+        import common
+        called = []
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(common, "apply_plugin_options", lambda *a, **k: None), \
+             mock.patch.object(common, "routes_auto_enabled", return_value=True):
+            common.run(lambda: called.append(1), project="proj")
+        self.assertEqual(called, [1])
+
+    def test_global_off_still_wins_without_route(self):
+        """没配路由时全局开关语义不变：FEIGE_HOOK_NOTIFY=1 才发。"""
+        sys.path.insert(0, str(REPO / "adapters"))
+        import common
+        called = []
+        with mock.patch.dict(os.environ, {"FEIGE_HOOK_NOTIFY": "1"}, clear=True), \
+             mock.patch.object(common, "apply_plugin_options", lambda *a, **k: None):
+            common.run(lambda: called.append(1))
+        self.assertEqual(called, [1])
+
 
 class CliTest(unittest.TestCase):
     def test_body_starting_with_dash(self):
