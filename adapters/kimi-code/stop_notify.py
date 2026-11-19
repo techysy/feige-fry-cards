@@ -128,6 +128,7 @@ def summarize_wire(path: Path) -> dict | None:
     turn_first: dict[str, float] = {}
     turn_tools: dict[str, int] = {}
     turn_thinking: dict[str, int] = {}
+    turn_text: dict[str, str] = {}  # 每轮最后一条 text：正文只取最后一轮，绝不回落上一轮
     last_turn = None
     saw_turn = False
 
@@ -195,16 +196,19 @@ def summarize_wire(path: Path) -> dict | None:
                     text = str(part.get("text") or "").strip()
                     if text:
                         last_text = text
+                        if tid is not None:
+                            turn_text[tid] = text
                         saw_turn = True
 
     if not saw_turn:
         return None
 
-    # 💭/🔧/🎫 只算最后一轮（全程口径 / 无 turnId 的老格式保留全文件统计）
+    # 💭/🔧/🎫/正文 只算最后一轮（全程口径 / 无 turnId 的老格式保留全文件统计）
     if stats_scope() == "session":
         last_turn = None
     if last_turn is not None:
         tools = turn_tools.get(last_turn, 0)
+        last_text = turn_text.get(last_turn, "")  # 最后一轮没文本就发占位符，不回落上一轮
         thinking = turn_thinking.get(last_turn, 0)
         start = turn_first.get(last_turn)
         if start is not None:
@@ -257,7 +261,9 @@ def main(payload: dict | None = None) -> None:
         "tokens": summary["tokens"],
         "elapsed": summary["elapsed"],
     }
-    send_card("", summary["body"], stats, agent="kimi-code", session=session_id)
+    send_card("", summary["body"], stats, agent="kimi-code", session=session_id,
+              # 传转录路径：后台发送进程开卡前重读一次，治宿主落盘滞后
+              transcript=str(wire))
 
 
 if __name__ == "__main__":

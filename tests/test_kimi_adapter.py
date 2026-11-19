@@ -153,6 +153,21 @@ class ContextWindowTest(unittest.TestCase):
             self.assertEqual(kimi.context_window("mystery-1", Path(d)), 131_072)
 
 
+class MainWiringTest(WireFixtureMixin, unittest.TestCase):
+    def test_main_passes_transcript_to_send_card(self):
+        """send_card 必须收到 transcript=wire 路径：后台发送进程开卡前重读的接线。"""
+        with tempfile.TemporaryDirectory() as d:
+            home = self.write_wire(Path(d))
+            wire = home / "sessions" / "wd_x" / "session_abc" / "agents" / "main" / "wire.jsonl"
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": str(home),
+                                              "FEIGE_HOOK_NOTIFY": "1"}):
+                with mock.patch.object(kimi, "send_card") as sc:
+                    kimi.main({"session_id": "session_abc", "cwd": "/x/demo"})
+        kwargs = sc.call_args.kwargs
+        self.assertEqual(kwargs.get("transcript"), str(wire))
+        self.assertEqual(kwargs.get("session"), "session_abc")
+
+
 class GateTest(unittest.TestCase):
     def test_default_on_explicit_off(self):
         with mock.patch.dict(os.environ, {}, clear=False):

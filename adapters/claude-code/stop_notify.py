@@ -99,7 +99,13 @@ def _is_user_turn_start(entry: dict) -> bool:
 
 
 def summarize_transcript(path: str) -> dict | None:
-    """解析 Claude Code 转录：teaser + 最后一轮统计；拿不到就 None/省略，绝不抛。"""
+    """解析 Claude Code 转录：最后一轮收尾正文 + 本轮统计；拿不到就 None，绝不抛。
+
+    正文口径与思考/工具/token 统计一致：**只取当前轮**（最后一条真实用户提问之后）的最后
+    一条 text。此前正文取的是全文件最后一条、不随轮次清零——当前轮没有文本收尾
+    （被打断/纯 tool_use）或宿主提前触发 Stop（文本还没落盘）时，战报会拿上一轮
+    的旧文，即用户反馈的「落后一个卡片」。
+    """
     first_ts = last_ts = turn_ts = None
     model = ""
     thinking_turns = 0
@@ -108,6 +114,7 @@ def summarize_transcript(path: str) -> dict | None:
     all_thinking = 0
     all_tools = 0
     all_tokens = 0
+    all_last_text = ""
     ctx = 0
     last_text = ""
     saw_assistant = False
@@ -133,6 +140,7 @@ def summarize_transcript(path: str) -> dict | None:
                 # 新一轮开始：本轮统计清零重置，最后一轮的提问时刻记为 ⏱️ 起点
                 turn_ts = ts or turn_ts
                 thinking_turns = tools_total = tokens_total = 0
+                last_text = ""  # 正文同样只算当前轮，绝不回落上一轮旧文
                 continue
             if entry.get("type") != "assistant" or entry.get("isSidechain"):
                 continue
@@ -156,6 +164,7 @@ def summarize_transcript(path: str) -> dict | None:
                     text = str(part.get("text") or "").strip()
                     if text:
                         last_text = text
+                        all_last_text = text
             if has_thinking:
                 thinking_turns += 1
                 all_thinking += 1
@@ -180,6 +189,7 @@ def summarize_transcript(path: str) -> dict | None:
 
     if turn_ts is None or stats_scope() == "session":  # 全程口径 / 没有提问行：全文件统计
         thinking_turns, tools_total, tokens_total = all_thinking, all_tools, all_tokens
+        last_text = all_last_text  # 正文同样回到全文件最后一条
         turn_ts = None
 
     elapsed = ""
@@ -226,7 +236,9 @@ def main(payload: dict | None = None) -> None:
         "elapsed": summary["elapsed"],
     }
     send_card("", summary["body"], stats, agent="Claude Code",
-              session=str(payload.get("session_id") or ""))
+              session=str(payload.get("session_id") or ""),
+              # 传转录路径：后台发送进程开卡前重读一次，治宿主落盘滞后
+              transcript=transcript)
 
 
 if __name__ == "__main__":

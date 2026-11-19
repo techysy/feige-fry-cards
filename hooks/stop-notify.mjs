@@ -98,6 +98,7 @@ async function main(raw) {
     FEIGE_LLM_BASE_URL: process.env.FEIGE_LLM_BASE_URL || process.env.ZCODE_USER_CONFIG_LLM_BASE_URL || "",
     FEIGE_LLM_MODEL: process.env.FEIGE_LLM_MODEL || process.env.ZCODE_USER_CONFIG_LLM_MODEL || "",
     FEIGE_LLM_MAX_CHARS: process.env.FEIGE_LLM_MAX_CHARS || process.env.ZCODE_USER_CONFIG_LLM_MAX_CHARS || "",
+    FEIGE_LLM_MIN_CHARS: process.env.FEIGE_LLM_MIN_CHARS || process.env.ZCODE_USER_CONFIG_LLM_MIN_CHARS || "",
     FEIGE_SUMMARIZE: process.env.FEIGE_SUMMARIZE || process.env.ZCODE_USER_CONFIG_SUMMARIZE || "",
   };
 
@@ -285,7 +286,7 @@ function summarizeSession(file) {
   let firstAt = "", lastAt = "", model = "";
   let reasoningTurns = 0, toolsTotal = 0, tokensTotal = 0, ctx = 0, project = "";
   let turnReasoning = 0, turnTools = 0, turnTokens = 0, turnStartAt = "", sawTurnStart = false;
-  let stopText = "", foundStop = false;
+  let stopText = "", foundStop = false, sawStopThisTurn = false;
 
   let lines;
   try { lines = readFileSync(file, "utf8").split(/\r?\n/); } catch { return null; }
@@ -306,6 +307,7 @@ function summarizeSession(file) {
       // 新一轮开始：本轮统计清零重置（这行的响应属于新轮，先清后加）
       sawTurnStart = true;
       turnReasoning = 0; turnTools = 0; turnTokens = 0;
+      sawStopThisTurn = false; // 正文同样只算当前轮，绝不回落上一轮
       if (at) turnStartAt = at;
     }
 
@@ -321,6 +323,7 @@ function summarizeSession(file) {
 
     if (resp.finishReason === "stop") {
       foundStop = true;
+      sawStopThisTurn = true;
       const text = String(resp.text || "").trim();
       stopText = isJunkText(text) ? "……（本轮无文本输出）" : bodyForCard(text);
     }
@@ -328,6 +331,9 @@ function summarizeSession(file) {
   if (!foundStop) return null;
 
   const perTurn = readStatsScope() === "turn" && sawTurnStart;
+  // 单轮口径：正文只取当前轮；当前轮没到收尾（宿主提前触发 Stop / 文本未落盘）
+  // 就发占位符，绝不回落上一轮旧文——这是「战报落后一个卡片」的根因。
+  if (perTurn && !sawStopThisTurn) stopText = "";
 
   let elapsed = "";
   try {

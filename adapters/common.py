@@ -5,7 +5,8 @@
   （per-project 开关，见 routes_auto_enabled）；
 - FEIGE_DRY_RUN=1 把卡片 JSON 打到 stderr，不发网络；
 - 插件 userConfig（CLAUDE_PLUGIN_OPTION_* / ZCODE_USER_CONFIG_*）映射为 feige 环境变量；
-- 正式发送走后台子进程（feige.py send --route），hook 立刻返回；
+- 正式发送走后台子进程（feige.py send --route），hook 立刻返回；带转录的宿主把
+  transcript 路径交给后台进程开卡前重读（治宿主落盘滞后导致的战报落后一轮）；
 - FEIGE_DEBOUNCE_SECONDS>0 时同会话连续收尾只发最后一张（见 feige.debounce_wait）；
 - 全部 fail-open：任何异常 → stderr 打日志 → exit 0，绝不拖死 agent。
 """
@@ -54,6 +55,7 @@ PLUGIN_OPTION_ENV = {
     "LLM_BASE_URL": "FEIGE_LLM_BASE_URL",
     "LLM_MODEL": "FEIGE_LLM_MODEL",
     "LLM_MAX_CHARS": "FEIGE_LLM_MAX_CHARS",
+    "LLM_MIN_CHARS": "FEIGE_LLM_MIN_CHARS",
     "SUMMARIZE": "FEIGE_SUMMARIZE",
 }
 
@@ -180,8 +182,13 @@ def has_sink(project: str) -> bool:
     return bool(feige.pick_channel() or feige.resolve_routes(project, feige.load_routes()))
 
 
-def send_argv(title: str, body: str, stats: dict, debounce_key: str) -> list[str]:
-    """拼 `feige.py send` 命令行。一律 --flag=value：值以 "-" 开头时 argparse 会误判。"""
+def send_argv(title: str, body: str, stats: dict, debounce_key: str,
+              transcript: str = "") -> list[str]:
+    """拼 `feige.py send` 命令行。一律 --flag=value：值以 "-" 开头时 argparse 会误判。
+
+    transcript 非空时带上 --transcript：后台发送进程稍等后重读它取最新收尾正文
+    （治宿主落盘滞后导致的「战报落后一轮」；重读失败保持这里的 body）。
+    """
     argv = [sys.executable, str(_REPO_ROOT / "feige.py"), "send",
             f"--title={title}", f"--body={body}", "--status=ok", "--route"]
     for key in ("project", "model", "context", "elapsed"):
@@ -193,6 +200,8 @@ def send_argv(title: str, body: str, stats: dict, debounce_key: str) -> list[str
             argv.append(f"--{key}={int(stats[key])}")
     if debounce_key:
         argv.append(f"--debounce-key={debounce_key}")
+    if transcript:
+        argv.append(f"--transcript={transcript}")
     return argv
 
 
@@ -222,11 +231,14 @@ def spawn_detached(argv: list[str]) -> None:
             logfh.close()  # 子进程已持有自己的句柄
 
 
-def send_card(title: str, body: str, stats: dict, agent: str, session: str = "") -> None:
+def send_card(title: str, body: str, stats: dict, agent: str, session: str = "",
+              transcript: str = "") -> None:
     """统一发送：dry-run 或无处可发时把载荷 JSON 打 stderr，否则后台发送；失败只落日志。
 
     走 --route：有路由文件按项目 fanout，没有则退化为默认单渠道。session 用作
     去抖键（FEIGE_DEBOUNCE_SECONDS>0 时，同会话连续收尾只发最后一张）。
+    transcript 是宿主转录 jsonl 路径（Claude Code / kimi），传给后台进程做
+    「开卡前重读」，治落盘滞后；没有转录的宿主（Codex/ZCode）留空即可。
     """
     project = str(stats.get("project") or "")
     title = title or f"{project + ' · ' if project else ''}{agent} 任务完成"
@@ -243,7 +255,8 @@ def send_card(title: str, body: str, stats: dict, agent: str, session: str = "")
         except (ValueError, OSError):
             pass
         return
-    spawn_detached(send_argv(title, body, stats, f"{agent}:{session}" if session else ""))
+    spawn_detached(send_argv(title, body, stats, f"{agent}:{session}" if session else "",
+                             transcript=transcript))
 
 
 def run(main, project: str | None = None) -> None:
