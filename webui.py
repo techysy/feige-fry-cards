@@ -99,12 +99,12 @@ header{display:flex;align-items:center;justify-content:space-between;gap:12px;
 .icon-btn:hover{background:var(--active);color:var(--txt)}
 
 /* 胶囊导航：容器卡底 + 激活深底白字（CreditDaddy .nav 同款），
-   左缘对齐居中的 980px 内容列，窄屏退到 22px */
+   左缘对齐卡片左缘（居中列外缘 + 22px 内边距），窄屏退到 22px */
 .nav{display:flex;gap:4px;padding:4px;width:fit-content;max-width:calc(100% - 44px);
   margin:10px auto 0;background:var(--card);border:1px solid var(--border-subtle);
   border-radius:12px;overflow-x:auto}
 @supports (margin:10px 0 0 max(22px,1px)){
-  .nav{margin:10px 0 0 max(22px,calc((100% - var(--col-w))/2))}}
+  .nav{margin:10px 0 0 max(22px,calc((100% - var(--col-w))/2 + 22px))}}
 .nav a{display:inline-flex;align-items:center;gap:6px;border:none;background:transparent;
   color:var(--muted);font-size:13px;font-weight:600;padding:7px 14px;border-radius:9px;
   cursor:pointer;white-space:nowrap;text-decoration:none;transition:background .15s,color .15s}
@@ -164,6 +164,9 @@ button.tiny{padding:3px 10px;font-size:12px}
 .warn{background:color-mix(in srgb,var(--warn-c) 9%,var(--card));
   border:1px solid color-mix(in srgb,var(--warn-c) 30%,transparent);
   border-radius:12px;padding:10px 12px;font-size:12px;line-height:1.7}
+/* 提示文案非宽屏单行截断（两行提示挤四排太占高度），宽屏恢复完整换行 */
+.warn-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (min-width:1420px){.warn-line{white-space:normal;overflow:visible}}
 
 pre{background:var(--surface-2);border:1px solid var(--border-subtle);border-radius:10px;
   padding:10px;overflow:auto;font:12px/1.6 Consolas,"Cascadia Mono",monospace}
@@ -610,11 +613,11 @@ def _banner(msg: str, err: str) -> str:
 # ── 页面：配置（Studio 主页）──────────────────────────────────────────────────
 
 def _warn_html() -> str:
-    return (f'<div class="warn">{ICONS["save"]} 保存只写本页白名单键进 <code>~/.feige-settings.json</code>'
+    return (f'<div class="warn"><span class="warn-line">{ICONS["save"]} 保存只写本页白名单键进 <code>~/.feige-settings.json</code>'
             '（写前自动备份 <code>.bak</code>），其余内容原样保留；保存即生效——后台发送'
-            f'进程每次发卡重新读取，无需重启宿主。<br>{ICONS["lock"]} 密钥与 webhook 只显「已配置」徽章，'
+            f'进程每次发卡重新读取，无需重启宿主。</span><span class="warn-line">{ICONS["lock"]} 密钥与 webhook 只显「已配置」徽章，'
             '输入框永不回显：留空 = 不修改，勾选「清除」才删除。已配环境变量时环境变量优先'
-            '（徽章标注来源），此处改动对被遮蔽的键不生效。</div>')
+            '（徽章标注来源），此处改动对被遮蔽的键不生效。</span></div>')
 
 
 def page_studio(msg: str = "", err: str = "") -> bytes:

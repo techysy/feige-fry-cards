@@ -66,6 +66,18 @@ class WebuiPagesTest(unittest.TestCase):
         self.assertIn(".grid>.card{break-inside:avoid", rendered)
         self.assertNotIn(".grid{display:grid", rendered)
 
+    def test_nav_aligns_with_card_left_edge(self):
+        # 导航左缘 = 居中列外缘 + 22px 内边距，与卡片左缘齐平（此前凸出 22px）
+        rendered = webui.page_studio().decode("utf-8")
+        self.assertIn("calc((100% - var(--col-w))/2 + 22px)", rendered)
+
+    def test_warn_banner_truncates_on_narrow_screens(self):
+        # 非宽屏提示单行截断（不再挤四排），宽屏恢复完整换行
+        rendered = webui.page_studio().decode("utf-8")
+        self.assertIn(".warn-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}", rendered)
+        self.assertIn("@media (min-width:1420px){.warn-line{white-space:normal;overflow:visible}}", rendered)
+        self.assertEqual(rendered.count("class=\"warn-line\""), 2)
+
     def test_studio_home_has_no_duplicate_routes_card(self):
         # 群路由有独立页签，主页底部不再重复挂入口卡
         rendered = webui.page_studio().decode("utf-8")
