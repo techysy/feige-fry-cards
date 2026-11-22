@@ -161,7 +161,8 @@
 
 [Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v1.1.1...HEAD
 [1.1.1]: https://github.com/techysy/feige-fry-cards/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/techysy/feige-fry-cards/compare/v1.0.1...v1.1.0
+<!-- v1.0.1 当年只更了清单没打 tag，compare 从 v1.0.0 起 -->
+[1.1.0]: https://github.com/techysy/feige-fry-cards/compare/v1.0.0...v1.1.0
 [1.0.1]: https://github.com/techysy/feige-fry-cards/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/techysy/feige-fry-cards/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/techysy/feige-fry-cards/releases/tag/v0.1.0
