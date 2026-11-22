@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-22 — 🕊️ 面板导航对齐卡片 + 提示文案窄屏截断
+
+### Fixed
+
+- **导航栏对齐卡片**：胶囊导航左缘补上内容列 22px 内边距，与卡片左缘齐平，
+  不再凸出一截。
+- **提示文案窄屏自适应**：配置页顶部两行安全提示非宽屏单行截断（省略号），
+  不再挤成四排占高度；≥1420px 宽屏恢复完整换行。
+
 ## [1.1.0] - 2026-11-22 — 🕊️ Studio 后台保活 + 宽屏瀑布流 + 总结独白防线
 
 ### Added
@@ -150,7 +159,8 @@
 - 联调排错指南：230002 与 `setx` 陈旧环境变量坑（`de97166`）
 - 快速开始、使用指南目录锚链、家族表格绝对链接（`7b4945a` `a6878d4` `f3b6bff`）
 
-[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/techysy/feige-fry-cards/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/techysy/feige-fry-cards/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/techysy/feige-fry-cards/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/techysy/feige-fry-cards/compare/v0.1.0...v1.0.0
