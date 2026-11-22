@@ -187,8 +187,17 @@ timeout = 20
 ## 🎛️ feige Studio 设置页
 
 ```bash
-python webui.py [--port 8787]   # 打开 http://127.0.0.1:8787
+python webui.py [--port 8787]   # 前台跑（终端一关就没了）
+python webui.py start           # 后台保活：脱离终端的守护进程拉起 worker，崩溃自动重启
+python webui.py stop            # 停止（按 pidfile 整树杀）
+python webui.py restart         # 重启
+python webui.py status          # 探活：守护进程 / 端口 / 日志位置
 ```
+
+保活机制：`start` 拉起脱离终端的守护进程（Windows `DETACHED_PROCESS` / POSIX 新会话，
+控制台关了照常存活）→ 守护监视 worker，worker 活不过 3s 视为崩溃循环退避 5s 再拉，
+正常退出立即拉起；端口被别的实例占走时守护功成身退。pidfile `~/.feige-studio.json`，
+保活日志 `~/.feige-studio.log`（超 1MB 轮转）。
 
 对标 fry-cards Studio 的设置体验，纯 Python 标准库（`http.server` 手写，零第三方依赖）。
 **配置 / 预览 / 状态 / 群路由 / 接入自检** 五个标签页，所有配置项都表单化：
@@ -217,7 +226,8 @@ LLM API key 的值：密钥输入框永远是空 password 框，只显「已配�
 
 ## 🧠 正文 LLM 总结
 
-正文超过渠道上限时，不再直接硬截断——若配置了总结 LLM，后台发送进程会先调用
+正文超过**总结触发字数**（默认 300 字，`llm_min_chars` 可调）或渠道上限时，不再
+原样镜像/硬截断——若配置了总结 LLM，后台发送进程会先调用
 **OpenAI 兼容 `chat/completions`** 把冗长收尾汇报浓缩成战报摘要：
 
 ### 配置方式一：写入本地设置文件 `~/.feige-settings.json`（推荐，保存即生效）
@@ -258,6 +268,8 @@ export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
      ```
 
 - **优雅退化**：未配 key、总结失败、或 dry-run/预览路径 → 自动退回硬截断，绝不卡发卡；
+- **战报不是镜像**：启用总结后正文超过触发字数（默认 300 字，`llm_min_chars`，0 =
+  只在超渠道上限才总结）就浓缩成摘要，中等长度的收尾汇报不再逐字上卡；
 - **智能模型拉取**：Studio 设置面板支持与 ImgMark 一致的在线模型拉取（`/api/llm/models`），点击下拉即刻读取端点可用模型分组卡片，支持模糊搜索与一键点击选取；
 - **零阻塞**：总结只在 `feige.py send` 后台进程执行，宿主 hook 前台不发任何 LLM 网络请求；
 - **原文放行**：启用后各宿主适配器把更长原文（≤6000 字）交给总结器，未启用保持 300 字 teaser 老口径；
@@ -283,6 +295,8 @@ export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
 | `FEIGE_STATS_SCOPE` | 统计口径 `turn`（单轮，默认）/ `session`（全程） |
 | `FEIGE_LOG_FILE` | 后台发送进程日志（默认 `<临时目录>/feige.log`，超 1MB 轮转为 `.1`） |
 | `FEIGE_LLM_API_KEY` / `_BASE_URL` / `_MODEL` / `_MAX_CHARS` | 正文总结 LLM 配置（见「正文 LLM 总结」） |
+| `FEIGE_LLM_MIN_CHARS` | 总结触发字数阈值，默认 300；`0` = 只在超渠道上限才总结 |
+| `FEIGE_READ_BODY_DELAY` | 后台发送进程开卡前重读转录的等待秒数（默认 1.5，`0` 关闭） |
 | `FEIGE_SUMMARIZE` | `0`/`false` 显式关闭总结（即使已配 key） |
 | `FEIGE_SETTINGS_FILE` | 设置文件路径（默认 `~/.feige-settings.json`） |
 | `FEIGE_HOOK_NOTIFY` | Stop hook 战报总开关（`1` 启用，默认关；kimi-code 注册即开启） |

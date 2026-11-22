@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """🕊️ feige Studio —— 设置页（M9，对齐 fry-cards Studio 体验）。
 
-    python webui.py [--port 8787]
+    python webui.py [--port 8787]           # 前台跑（终端关了就没了）
+    python webui.py start  [--port 8787]    # 后台保活：脱离终端的守护进程拉起 worker，
+    python webui.py stop                    #   worker 崩溃自动重启；日志 ~/.feige-studio.log
+    python webui.py restart
+    python webui.py status
 
 配置 / 预览 / 状态 三个标签页：渠道凭据、正文总结 LLM、行为开关全部表单化，
 保存写 ~/.feige-settings.json（原子写 + .bak，只写本页白名单键，其余原样保留）。
@@ -33,7 +37,11 @@ import html
 import json
 import os
 import shutil
+import signal
+import socket
+import subprocess
 import sys
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -42,10 +50,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import feige  # noqa: E402
 
 REPO = Path(__file__).resolve().parent
-VERSION = "1.0.0"
+VERSION = feige.__version__  # 面板版本号与主插件同源，发版只改 feige.__version__ + 清单
 
 # 视觉语言对齐 CreditDaddy / ImgMark（两者同一套：CSS 变量双主题
-# html[data-theme="dark"]、980px 内容列、胶囊导航、14px 圆角卡片、深色主按钮）。
+# html[data-theme="dark"]、980px 内容列（宽屏 1400px）、胶囊导航、14px 圆角卡片、
+# 深色主按钮）。
 _CSS = """
 :root{
   --bg:#f5f6f8; --card:#ffffff; --surface-2:#fafafa; --tertiary:#f0f0f0;
@@ -55,6 +64,7 @@ _CSS = """
   --btn-bg:#1f1f1f; --btn-fg:#ffffff;
   --pri:#22c55e; --pri-dk:#16a34a; --ok:#16a34a; --bad:#dc2626; --warn-c:#d97706;
   --radius:14px;
+  --col-w:980px; /* 内容列宽：宽屏（≥1420px）放宽到 1400px 让卡片栅格出 3 列 */
 }
 html[data-theme="dark"]{
   --bg:#0a0a0c; --card:#131316; --surface-2:#17171b; --tertiary:#1b1b20;
@@ -73,9 +83,9 @@ button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit
 a{color:var(--pri-dk)}
 .muted,.small{color:var(--text-3);font-size:12px}
 
-/* header：品牌左、工具右，与导航/内容同收 980px 居中列 */
+/* header：品牌左、工具右，与导航/内容同收 980px 居中列（宽屏 1400px） */
 header{display:flex;align-items:center;justify-content:space-between;gap:12px;
-  max-width:980px;margin:0 auto;padding:16px 22px 4px}
+  max-width:var(--col-w);margin:0 auto;padding:16px 22px 4px}
 .brand{display:flex;align-items:center;gap:10px;min-width:0}
 .brand .logo-emoji{font-size:26px;line-height:1}
 .brand .title{font-family:"Avenir Next",Avenir,"Segoe UI Variable Display","Segoe UI",sans-serif;
@@ -94,18 +104,22 @@ header{display:flex;align-items:center;justify-content:space-between;gap:12px;
   margin:10px auto 0;background:var(--card);border:1px solid var(--border-subtle);
   border-radius:12px;overflow-x:auto}
 @supports (margin:10px 0 0 max(22px,1px)){
-  .nav{margin:10px 0 0 max(22px,calc((100% - 980px)/2))}}
+  .nav{margin:10px 0 0 max(22px,calc((100% - var(--col-w))/2))}}
 .nav a{display:inline-flex;align-items:center;gap:6px;border:none;background:transparent;
   color:var(--muted);font-size:13px;font-weight:600;padding:7px 14px;border-radius:9px;
   cursor:pointer;white-space:nowrap;text-decoration:none;transition:background .15s,color .15s}
 .nav a:hover{color:var(--txt);background:var(--hover)}
 .nav a.on{background:var(--btn-bg);color:var(--btn-fg)}
 
-main{max-width:980px;margin:0 auto;padding:12px 22px 30px;display:flex;
+main{max-width:var(--col-w);margin:0 auto;padding:12px 22px 30px;display:flex;
   flex-direction:column;gap:14px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:14px;
-  align-items:start}
-@media (max-width:520px){.grid{grid-template-columns:1fr}}
+/* 瀑布流多列：行式 grid 的行高被该行最高的卡撑开，矮卡（钉钉）下面吊一大块空白，
+   整页被顶出超一屏；多列布局每列独立堆叠、卡片按序流入最矮列，总高≈最高列。
+   列数仍随宽度自适应：980px 列 2 列、宽屏 1400px 列 3 列 */
+.grid{columns:420px;column-gap:14px}
+.grid>.card{break-inside:avoid;margin:0 0 14px}
+/* 宽屏：内容列 1400px，420px 列宽放得下 3 列（3×420 + 间距 + 内边距 ≈ 1332px） */
+@media (min-width:1420px){:root{--col-w:1400px}}
 
 .card{background:var(--card);border:1px solid var(--border-subtle);
   border-radius:var(--radius);padding:14px 16px}
@@ -487,7 +501,7 @@ def page(title: str, body: str, tab: str = "") -> bytes:
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'{_THEME_BOOT}'
             f'<title>feige Studio · {esc(title)}</title><style>{_CSS}</style></head>'
-            f'<body><header><div class="brand"><span class="logo-emoji">{ICONS["dove"]}</span>'
+            f'<body><header><div class="brand"><span class="logo-emoji">🕊️</span>'
             f'<div><div class="title">feige Studio</div>'
             f'<div class="ver">v{VERSION} · 配置 <code>{esc(feige.settings_file_path())}</code></div></div></div>'
             f'<div class="head-right"><button class="icon-btn" id="btn-theme" '
@@ -655,11 +669,14 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
                "<div id='llm-model-list'><div class='pt-empty'>点击「拉取」或展开菜单从服务端获取模型</div></div>"
                "</div></div></div>")
             + _field("llm_max_chars", "摘要目标字数", str(feige.LLM_MAX_CHARS), "≥50")
+            + _field("llm_min_chars", "总结触发字数", str(feige.LLM_MIN_CHARS),
+                     "正文超过这个字数就先浓缩成摘要（0 = 只在超渠道上限才总结）")
             + "<div class='frow'><label><input type='checkbox' name='llm_off' value='1' "
               + ("checked" if feige.load_settings().get("summarize") is False else "")
               + "> 显式关闭总结（即使配了 key 也只截断）</label></div>"
-            + "<p class='small'>正文超长时先由后台发送进程调 LLM 浓缩成战报摘要，"
-              "未配置/失败退化为硬截断；宿主 hook 前台零网络阻塞。</p>"
+            + "<p class='small'>启用后正文超过「总结触发字数」（默认 300 字）就先由后台"
+              "发送进程调 LLM 浓缩成战报摘要，不再原样镜像；未配置/失败退化为硬截断；"
+              "宿主 hook 前台零网络阻塞。</p>"
             + _save_btn("llm") + "</form></div>"),
         "behavior": (
             f"<div class='card'><h3>{ICONS['behavior']} 行为开关</h3><form method='post' action='/settings'>"
@@ -676,10 +693,8 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
     }
     body = (_banner(msg, err) + _warn_html()
             + "<div class='grid'>" + cards["feishu"] + cards["llm"]
-            + cards["dingtalk"] + cards["telegram"] + cards["behavior"] + "</div>"
-            + f"<div class='card'><h3>{ICONS['routes']} 群路由</h3><p class='small'>项目 → 多群 fanout "
-              "（钉钉 / Telegram 的凭据配在这里）。路由文件里的密钥建议写 <code>$ENV</code> 引用。</p>"
-              "<p><a href='/routes'>编辑群路由 →</a></p></div>")
+            + cards["dingtalk"] + cards["telegram"] + cards["behavior"] + "</div>")
+    # 群路由不在主页重复挂卡——独立页签已有入口
     return page("配置", body, tab="config")
 
 
@@ -702,7 +717,7 @@ _CARD_KEYS = {
                "feishu_chat_id__10router"],
     "dingtalk": ["dingtalk_webhook", "dingtalk_secret"],
     "telegram": ["telegram_bot_token", "telegram_chat_id"],
-    "llm": ["llm_api_key", "llm_base_url", "llm_model", "llm_max_chars"],
+    "llm": ["llm_api_key", "llm_base_url", "llm_model", "llm_max_chars", "llm_min_chars"],
     "behavior": ["stats_scope", "debounce_seconds", "routes_file", "footer_fields"],
 }
 _CARD_TITLES = {"feishu": "飞书渠道", "dingtalk": "钉钉渠道", "telegram": "Telegram",
@@ -752,6 +767,17 @@ def apply_settings_card(form: dict, settings: dict) -> str:
                     v = str(max(int(v), 50))
                 except ValueError:
                     return f"非法摘要目标字数：{v}（须为 ≥50 的整数）"
+                settings[key] = v
+            else:
+                settings.pop(key, None)
+            continue
+        if key == "llm_min_chars":
+            v = (form.get(key) or [""])[0].strip()
+            if v:
+                try:
+                    v = str(max(int(v), 0))
+                except ValueError:
+                    return f"非法总结触发字数：{v}（须为 ≥0 的整数）"
                 settings[key] = v
             else:
                 settings.pop(key, None)
@@ -835,7 +861,7 @@ def page_status(msg: str = "") -> bytes:
     llm = feige.llm_config()
     llm_info = (f"{'🟢 已启用' if llm['enabled'] else '⚪ 未启用'} · 模型 "
                 f"<code>{esc(llm['model'])}</code> · base <code>{esc(llm['base_url'])}</code> · "
-                f"目标 ≤{llm['max_chars']} 字 · key 来源："
+                f"超 {llm['min_chars']} 字触发 · 目标 ≤{llm['max_chars']} 字 · key 来源："
                 f"{esc(key_source('llm_api_key') or '未配置')}")
     banner = f'<div class="msg">{esc(msg)}</div>' if msg else ""
     body = (f"{banner}<div class='card'><h3>渠道凭据</h3>"
@@ -1269,20 +1295,249 @@ class Server(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="🕊️ feige Studio（仅 127.0.0.1，勿暴露端口）")
-    ap.add_argument("--port", type=int, default=8787)
-    args = ap.parse_args()
+# ── 后台保活：start 拉起脱离终端的守护进程，worker 崩了自动重启 ────────────────
+#
+# 进程树：start（前台，拉起后即退）→ supervise（守护，写 pidfile）→ worker（真服务）。
+# 终端关闭杀不掉守护（Windows DETACHED_PROCESS / POSIX 新会话）；worker 活不长
+# 就退避 5s 再拉，防止崩溃循环打爆日志；stop 按 pidfile 整树杀。
+# pidfile/log 默认放 ~/.feige-studio.json / ~/.feige-studio.log，
+# FEIGE_STUDIO_PID_FILE / FEIGE_STUDIO_LOG_FILE 可覆盖（离线测试用）。
+
+# 守护进程树全程不落可见控制台窗口：没控制台的进程生出控制台程序时，Windows 会
+# 给它新开一个可见空窗口——每一层 spawn 都必须带脱离标志
+if os.name == "nt":
+    _DETACHED_FLAGS = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+else:  # POSIX：脱离终端靠 start_new_session
+    _DETACHED_FLAGS = 0
+
+
+def studio_pid_file() -> Path:
+    return Path(os.environ.get("FEIGE_STUDIO_PID_FILE")
+                or Path.home() / ".feige-studio.json")
+
+
+def studio_log_file() -> Path:
+    return Path(os.environ.get("FEIGE_STUDIO_LOG_FILE")
+                or Path.home() / ".feige-studio.log")
+
+
+def studio_log(msg: str) -> None:
+    """守护进程的诊断日志；超 1MB 轮转 .1（口径同 feige.open_log_file）。"""
+    path = studio_log_file()
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
+        if path.exists() and path.stat().st_size > 1_000_000:
+            path.rename(Path(str(path) + ".1"))
+        with path.open("a", encoding="utf-8", errors="replace") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except OSError:
         pass
+
+
+def port_alive(port: int, timeout: float = 0.5) -> bool:
     try:
-        srv = Server(("127.0.0.1", args.port), Handler)
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        # os.kill(pid, 0) 在 Windows 是无条件 TerminateProcess，绝不能用——查句柄
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # 进程在，只是没权限发信号
+
+
+def read_studio_pid() -> dict | None:
+    try:
+        data = json.loads(studio_pid_file().read_text(encoding="utf-8"))
+        pid, port = int(data.get("pid") or 0), int(data.get("port") or 0)
+        return {"pid": pid, "port": port} if pid > 0 and port > 0 else None
+    except Exception:
+        return None
+
+
+def write_studio_pid(pid: int, port: int) -> None:
+    studio_pid_file().write_text(
+        json.dumps({"pid": pid, "port": port,
+                    "started": time.strftime("%Y-%m-%d %H:%M:%S")}),
+        encoding="utf-8")
+
+
+def clear_studio_pid() -> None:
+    try:
+        studio_pid_file().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def kill_tree(pid: int) -> None:
+    """整树杀守护（Windows taskkill /T 连带 worker；POSIX 杀整个新会话进程组）。"""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    else:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+
+def _supervise_decision(rc: int, alive_for: float, port_ok: bool) -> tuple[bool, float]:
+    """worker 退出后的裁决：(是否继续保活, 重启前等待秒数)。
+
+    worker 绑不上端口（rc=3）且端口已有人响应 = 另一实例接管了，功成身退；
+    其余一律重启——活得太短（<3s，崩溃循环）退避 5s，正常退出立即拉起。
+    """
+    if rc == 3 and port_ok:
+        return False, 0.0
+    return True, 5.0 if alive_for < 3 else 1.0
+
+
+def cmd_start(port: int) -> int:
+    if port_alive(port):
+        info = read_studio_pid()
+        hint = f"（守护 pid {info['pid']}）" if info and info["port"] == port else ""
+        print(f"🕊️ feige Studio 已在运行{hint}: http://127.0.0.1:{port}")
+        return 0
+    stale = read_studio_pid()
+    if stale and pid_alive(stale["pid"]):
+        # 守护还活着但端口没响应：worker 在崩溃循环里，整树杀掉重新拉
+        print(f"🕊️ 守护进程 pid {stale['pid']} 存活但端口 {port} 无响应，重启守护…")
+        kill_tree(stale["pid"])
+        time.sleep(1.0)
+    clear_studio_pid()
+    script = str(Path(__file__).resolve())
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = _DETACHED_FLAGS
+    else:
+        kwargs["start_new_session"] = True  # 脱离终端：控制台关了守护照样活
+    with studio_log_file().open("a", encoding="utf-8", errors="replace") as logf:
+        proc = subprocess.Popen(
+            [sys.executable, script, "supervise", "--port", str(port)],
+            stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, **kwargs)
+    for _ in range(40):  # 最多等 10s
+        if port_alive(port):
+            print(f"🕊️ feige Studio 已后台拉起: http://127.0.0.1:{port}"
+                  f"（守护 pid {proc.pid}，保活日志 {studio_log_file()}）")
+            return 0
+        if proc.poll() is not None:
+            break
+        time.sleep(0.25)
+    print(f"🕊️ 守护进程已启动但端口 {port} 尚未就绪"
+          + (f"（进程已退出 rc={proc.returncode}）" if proc.poll() is not None else "")
+          + f"，详情看日志：{studio_log_file()}")
+    return 1
+
+
+def cmd_stop() -> int:
+    info = read_studio_pid()
+    if info and pid_alive(info["pid"]):
+        kill_tree(info["pid"])
+        for _ in range(20):  # 最多等 5s 端口释放
+            if not port_alive(info["port"]):
+                break
+            time.sleep(0.25)
+        clear_studio_pid()
+        print(f"🕊️ feige Studio 已停止（pid {info['pid']}）")
+        return 0
+    clear_studio_pid()
+    if info and port_alive(info["port"]):
+        print(f"🕊️ 端口 {info['port']} 仍有服务响应，但守护 pid {info['pid']} 已不在"
+              "——多半是前台进程，请自行 Ctrl+C。")
+        return 1
+    print("🕊️ feige Studio 未在运行")
+    return 0
+
+
+def cmd_status(cli_port: int | None = None) -> int:
+    info = read_studio_pid()
+    port = cli_port or (info or {}).get("port") or 8787
+    url = f"http://127.0.0.1:{port}"
+    if port_alive(port):
+        if info and pid_alive(info["pid"]):
+            print(f"🕊️ feige Studio 运行中（守护 pid {info['pid']}）: {url}")
+        else:
+            print(f"🕊️ feige Studio 端口在响应（无守护，疑为前台进程）: {url}")
+        return 0
+    if info and pid_alive(info["pid"]):
+        print(f"🕊️ 守护进程存活（pid {info['pid']}）但端口 {port} 无响应——worker "
+              f"可能在崩溃循环，日志：{studio_log_file()}")
+        return 1
+    print("🕊️ feige Studio 未在运行")
+    return 1
+
+
+def cmd_supervise(port: int) -> int:
+    """保活主循环：写 pidfile，worker 死了按退避策略拉起，永不主动退出。"""
+    write_studio_pid(os.getpid(), port)
+    studio_log(f"supervise start (pid {os.getpid()}, port {port})")
+    script = str(Path(__file__).resolve())
+    while True:
+        with studio_log_file().open("a", encoding="utf-8", errors="replace") as logf:
+            child = subprocess.Popen(
+                [sys.executable, script, "worker", "--port", str(port)],
+                stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
+                creationflags=_DETACHED_FLAGS)
+        t0 = time.monotonic()
+        rc = child.wait()
+        go_on, delay = _supervise_decision(rc, time.monotonic() - t0, port_alive(port))
+        studio_log(f"worker exited rc={rc} after {time.monotonic() - t0:.1f}s"
+                   + ("" if go_on else "; port owned by another instance, exiting"))
+        if not go_on:
+            clear_studio_pid()
+            return 0
+        time.sleep(delay)
+
+
+def cmd_worker(port: int) -> int:
+    """真服务进程：绑不上端口先重试 10s（stop/start 竞态、TIME_WAIT 都让它过去）。"""
+    deadline = time.monotonic() + 10
+    srv = None
+    while srv is None:
+        try:
+            srv = Server(("127.0.0.1", port), Handler)
+        except OSError:
+            if time.monotonic() >= deadline:
+                studio_log(f"port {port} busy for 10s, worker giving up (rc 3)")
+                return 3
+            time.sleep(0.5)
+    studio_log(f"worker serving http://127.0.0.1:{port} (pid {os.getpid()})")
+    print(f"🕊️ feige Studio worker: http://127.0.0.1:{port}")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+    return 0
+
+
+def cmd_run(port: int) -> int:
+    try:
+        srv = Server(("127.0.0.1", port), Handler)
     except OSError as exc:
-        sys.exit(f"🕊️ 端口 {args.port} 不可用（{exc}），换一个：python webui.py --port <N>")
-    print(f"🕊️ feige Studio: http://127.0.0.1:{args.port} （Ctrl+C 退出）")
+        sys.exit(f"🕊️ 端口 {port} 不可用（{exc}），换一个：python webui.py --port <N>")
+    print(f"🕊️ feige Studio: http://127.0.0.1:{port} "
+          "（Ctrl+C 退出；关终端也活着：python webui.py start）")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -1290,7 +1545,38 @@ def main() -> None:
     finally:
         srv.server_close()
         print("bye")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="🕊️ feige Studio（仅 127.0.0.1，勿暴露端口）")
+    ap.add_argument("--port", type=int, default=8787)
+    ap.add_argument("action", nargs="?", default="run",
+                    choices=["run", "start", "stop", "restart", "status",
+                             "supervise", "worker"],
+                    help="run=前台（默认）· start/stop/restart/status=后台保活 · "
+                         "supervise/worker=保活内部进程，勿手动调")
+    args = ap.parse_args()
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    if args.action == "run":
+        return cmd_run(args.port)
+    if args.action == "start":
+        return cmd_start(args.port)
+    if args.action == "stop":
+        return cmd_stop()
+    if args.action == "restart":
+        cmd_stop()
+        return cmd_start(args.port)
+    if args.action == "status":
+        return cmd_status(args.port)
+    if args.action == "supervise":
+        return cmd_supervise(args.port)
+    return cmd_worker(args.port)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

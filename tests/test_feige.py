@@ -477,6 +477,48 @@ class SummarizeTest(unittest.TestCase):
             self.assertEqual(feige.fit_body("短正文"), "短正文")
         ls.assert_not_called()
 
+    def test_body_over_min_chars_gets_summarized_even_under_limit(self):
+        """启用总结后，中等长度（未超渠道上限）的冗长正文也要浓缩，不再原样镜像。"""
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test")
+        mid = "冗长战报" * 100  # 400 字：低于 BODY_MAX_BYTES，高于默认 min_chars=300
+        self.assertLess(len(mid.encode("utf-8")), feige.BODY_MAX_BYTES)
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(feige, "llm_summarize", return_value="浓缩版") as ls:
+            self.assertEqual(feige.fit_body(mid), "浓缩版")
+        ls.assert_called_once()
+
+    def test_body_under_min_chars_stays_verbatim(self):
+        """低于触发阈值的短正文保持原样，不为它多花一次 LLM 调用。"""
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test")
+        short = "短正文" * 50  # 150 字 < 300
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(feige, "llm_summarize") as ls:
+            self.assertEqual(feige.fit_body(short), short)
+        ls.assert_not_called()
+
+    def test_min_chars_zero_restores_over_limit_only(self):
+        """min_chars=0 回到旧口径：只有超渠道上限才总结。"""
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test", FEIGE_LLM_MIN_CHARS="0")
+        mid = "冗长战报" * 100
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(feige, "llm_summarize") as ls:
+            self.assertEqual(feige.fit_body(mid), mid)  # 未超上限：原样
+        ls.assert_not_called()
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(feige, "llm_summarize", return_value="浓缩版"), \
+                mock.patch.object(feige, "clip", return_value="浓缩版"):
+            self.assertEqual(feige.fit_body(self.LONG), "浓缩版")  # 超上限：仍总结
+
+    def test_llm_config_reads_min_chars(self):
+        env, settings = self._clean_env(FEIGE_LLM_MIN_CHARS="120")
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(feige.llm_config()["min_chars"], 120)
+        env2 = {k: v for k, v in env.items() if k != "FEIGE_LLM_MIN_CHARS"}
+        settings.write_text(json.dumps({"llm_api_key": "sk-x", "llm_min_chars": "500"}),
+                            encoding="utf-8")
+        with mock.patch.dict(os.environ, env2, clear=True):  # 环境变量没设：设置文件生效
+            self.assertEqual(feige.llm_config()["min_chars"], 500)
+
     def test_dry_run_never_calls_llm(self):
         """回归：dry-run/预览在 hook 前台同步执行，绝不能在这里发起 LLM 网络调用。"""
         env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-test")
@@ -533,10 +575,159 @@ class SummarizeTest(unittest.TestCase):
                            side_effect=urllib.error.URLError("refused")):
             self.assertEqual(feige.llm_summarize("x"), "")
 
+    @staticmethod
+    def _fake_llm(content, finish_reason="stop"):
+        class FakeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return json.dumps({"choices": [
+                {"message": {"content": content}, "finish_reason": finish_reason}]}).encode()
+        return FakeResp()
+
+    def test_llm_summarize_extracts_tagged_summary_amid_monologue(self):
+        # 1.0.2 群里翻车现场：复述要求 + 独白 + 真摘要 + 截断残句被整段镜像进卡片
+        raw = (
+            "用户要求把冗长的收尾汇报压缩成不超过400字的中文摘要，只输出摘要本身。\n"
+            "我需要把上面的汇报精简，抓住核心信息：\n"
+            "- 旧分析要点\n"
+            "让我组织一下：\n"
+            "<summary>- **协议**：Qoder 双 provider\n"
+            "- **验证**：513/513 通过</summary>\n"
+            "检查字数，应该在400字以内。让我数一下大概。\n"
+            "这个内容比较"
+        )
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen",
+                           return_value=self._fake_llm(raw, finish_reason="length")):
+            out = feige.llm_summarize("原文")
+        self.assertEqual(out, "- **协议**：Qoder 双 provider\n- **验证**：513/513 通过")
+
+    def test_llm_summarize_fallback_strips_monologue_without_tags(self):
+        raw = (
+            "用户要求把汇报压缩成摘要，只输出摘要本身。\n"
+            "我需要把汇报精简，抓住核心信息：\n"
+            "- **协议**：Qoder 双 provider\n"
+            "- **验证**：513/513 通过\n"
+            "检查字数，应该在400字以内。让我数一下大概。\n"
+            "这个内容比较"
+        )
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen",
+                           return_value=self._fake_llm(raw, finish_reason="length")):
+            out = feige.llm_summarize("原文")
+        self.assertIn("**协议**：Qoder", out)
+        self.assertIn("513/513", out)
+        self.assertNotIn("用户要求", out)
+        self.assertNotIn("我需要", out)
+        self.assertNotIn("检查字数", out)
+        self.assertNotIn("这个内容", out)
+
+    def test_llm_summarize_unclosed_tag_takes_residual(self):
+        raw = "让我组织一下：\n<summary>- **协议**：Qoder 双 provider\n- **验证**：通过"
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen", return_value=self._fake_llm(raw)):
+            out = feige.llm_summarize("原文")
+        self.assertEqual(out, "- **协议**：Qoder 双 provider\n- **验证**：通过")
+
+    def test_llm_summarize_echoed_tag_pair_is_not_the_summary(self):
+        # 复述要求里带的标签对捕出来只有残渣 → 剥独白 → 剥完为空 → fit_body 硬截断兜底
+        raw = ("用户要求把汇报压缩成摘要，放在 <summary> 与 </summary> 标签之间，"
+               "只输出摘要本身。")
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen", return_value=self._fake_llm(raw)):
+            self.assertEqual(feige.llm_summarize("原文"), "")
+            out = feige.fit_body(self.LONG)
+        self.assertIn("内容过长已截断", out)
+
     def test_redact_covers_llm_key(self):
         env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-supersecret01")
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertNotIn("sk-supersecret01", feige.redact("boom sk-supersecret01"))
+
+
+class TranscriptRefreshTest(unittest.TestCase):
+    """后台发送进程开卡前重读转录：治宿主落盘滞后导致的「战报落后一轮」。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("FEIGE_")}
+        env.update({"FEIGE_SETTINGS_FILE": str(Path(self.tmp.name, "s.json")),
+                    "FEIGE_READ_BODY_DELAY": "0"})  # 测试不等延迟
+        self._patch = mock.patch.dict(os.environ, env, clear=True)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def transcript(self, entries, name="t.jsonl") -> str:
+        p = Path(self.tmp.name, name)
+        p.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries),
+                     encoding="utf-8")
+        return str(p)
+
+    @staticmethod
+    def _asst(text, ts="2026-09-26T00:00:10Z"):
+        return {"type": "assistant", "timestamp": ts,
+                "message": {"model": "m1",
+                            "content": [{"type": "text", "text": text}]}}
+
+    def test_refresh_picks_up_late_final_text(self):
+        """转录里已有本轮文本而 hook 只截到上一轮（落盘滞后）→ 重读刷新成本轮。"""
+        tr = self.transcript([
+            self._asst("上一轮旧文", ts="2026-09-26T00:00:02Z"),
+            {"type": "user", "timestamp": "2026-09-26T00:00:05Z",
+             "message": {"content": "新提问"}},
+            self._asst("本轮最终战报"),
+        ])
+        args = mock.Mock(body="上一轮旧文", transcript=tr, dry_run=False,
+                         model="old", thinking=0, tools=0, context="", tokens=0, elapsed="")
+        fresh = feige.refresh_body_from_transcript(args)
+        self.assertEqual(fresh, len("本轮最终战报"))
+        self.assertEqual(args.body, "本轮最终战报")
+        self.assertEqual(args.model, "claude-code · m1")  # 统计一并同步
+
+    def test_refresh_skips_placeholder_body(self):
+        """重读到占位符（新一轮已开始、文本未落盘）→ 不替换，保持 hook 正文。"""
+        tr = self.transcript([
+            {"type": "user", "timestamp": "2026-09-26T00:00:20Z",
+             "message": {"content": "新提问"}},
+            self._asst("上一轮旧文", ts="2026-09-26T00:00:10Z"),
+        ])
+        args = mock.Mock(body="上一轮旧文", transcript=tr)
+        self.assertEqual(feige.refresh_body_from_transcript(args), 0)
+        self.assertEqual(args.body, "上一轮旧文")
+
+    def test_refresh_missing_or_identical_noop(self):
+        args = mock.Mock(body="x", transcript=str(Path(self.tmp.name, "nope.jsonl")))
+        self.assertEqual(feige.refresh_body_from_transcript(args), 0)
+        self.assertEqual(args.body, "x")
+        tr = self.transcript([self._asst("同文")])
+        args = mock.Mock(body="同文", transcript=tr)  # 相同 → 无刷新空间
+        self.assertEqual(feige.refresh_body_from_transcript(args), 0)
+        self.assertEqual(args.body, "同文")
+
+    def test_run_send_passes_transcript_to_payload(self):
+        """--transcript 时 run_send 会触发刷新并照常发送（端到端，发到本地捕获服务器）。"""
+        tr = self.transcript([self._asst("重读后的战报")])
+        handler = type("H", (_Capture,), {"got": [], "delay": 0.0})
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(srv.server_close)
+        os.environ["FEISHU_CARD_WEBHOOK"] = f"http://127.0.0.1:{srv.server_address[1]}/hook"
+        argv = ["send", "--title=t", "--body=旧文", "--webhook=" + os.environ["FEISHU_CARD_WEBHOOK"],
+                f"--transcript={tr}", "--debounce=0"]
+        args = feige._build_parser().parse_args(argv)
+        rc = feige.run_send(args)
+        self.assertEqual(rc, 0)
+        end = time.time() + 5
+        while time.time() < end and not handler.got:
+            time.sleep(0.05)
+        self.assertEqual(len(handler.got), 1)
+        self.assertIn("重读后的战报", json.dumps(handler.got[0][1], ensure_ascii=False))
 
     def test_fetch_models_parses_response_and_sorts(self):
         fake_json = json.dumps({
@@ -770,6 +961,7 @@ class PluginOptionsTest(unittest.TestCase):
         import common
         env = {"CLAUDE_PLUGIN_OPTION_HOOK_NOTIFY": "true",
                "CLAUDE_PLUGIN_OPTION_WEBHOOK_URL": "https://plugin/hook",
+               "CLAUDE_PLUGIN_OPTION_LLM_MIN_CHARS": "500",
                "ZCODE_USER_CONFIG_APP_ID": "cli_z",
                "FEISHU_NOTIFY_CHAT_ID": "oc_real", "CLAUDE_PLUGIN_OPTION_NOTIFY_CHAT_ID": "oc_plugin"}
         common.apply_plugin_options(env)
@@ -777,6 +969,59 @@ class PluginOptionsTest(unittest.TestCase):
         self.assertEqual(env["FEISHU_CARD_WEBHOOK"], "https://plugin/hook")
         self.assertEqual(env["FEISHU_APP_ID"], "cli_z")
         self.assertEqual(env["FEISHU_NOTIFY_CHAT_ID"], "oc_real")
+        self.assertEqual(env["FEIGE_LLM_MIN_CHARS"], "500")
+
+
+class LoopbackProxyBypassTest(E2EBase):
+    def test_post_json_dials_loopback_despite_proxy(self):
+        """回归：HTTP_PROXY 拦一切 http:// 时，发往 127.0.0.1 的 webhook 仍直连送达。
+
+        代理环境（HTTP_PROXY 指到死端口）下不走直连就会 502/连接拒绝。"""
+        dead = "http://127.0.0.1:9"  # discard 端口，连接必失败
+        with mock.patch.dict(os.environ, {"HTTP_PROXY": dead, "HTTPS_PROXY": dead,
+                                          "http_proxy": dead, "https_proxy": dead}):
+            ok, detail = feige.send_report("t", "loopback 直连", channel="feishu-webhook",
+                                           webhook=self.url + "/hook")
+        self.assertTrue(ok, detail)
+        self.assertEqual(len(self.handler.got), 1)
+
+
+class KimiTranscriptE2ETest(E2EBase):
+    """kimi 全链路：wire.jsonl 交给后台发送进程重读（接线回归）。"""
+
+    @staticmethod
+    def _loop(t, turn, etype, **kw):
+        event = {"type": etype, "turnId": turn}
+        event.update(kw)
+        return json.dumps({"type": "context.append_loop_event", "agentId": "main",
+                           "time": t, "event": event})
+
+    def test_kimi_refresh_picks_up_late_text(self):
+        """hook 时 wire 还没有本轮文本（占位符正文）→ 落盘后重读 → 卡片带迟到的正文。"""
+        home = Path(self.tmp.name, "kimi")
+        wire = home / "sessions" / "wd_x" / "session_k" / "agents" / "main" / "wire.jsonl"
+        wire.parent.mkdir(parents=True)
+        wire.write_text("\n".join([
+            self._loop(1_790_000_000_000, "1", "content.part", part={"type": "think", "think": "…"}),
+            json.dumps({"type": "usage.record", "agentId": "main", "time": 1_790_000_001_000,
+                        "usage": {"inputOther": 100, "inputCacheRead": 0, "inputCacheCreation": 0,
+                                  "output": 100}, "usageScope": "turn"}),
+        ]) + "\n", encoding="utf-8")
+        self.env["FEISHU_CARD_WEBHOOK"] = self.url + "/hook"
+        self.env["FEIGE_READ_BODY_DELAY"] = "3"  # 重读推迟到 3s，给补写正文留足时间
+        payload = {"client_type": "kimi_code_cli", "session_id": "session_k", "cwd": "/x/demo"}
+        r = subprocess.run([sys.executable, str(REPO / "hooks" / "stop.py")],
+                           input=json.dumps(payload, ensure_ascii=False), capture_output=True,
+                           env={**self.env, "KIMI_CODE_HOME": str(home)}, encoding="utf-8",
+                           timeout=60)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        # 后台发送进程 1.5s 后重读转录；在此之前把收尾文本补写进 wire（落盘滞后模拟）
+        with wire.open("a", encoding="utf-8") as fh:
+            fh.write(self._loop(1_790_000_002_000, "1", "content.part",
+                                part={"type": "text", "text": "迟到的收尾正文"}) + "\n")
+        got = self.wait_for(1)
+        card = json.dumps(got[0][1], ensure_ascii=False) if got else ""
+        self.assertIn("迟到的收尾正文", card, r.stderr)
 
 
 class PluginHookE2ETest(E2EBase):

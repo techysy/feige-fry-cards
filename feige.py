@@ -42,13 +42,14 @@ feishu-cardkit，都没有则明确报错（打码后）；钉钉/Telegram 显�
     FEIGE_LLM_BASE_URL                          总结 API base，默认 https://api.openai.com/v1
     FEIGE_LLM_MODEL                             总结模型，默认 gpt-4o-mini
     FEIGE_LLM_MAX_CHARS                         总结目标字数，默认 400
+    FEIGE_LLM_MIN_CHARS                         总结触发字数阈值，默认 300（0=只在超渠道上限才总结）
     FEIGE_SUMMARIZE                             0/false 显式关闭总结（即使已配 key）
 
 配置来源（优先级从高到低）：真实环境变量 > 插件 userConfig（落到环境变量）>
 设置文件 ~/.feige-settings.json（Studio 配置页写入，键名见 _SETTINGS_ENV）。
 渠道凭据、总结 LLM、行为开关都能只配在设置文件里，不必再碰环境变量。
 
-设计不变量（继承自家族踩坑）：摘要是战报不是镜像（正文超长先试 LLM 总结，未配置/
+设计不变量（继承自家族踩坑）：摘要是战报不是镜像（正文超阈值/超长先试 LLM 总结，未配置/
 失败退化为硬截断）；统计面板只在完成态（ok/error）做单次脚注，running 态不堆指标；
 fail-open——发卡失败只落日志，绝不抛炸调用方；密钥只走环境变量或本地设置文件
 （绝不入库），错误信息与页面回显里 token/secret/webhook/api key 一律打码。总结只在
@@ -71,6 +72,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+# 主插件版本号单一来源：面板（webui.VERSION）从这里读，两份插件清单
+# （.claude-plugin / .zcode-plugin 的 plugin.json + marketplace.json）同步一致，
+# 由测试锁住防漂移。
+__version__ = "1.1.0"
 
 DEFAULT_BASE_URL = "https://open.feishu.cn"
 STREAMING_ELEMENT_ID = "streaming_content"  # 流式正文元素 id（家族固定口径）
@@ -102,6 +108,7 @@ _SETTINGS_ENV = {
     "FEIGE_LLM_BASE_URL": "llm_base_url",
     "FEIGE_LLM_MODEL": "llm_model",
     "FEIGE_LLM_MAX_CHARS": "llm_max_chars",
+    "FEIGE_LLM_MIN_CHARS": "llm_min_chars",
     "FEIGE_STATS_SCOPE": "stats_scope",
     "FEIGE_DEBOUNCE_SECONDS": "debounce_seconds",
     "FEIGE_ROUTES_FILE": "routes_file",
@@ -197,12 +204,14 @@ def clip(text: str, limit: int = BODY_MAX_BYTES, unit: str = "bytes") -> str:
 DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 LLM_MAX_CHARS = 400        # 总结目标字数（近似值，最终仍按渠道字节上限兜底）
+LLM_MIN_CHARS = 300        # 总结触发阈值：启用后正文超过这么多字就先浓缩成摘要，
+                           # 而不是原样镜像（0 = 只在超渠道上限时才总结的旧口径）
 LLM_INPUT_MAX_CHARS = 24_000  # 送进总结请求的原文上限，防超长上下文把请求撑炸
 LLM_TIMEOUT = 20           # 秒；只在后台发送进程里等，不碰 hook 前台
 
 
 def llm_config() -> dict:
-    """总结 LLM 配置：{"enabled", "api_key", "base_url", "model", "max_chars"}。
+    """总结 LLM 配置：{"enabled", "api_key", "base_url", "model", "max_chars", "min_chars"}。
 
     取值口径统一走 _env（环境变量 > 设置文件）。没配 api_key 即未启用
     （enabled=False）——未配置是常态，不叫错误。
@@ -213,6 +222,11 @@ def llm_config() -> dict:
         max_chars = max(int(max_chars_raw), 50) if max_chars_raw else LLM_MAX_CHARS
     except ValueError:
         max_chars = LLM_MAX_CHARS
+    min_chars_raw = _env("FEIGE_LLM_MIN_CHARS")
+    try:
+        min_chars = max(int(min_chars_raw), 0) if min_chars_raw else LLM_MIN_CHARS
+    except ValueError:
+        min_chars = LLM_MIN_CHARS
     api_key = _env("FEIGE_LLM_API_KEY")
     raw_off = settings.get("summarize")  # 注意 False 是显式关闭，不能当「未配置」
     off = (_env("FEIGE_SUMMARIZE")
@@ -223,28 +237,85 @@ def llm_config() -> dict:
         "base_url": (_env("FEIGE_LLM_BASE_URL") or DEFAULT_LLM_BASE_URL).rstrip("/"),
         "model": _env("FEIGE_LLM_MODEL") or DEFAULT_LLM_MODEL,
         "max_chars": max_chars,
+        "min_chars": min_chars,
     }
+
+
+_SUMMARY_TAG_RE = re.compile(r"<summary>(.*?)</summary>", re.S)
+# 复述系统要求的行（「用户要求把…压缩成…只输出摘要本身」）的指纹词
+_ECHO_MARKERS = ("用户要求", "压缩成", "只输出", "摘要本身", "寒暄", "过程性叙述")
+# 过程独白行：「我需要把上面的汇报精简」「让我组织一下」「检查字数，应该在400字以内」
+_META_LINE_RE = re.compile(
+    r"^(?:让我们?|我(?:需要|来|会|将|先|准备|数一下)|好的[，,！!。.]|明白了[，,！!]|"
+    r"当然[，,！!]|收到[，,！!]|(?:检查|数一下|核对).{0,2}字数"
+    r"|字数.{0,4}(?:以内|左右|符合)|这个内容)")
+
+
+def _strip_monologue(text: str) -> str:
+    """标签没配合时的兜底：逐行剔掉复述要求的行与独白行。
+
+    剔完为空返回空串——调用方 fit_body 会退化到硬截断原文，好过发一卡片独白。
+    """
+    kept = []
+    for line in text.splitlines():
+        s = line.replace("</summary>", "").replace("<summary>", "").strip()
+        if not s:
+            continue
+        if sum(m in s for m in _ECHO_MARKERS) >= 2:
+            continue  # 复述要求
+        if _META_LINE_RE.match(s):
+            continue  # 过程独白
+        kept.append(s)
+    return "\n".join(kept).strip()
+
+
+def _extract_summary(text: str) -> str:
+    """从总结模型的返回里剥出摘要本体。
+
+    碎碎念模型会复述系统要求、在摘要前后写分析过程和字数检查，直接镜像进
+    卡片就是灾难现场；约定摘要放在 <summary> 标签里，标签外的话全部丢弃。
+    模型不配合（没标签/只剩开标签被截断）时退化为逐行去独白。
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    pairs = list(_SUMMARY_TAG_RE.finditer(text))
+    body = ""
+    if pairs:
+        body = pairs[-1].group(1).strip()  # 复述要求的标签对在前，真摘要取最后一个
+    elif "<summary>" in text:
+        body = text.rsplit("<summary>", 1)[1].strip()  # 只剩开标签：截断在摘要中途
+    if body.startswith("```"):
+        fence = re.fullmatch(r"```[^\n]*\n(.*?)(?:\n```)?\s*", body, re.S)
+        if fence:
+            body = fence.group(1).strip()
+    if len(body) >= 8:
+        return body
+    return _strip_monologue(text)
 
 
 def llm_summarize(text: str, cfg: dict | None = None) -> str:
     """调 OpenAI 兼容 chat/completions 把正文浓缩成 ≤max_chars 字战报摘要。
 
-    任何失败（网络/非 0 状态码/空返回）都返回空串，由 fit_body 退化硬截断；
-    只落打码后的日志，绝不抛。
+    任何失败（网络/非 0 状态码/空返回/剥完无正文）都返回空串，由 fit_body
+    退化硬截断；只落打码后的日志，绝不抛。
     """
     cfg = cfg or llm_config()
     if not cfg["enabled"]:
         return ""
     payload = {
         "model": cfg["model"],
-        "max_tokens": max(cfg["max_chars"] * 2, 200),  # 中文一字 ≈ 1-2 token，留余量
+        # 中文 1 字 ≈ 1-2 token；碎碎念模型先烧掉一段预算才轮到摘要，多留余量
+        "max_tokens": max(cfg["max_chars"] * 3, 600),
         "temperature": 0.2,
         "messages": [
             {"role": "system",
              "content": "你是任务战报摘要器。把助手冗长的收尾汇报浓缩成不超过"
                         f"{cfg['max_chars']}字的中文摘要：保留结论、关键改动、"
                         "文件/命令名与数字，删去寒暄、过程性叙述与重复内容，"
-                        "用 markdown 列表或短句。只输出摘要本身。"},
+                        "用 markdown 列表或短句。最终摘要放进 <summary> 与"
+                        " </summary> 标签之间，标签之外不得输出任何文字——"
+                        "不复述本要求、不写分析过程、不做字数检查。"},
             {"role": "user", "content": text[:LLM_INPUT_MAX_CHARS]},
         ],
     }
@@ -258,8 +329,11 @@ def llm_summarize(text: str, cfg: dict | None = None) -> str:
     try:
         with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
             data = json.loads(resp.read())
-        content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-        return str(content).strip()
+        choice = (data.get("choices") or [{}])[0]
+        content = str(((choice.get("message") or {}).get("content") or ""))
+        if choice.get("finish_reason") == "length":
+            log("llm summarize truncated (finish_reason=length)")
+        return _extract_summary(content)
     except Exception as exc:  # fail-open：总结失败不拖发卡
         log(f"llm summarize failed (falling back to clip): {redact(exc)}")
         return ""
@@ -345,18 +419,24 @@ def fetch_models(base_url: str = "", api_key: str = "", timeout: float = 15) -> 
 
 def fit_body(body: str, limit: int = BODY_MAX_BYTES, unit: str = "bytes",
              allow_summarize: bool = True) -> str:
-    """正文装得下渠道上限就原样，超了先试 LLM 总结，未启用/失败再硬截断。
+    """正文按总结口径加工：够短原样，超阈值先 LLM 总结，未启用/失败再按上限兜底。
+
+    触发条件（启用总结时）：正文超过 min_chars（默认 300 字）或超渠道上限——
+    中等长度的冗长汇报也浓缩成战报摘要，不再逐字镜像；低于阈值保持原样，
+    不为短正文多花一次 LLM 调用。min_chars=0 回到「只在超上限才总结」的旧口径。
 
     allow_summarize=False 用于 dry-run/预览（hook 前台同步路径）：绝不在这条路上
     发起 LLM 网络调用。
     """
     body = body or ""
-    if _size(body, unit) <= limit:
-        return body
-    if allow_summarize and llm_config()["enabled"]:
-        summary = llm_summarize(body)
-        if summary:
-            return clip(summary, limit, unit)
+    cfg = llm_config()
+    over_limit = _size(body, unit) > limit
+    if allow_summarize and cfg["enabled"]:
+        over_threshold = cfg["min_chars"] > 0 and len(body) > cfg["min_chars"]
+        if over_threshold or over_limit:
+            summary = llm_summarize(body, cfg)
+            if summary:
+                return clip(summary, limit, unit)
     return clip(body, limit, unit)
 
 
@@ -493,15 +573,26 @@ def build_card(title: str, body: str, stats: dict | None = None,
 # ── 底层 HTTP ────────────────────────────────────────────────────────────────
 
 def _post_json(url: str, body: dict, headers: dict | None = None, timeout: float = 10) -> dict:
-    """POST JSON，返回解析后的响应；HTTP 错误抛带打码 body 的 RuntimeError。"""
+    """POST JSON，返回解析后的响应；HTTP 错误抛带打码 body 的 RuntimeError。
+
+    回环地址绕过系统代理：HTTP_PROXY 配了「拦一切 http://」时，发往本机
+    webhook/调试服务器的请求会被代理打断（502 等），loopback 一律直连。
+    """
     req = urllib.request.Request(
         url,
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json", **(headers or {})},
         method="POST",
     )
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    if host in ("127.0.0.1", "::1", "localhost") or host.endswith(".localhost"):
+        # ProxyHandler({}) = 空代理表，直连（urlopen 否则取 getproxies() 走系统代理）
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    else:
+        opener = None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        open_url = opener.open if opener else urllib.request.urlopen
+        with open_url(req, timeout=timeout) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as e:
         raw_err = e.read().decode("utf-8", "replace")
@@ -1056,6 +1147,102 @@ def debounce_seconds() -> float:
         return 0.0
 
 
+# 后台发送进程开卡前重读转录的等待秒数（0 关闭）。宿主写 jsonl 可能略滞后于
+# Stop 触发，hook 前台不能等（零阻塞不变量），让 detached 发送进程等一下再重读。
+READ_BODY_DELAY_SECONDS = 1.5
+
+
+def read_body_delay_seconds() -> float:
+    try:
+        return max(float(_env("FEIGE_READ_BODY_DELAY") or READ_BODY_DELAY_SECONDS), 0.0)
+    except ValueError:
+        return READ_BODY_DELAY_SECONDS
+
+
+def run_send(args: argparse.Namespace) -> int:
+    """执行一次 send（供 main 与适配器后台入口共用）。
+
+    带 --transcript 时先等 FEIGE_READ_BODY_DELAY（默认 1.5s）再重读转录取最新
+    收尾正文——治宿主落盘滞后导致的「战报内容是上一轮」；重读失败（文件被
+    轮转/解析不出）保持 hook 前台已提取的正文，照发不误（fail-open）。
+    """
+    wait = args.debounce if args.debounce is not None else debounce_seconds()
+    if args.debounce_key and wait > 0 and not args.dry_run:
+        if not debounce_wait(args.debounce_key, wait):
+            log(f"superseded by a newer stop within {wait:g}s, skipped")
+            return 0
+    if getattr(args, "transcript", "") and not args.dry_run:
+        fresh = refresh_body_from_transcript(args)
+        if fresh:
+            log(f"body refreshed from transcript ({fresh} chars)")
+    stats = {
+        "project": args.project, "model": args.model,
+        "thinking": args.thinking, "tools": args.tools,
+        "context": args.context, "tokens": args.tokens, "elapsed": args.elapsed,
+    }
+    if args.route:
+        ok, detail = send_routed(args.title, args.body, stats=stats,
+                                 status=args.status, project=args.project,
+                                 dry_run=args.dry_run)
+    else:
+        ok, detail = send_report(args.title, args.body, stats=stats, status=args.status,
+                                 channel=args.channel, chat_id=args.chat_id,
+                                 webhook=args.webhook, dry_run=args.dry_run)
+    print(detail if args.dry_run else (f"✅ {detail}" if ok else f"❌ {detail}"))
+    return 0 if ok else 1
+
+
+_EMPTY_NOTE = "……（本轮无文本输出）"  # 与 adapters/common.body_for_card 占位符一致
+
+
+def refresh_body_from_transcript(args: argparse.Namespace) -> int:
+    """后台进程重读转录，把最新收尾正文/统计换进 args（治落盘滞后）。
+
+    宿主在 Stop 触发瞬间可能还没把本轮最终文本写进 jsonl；hook 前台不能等
+    （零阻塞不变量），后台发送进程可以。做法：等 read_body_delay_seconds()
+    → 用 Claude Code 适配器（转录 jsonl 口径）重解析 --transcript 指向的文件。
+    规则：
+    - 重读出的正文是占位符（新一轮已开始但文本还没落盘）→ 不替换，保持 hook 正文；
+    - 重读正文与 hook 不同 → 替换，并同步刷新模型/思考/工具/token/耗时/上下文
+      （同一轮口径，晚读到的那份才是收尾后的完整统计）；
+    - 文件不存在/解析失败 → 保持 hook 正文照发（fail-open）。
+    返回新正文长度（0 = 未刷新）。
+    """
+    transcript = str(getattr(args, "transcript", "") or "").strip()
+    if not transcript or not Path(transcript).is_file():
+        return 0
+    delay = read_body_delay_seconds()
+    if delay > 0:
+        time.sleep(delay)
+    try:
+        import importlib.util
+        root = Path(__file__).resolve().parent / "adapters"
+        if Path(transcript).name == "wire.jsonl":  # kimi-code 会话
+            mod_path, fn = root / "kimi-code" / "stop_notify.py", "summarize_wire"
+        else:  # Claude Code / 其余按转录 jsonl 口径
+            mod_path, fn = root / "claude-code" / "stop_notify.py", "summarize_transcript"
+        mod_spec = importlib.util.spec_from_file_location("feige_refresh_" + fn, mod_path)
+        mod = importlib.util.module_from_spec(mod_spec)
+        mod_spec.loader.exec_module(mod)  # 目录名带连字符，按路径加载（同 hooks/stop.py）
+        summary = getattr(mod, fn)(transcript)
+        if not summary:
+            return 0
+        # kimi 口径里上下文是 ctx/raw_model，在 main() 才格式化——这里补齐同口径
+        if "context" not in summary and summary.get("ctx") is not None:
+            summary["context"] = mod.fmt_context(
+                summary["ctx"], mod.context_window(summary.get("raw_model") or ""))
+        new_body = str(summary.get("body") or "").strip()
+        if new_body and new_body != _EMPTY_NOTE and new_body != args.body:
+            args.body = new_body
+            for key in ("model", "thinking", "tools", "context", "tokens", "elapsed"):
+                if summary.get(key) is not None:
+                    setattr(args, key, summary[key])
+            return len(new_body)
+    except Exception as exc:  # fail-open：刷新失败照发 hook 提取的正文
+        log(f"transcript refresh failed (sending hook body): {redact(exc)}")
+    return 0
+
+
 def debounce_wait(key: str, seconds: float) -> bool:
     """尾沿去抖：同一 key（会话）在 seconds 内又有新的收尾，就放弃本次发送。
 
@@ -1113,6 +1300,9 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="收尾去抖键（通常是 agent:会话 id）；同键在去抖窗口内又有新发送则放弃本次")
     send.add_argument("--debounce", type=float, default=None,
                       help="去抖窗口秒数（默认读 FEIGE_DEBOUNCE_SECONDS，0 关闭；dry-run 不去抖）")
+    send.add_argument("--transcript", default="",
+                      help="宿主转录 jsonl 路径；传了则后台进程稍等后重读它取最新收尾正文"
+                           "（治宿主落盘滞后导致的战报落后一轮），重读失败保持 --body")
     return parser
 
 
@@ -1124,26 +1314,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
     if args.command == "send":
-        wait = args.debounce if args.debounce is not None else debounce_seconds()
-        if args.debounce_key and wait > 0 and not args.dry_run:
-            if not debounce_wait(args.debounce_key, wait):
-                log(f"superseded by a newer stop within {wait:g}s, skipped")
-                return 0
-        stats = {
-            "project": args.project, "model": args.model,
-            "thinking": args.thinking, "tools": args.tools,
-            "context": args.context, "tokens": args.tokens, "elapsed": args.elapsed,
-        }
-        if args.route:
-            ok, detail = send_routed(args.title, args.body, stats=stats,
-                                     status=args.status, project=args.project,
-                                     dry_run=args.dry_run)
-        else:
-            ok, detail = send_report(args.title, args.body, stats=stats, status=args.status,
-                                     channel=args.channel, chat_id=args.chat_id,
-                                     webhook=args.webhook, dry_run=args.dry_run)
-        print(detail if args.dry_run else (f"✅ {detail}" if ok else f"❌ {detail}"))
-        return 0 if ok else 1
+        return run_send(args)
     return 2
 
 

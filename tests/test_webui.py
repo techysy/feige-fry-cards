@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import http.client
+import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -54,6 +57,20 @@ class WebuiPagesTest(unittest.TestCase):
 
         self.assertIn("飞书渠道", rendered)
         self.assertNotIn(marker, rendered)  # webhook 值绝不回显，只显已配置徽章
+
+    def test_studio_grid_is_masonry_columns_not_row_grid(self):
+        # 行式 grid 行高被该行最高卡撑开，矮卡下吊空白、整页超一屏；
+        # 配置页必须是多列瀑布流：每列独立堆叠，卡片不跨列断开
+        rendered = webui.page_studio().decode("utf-8")
+        self.assertIn(".grid{columns:420px", rendered)
+        self.assertIn(".grid>.card{break-inside:avoid", rendered)
+        self.assertNotIn(".grid{display:grid", rendered)
+
+    def test_studio_home_has_no_duplicate_routes_card(self):
+        # 群路由有独立页签，主页底部不再重复挂入口卡
+        rendered = webui.page_studio().decode("utf-8")
+        self.assertNotIn("编辑群路由", rendered)
+        self.assertIn("/routes", rendered)  # 页签导航入口仍在
 
     def test_status_page_lists_channels_and_test_buttons(self):
         rendered = webui.page_status().decode("utf-8")
@@ -290,8 +307,22 @@ class StatsScopeTest(unittest.TestCase):
         self.assertIn("未知设置卡片", resp)
         resp = webui.handle_settings_post(b"form=llm&llm_max_chars=abc").decode("utf-8")
         self.assertIn("非法摘要目标字数", resp)
+        resp = webui.handle_settings_post(b"form=llm&llm_min_chars=abc").decode("utf-8")
+        self.assertIn("非法总结触发字数", resp)
         resp = webui.handle_settings_post(b"form=behavior&debounce_seconds=x").decode("utf-8")
         self.assertIn("非法去抖秒数", resp)
+
+    def test_llm_min_chars_save_and_page(self):
+        """总结触发字数：保存校验（≥0）、留空回默认、页面渲染提示文案。"""
+        webui.handle_settings_post(b"form=llm&llm_min_chars=500")
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["llm_min_chars"], "500")
+        webui.handle_settings_post(b"form=llm&llm_min_chars=0")  # 0 合法：只在超上限才总结
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["llm_min_chars"], "0")
+        webui.handle_settings_post(b"form=llm")  # 留空 = 删键回默认 300
+        self.assertNotIn("llm_min_chars", json.loads(self.settings.read_text(encoding="utf-8")))
+        page = webui.page_studio().decode("utf-8")
+        self.assertIn("总结触发字数", page)
+        self.assertIn("llm_min_chars", page)
 
     def test_llm_off_toggle_writes_and_clears_summarize(self):
         webui.handle_settings_post(b"form=llm&llm_api_key=sk-1&llm_off=1")
@@ -341,6 +372,147 @@ class StatsScopeTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=3)
+
+
+class StudioKeepAliveTest(unittest.TestCase):
+    """后台保活：pidfile 读写、探活、启停编排、supervise 裁决（全离线 mock）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("FEIGE_STUDIO_")}
+        env["FEIGE_STUDIO_PID_FILE"] = str(Path(self.tmp.name, "studio.json"))
+        env["FEIGE_STUDIO_LOG_FILE"] = str(Path(self.tmp.name, "studio.log"))
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_supervise_decision(self):
+        # worker 绑不上端口且已有人接管 → 守护功成身退
+        self.assertEqual(webui._supervise_decision(3, 0.5, True), (False, 0.0))
+        # 端口仍空着（stop/start 竞态）→ 退避重启
+        self.assertEqual(webui._supervise_decision(3, 0.5, False), (True, 5.0))
+        # 活得太短 = 崩溃循环 → 退避 5s；正常退出 → 立即拉起
+        self.assertEqual(webui._supervise_decision(1, 0.5, False), (True, 5.0))
+        self.assertEqual(webui._supervise_decision(0, 3600.0, False), (True, 1.0))
+
+    def test_pidfile_roundtrip_and_garbage(self):
+        self.assertIsNone(webui.read_studio_pid())
+        webui.write_studio_pid(42, 8787)
+        self.assertEqual(webui.read_studio_pid(), {"pid": 42, "port": 8787})
+        webui.clear_studio_pid()
+        self.assertIsNone(webui.read_studio_pid())
+        Path(os.environ["FEIGE_STUDIO_PID_FILE"]).write_text("not json", encoding="utf-8")
+        self.assertIsNone(webui.read_studio_pid())  # 脏 pidfile 当没配，不炸
+
+    def test_start_when_port_already_alive(self):
+        buf = io.StringIO()
+        with mock.patch.object(webui, "port_alive", return_value=True), \
+                mock.patch.object(webui, "read_studio_pid",
+                                  return_value={"pid": 7, "port": 8787}), \
+                mock.patch("subprocess.Popen") as popen, \
+                contextlib.redirect_stdout(buf):
+            rc = webui.cmd_start(8787)
+        self.assertEqual(rc, 0)
+        self.assertIn("已在运行", buf.getvalue())
+        popen.assert_not_called()  # 已在跑绝不再拉第二个守护
+
+    def test_start_spawns_detached_supervisor_and_waits_for_port(self):
+        buf = io.StringIO()
+        with mock.patch.object(webui, "port_alive", side_effect=[False, True]), \
+                mock.patch.object(webui, "read_studio_pid", return_value=None), \
+                mock.patch("subprocess.Popen") as popen, \
+                contextlib.redirect_stdout(buf):
+            rc = webui.cmd_start(8787)
+        self.assertEqual(rc, 0)
+        self.assertIn("已后台拉起", buf.getvalue())
+        argv = popen.call_args[0][0]
+        self.assertIn("supervise", argv)
+        self.assertIn("8787", argv[-1])
+        if os.name == "nt":
+            self.assertTrue(popen.call_args[1]["creationflags"]
+                            & subprocess.DETACHED_PROCESS)
+
+    def test_start_restarts_living_supervisor_with_dead_port(self):
+        buf = io.StringIO()
+        webui.write_studio_pid(99, 8787)
+        with mock.patch.object(webui, "port_alive", return_value=False), \
+                mock.patch.object(webui, "pid_alive", return_value=True), \
+                mock.patch.object(webui, "kill_tree") as kt, \
+                mock.patch.object(webui, "time") as fake_time, \
+                mock.patch("subprocess.Popen") as popen, \
+                contextlib.redirect_stdout(buf):
+            popen.return_value.poll.return_value = None  # 永远起不来 → 走超时分支
+            rc = webui.cmd_start(8787)
+        self.assertEqual(rc, 1)
+        kt.assert_called_once_with(99)  # 崩溃循环里的旧守护被整树杀掉重来
+        fake_time.sleep.assert_called()  # 等待被 mock，测试不真等 10s
+        self.assertIn("尚未就绪", buf.getvalue())
+
+    def test_stop_kills_tree_and_clears_pidfile(self):
+        buf = io.StringIO()
+        webui.write_studio_pid(42, 8787)
+        with mock.patch.object(webui, "pid_alive", return_value=True), \
+                mock.patch.object(webui, "port_alive", return_value=False), \
+                mock.patch.object(webui, "kill_tree") as kt, \
+                contextlib.redirect_stdout(buf):
+            rc = webui.cmd_stop()
+        self.assertEqual(rc, 0)
+        kt.assert_called_once_with(42)
+        self.assertIn("已停止", buf.getvalue())
+        self.assertIsNone(webui.read_studio_pid())
+
+    def test_stop_without_pidfile_reports_front_process(self):
+        webui.write_studio_pid(42, 8787)  # 守护死了但 pidfile 还在
+        buf = io.StringIO()
+        with mock.patch.object(webui, "pid_alive", return_value=False), \
+                mock.patch.object(webui, "port_alive", return_value=True), \
+                contextlib.redirect_stdout(buf):
+            rc = webui.cmd_stop()
+        self.assertEqual(rc, 1)
+        self.assertIn("前台进程", buf.getvalue())
+        self.assertIsNone(webui.read_studio_pid())  # 脏 pidfile 顺手清掉
+
+    def test_status_states(self):
+        cases = [
+            (True, {"pid": 7, "port": 8787}, True, "运行中", 0),
+            (True, None, False, "无守护", 0),
+            (False, {"pid": 7, "port": 8787}, True, "崩溃循环", 1),
+            (False, None, False, "未在运行", 1),
+        ]
+        for port_ok, info, alive, needle, rc in cases:
+            buf = io.StringIO()
+            with mock.patch.object(webui, "port_alive", return_value=port_ok), \
+                    mock.patch.object(webui, "read_studio_pid", return_value=info), \
+                    mock.patch.object(webui, "pid_alive", return_value=alive), \
+                    contextlib.redirect_stdout(buf):
+                self.assertEqual(webui.cmd_status(), rc)
+            self.assertIn(needle, buf.getvalue())
+
+    def test_supervise_worker_spawn_is_detached_and_exits_when_port_taken(self):
+        # worker 也必须带脱离标志：无控制台的守护生出控制台程序会弹可见空窗口
+        webui.write_studio_pid(111, 8787)
+        buf = io.StringIO()
+        with mock.patch.object(webui, "port_alive", return_value=True), \
+                mock.patch("subprocess.Popen") as popen, \
+                contextlib.redirect_stdout(buf):
+            popen.return_value.wait.return_value = 3  # worker 报端口被占
+            rc = webui.cmd_supervise(8787)
+        self.assertEqual(rc, 0)  # 端口已被别人接管 → 守护功成身退
+        self.assertIsNone(webui.read_studio_pid())  # pidfile 顺手清掉
+        kwargs = popen.call_args[1]
+        if os.name == "nt":
+            self.assertTrue(kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
+        self.assertEqual(kwargs["stdout"].name, str(webui.studio_log_file()))
+
+    def test_main_dispatch_wiring(self):
+        with mock.patch.object(sys, "argv", ["webui.py", "restart", "--port", "8787"]), \
+                mock.patch.object(webui, "cmd_stop", return_value=0) as stop, \
+                mock.patch.object(webui, "cmd_start", return_value=0) as start:
+            self.assertEqual(webui.main(), 0)
+        stop.assert_called_once()
+        start.assert_called_once_with(8787)
 
 
 if __name__ == "__main__":
