@@ -7,6 +7,52 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-22 — 🕊️ Studio 后台保活 + 宽屏瀑布流 + 总结独白防线
+
+### Added
+
+- **宽屏 3 列 + 瀑布流高度自适应**：内容列宽抽成 `--col-w` 变量，视口 ≥1420px 时
+  放宽到 1400px，配置页卡片栅格（420px 下限自适应）自动从 2 列变 3 列，
+  header/导航/内容同轴对齐；栅格改多列瀑布流——行式 grid 的行高被该行最高的卡
+  撑开、矮卡下吊空白把整页顶出超一屏，现在每列独立堆叠、总高≈最高列，
+  宽屏配置页收进约一屏；窄屏布局与老的 980px 口径不变。
+- **Studio 后台保活**：`python webui.py start` 把面板拉成脱离终端的守护进程——
+  终端/宿主关闭不再连带杀掉面板，worker 崩溃自动重启（存活 <3s 视为崩溃循环退避 5s），
+  端口被其他实例接管时守护自动退出。配套 `stop`（按 pidfile 整树杀）/ `restart` /
+  `status`（探活）；保活日志 `~/.feige-studio.log`。前台 `python webui.py` 老用法不变。
+  守护进程树全程不落可见控制台窗口（每层 spawn 都带脱离标志——无控制台进程生出
+  控制台程序时 Windows 会弹可见空窗）。
+- **总结触发阈值（战报不是镜像）**：启用总结 LLM 后，正文超过「总结触发字数」
+  （默认 300 字，`llm_min_chars` / `FEIGE_LLM_MIN_CHARS` 可调）就先浓缩成战报摘要，
+  中等长度的收尾汇报不再逐字镜像上卡；设 `0` 回到「只在超渠道上限才总结」的旧口径。
+  Studio「正文总结」卡与插件设置均新增该字段。
+
+### Changed
+
+- **版本号单一来源**：主插件版本号收进 `feige.__version__`，面板 `webui.VERSION`
+  同源读取，`.claude-plugin` / `.zcode-plugin` 两份清单（plugin.json +
+  marketplace.json）同步 1.1.0（zcode marketplace 此前漏更停 1.0.0），
+  测试锁住五处一致防漂移。
+- **主页去掉重复的群路由卡**：群路由已有独立页签，配置页底部不再挂入口卡，
+  主页更紧凑。
+
+### Fixed
+
+- **总结模型的独白不再上卡（此地无银三百两）**：总结 LLM 返回不再整段镜像——
+  系统要求摘要放进 `<summary>` 标签，标签外的复述/分析/字数检查一律丢弃；
+  模型不配合标签约定时退化为逐行剥离复述要求的行与「让我组织一下」「检查字数」
+  式独白行，剥完为空退化硬截断原文。`max_tokens` 余量放宽（碎碎念模型会先烧掉
+  一段预算，避免摘要中途被截），截断输出（`finish_reason=length`）落日志可查。
+- **战报落后一个卡片**：适配器正文与统计口径对齐——只取**当前轮**的最后收尾文本，
+  轮边界清零、绝不回落上一轮旧文（此前当前轮被打断/纯工具收尾/宿主提前触发 Stop 时，
+  战报会发上一轮的内容）；Claude Code / kimi-code / ZCode 三适配器同修。
+  另带转录的宿主（Claude Code / kimi）把转录路径交给后台发送进程，开卡前等
+  `FEIGE_READ_BODY_DELAY`（默认 1.5s）重读一次转录——宿主落盘略滞后于 Stop 触发时，
+  晚读到的那份才是收尾后的完整正文与统计。
+  Studio 品牌区图标恢复 🕊️ emoji。
+
+## [1.0.1] - 2026-10-19 — 🕊️ 每群自动开启 + 按项目接收群
+
 ### Added
 
 - **每群自动开启（per-project 自动战报开关）**：路由文件里配了目标的项目，即使没开
@@ -19,9 +65,6 @@
   （环境变量同名为 `FEISHU_CHAT_ID__<项目名>`）。路由目标没写 `chat_id` 时落到
   该项目的群，没配项目键再落回全局默认群；目标里显式写的 `chat_id` 优先级最高。
   Studio 飞书渠道卡新增 10Router 群输入框。
-
-### Added
-
 - **模型在线拉取（对齐 ImgMark）**：feige Studio 总结 LLM 支持从 OpenAI 兼容服务的 `/models` 接口拉取可用模型列表；支持按厂商/前缀自动分组、上下文长度角标呈现、模糊搜索过滤，点击卡片即刻填入配置。
 
 ## [1.0.0] - 2026-10-17 — 🕊️ 从首飞到 1.0
@@ -107,6 +150,8 @@
 - 联调排错指南：230002 与 `setx` 陈旧环境变量坑（`de97166`）
 - 快速开始、使用指南目录锚链、家族表格绝对链接（`7b4945a` `a6878d4` `f3b6bff`）
 
-[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/techysy/feige-fry-cards/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/techysy/feige-fry-cards/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/techysy/feige-fry-cards/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/techysy/feige-fry-cards/releases/tag/v0.1.0
