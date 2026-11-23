@@ -51,7 +51,7 @@
 
 ## ✨ 特性
 
-- 🤖 **一插件统驭五宿主**：无缝适配 Claude Code、Codex CLI、ZCode、kimi-code 及 Mirasim 托管会话。
+- 🤖 **一插件统驭六宿主**：无缝适配 Claude Code、Codex CLI、ZCode、kimi-code、Antigravity CLI（agy）及 Mirasim 托管会话。
 - 🌐 **多渠道智能 Fanout**：支持按项目名称将战报广播（Fanout）到不同群组，单渠道故障互不连带。
 - 🧠 **正文 LLM 总结**：正文超长不再硬截断——配置 OpenAI 兼容 API 后，后台发送进程先把冗长收尾汇报浓缩成战报摘要，未配置/失败自动退化为截断；宿主 hook 前台零网络阻塞。
 - ⏱️ **精准口径与收尾去抖**：支持仅统计单轮用时与消耗（或全会话累计），内置 Debounce 机制防止频繁短交互刷屏。
@@ -135,7 +135,7 @@ python webui.py    # 默认绑定 127.0.0.1:8787，安全无外网暴露
 
 ---
 
-## 🔌 插件安装（一份插件，五个宿主）
+## 🔌 插件安装（一份插件，六个宿主）
 
 仓库结构原生即插件。Claude Code、Codex 与 ZCode 均统一读取根目录下 `hooks/hooks.json` 挂载的 `hooks/stop.py` 调度入口：
 
@@ -148,6 +148,7 @@ feige-fry-cards/
 │   ├── stop.py                  # 宿主环境侦测与任务分发中心
 │   └── stop-notify.mjs          # ZCode Rollout 会话日志转录解析
 ├── adapters/                    # 针对各 Agent 的转录提取适配器
+│   ├── antigravity/             # Antigravity CLI（agy）Stop hook 适配器
 │   ├── claude-code/
 │   ├── codex/
 │   └── kimi-code/
@@ -181,6 +182,24 @@ event = "Stop"
 command = 'python "/path/to/feige-fry-cards/hooks/stop.py"'
 timeout = 20
 ```
+
+### 5. Antigravity CLI（agy）
+在 `<workspace>/.agents/hooks.json`（仅该项目）或 `~/.gemini/config/hooks.json`（全局）中配置原生 Stop hook：
+```json
+{
+  "feige": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python \"<repo>/adapters/antigravity/stop_notify.py\"",
+        "timeout": 20
+      }
+    ]
+  }
+}
+```
+- hook payload 与转录 schema（`PLANNER_RESPONSE` 的 model/usage/thinking/tool_calls）
+  按 agy 1.5.11 实证；💬/🔧/🎫/⏱️ 只算最后一轮，上下文水位 = input + cache_read。
 
 ---
 

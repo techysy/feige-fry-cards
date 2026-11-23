@@ -1219,6 +1219,8 @@ def refresh_body_from_transcript(args: argparse.Namespace) -> int:
         root = Path(__file__).resolve().parent / "adapters"
         if Path(transcript).name == "wire.jsonl":  # kimi-code 会话
             mod_path, fn = root / "kimi-code" / "stop_notify.py", "summarize_wire"
+        elif "antigravity" in Path(transcript).as_posix():  # agy 会话（brain/**/transcript_full.jsonl）
+            mod_path, fn = root / "antigravity" / "stop_notify.py", "summarize_transcript"
         else:  # Claude Code / 其余按转录 jsonl 口径
             mod_path, fn = root / "claude-code" / "stop_notify.py", "summarize_transcript"
         mod_spec = importlib.util.spec_from_file_location("feige_refresh_" + fn, mod_path)

@@ -13,6 +13,8 @@ Claude Code、Codex、ZCode 都自动加载插件根目录的 hooks/hooks.json�
                  注册即开启，不吃 FEIGE_HOOK_NOTIFY 默认关）
     Codex        payload 带 turn_id（Codex 扩展字段），或转录在 .codex/ 下
                  → adapters/codex/notify.py main_hook（直接取 last_assistant_message）
+    Antigravity  payload 带 conversationId（agy camelCase）或转录在 antigravity-cli 下
+                 → adapters/antigravity/stop_notify.py（解析 brain/**/transcript_full.jsonl）
     Claude Code  其余
                  → adapters/claude-code/stop_notify.py（解析 transcript_path）
 
@@ -49,6 +51,9 @@ def detect_host(payload: dict, env=None) -> str:
     transcript = str(payload.get("transcript_path") or "").replace("\\", "/")
     if "turn_id" in payload or "/.codex/" in transcript:
         return "codex"
+    # agy（Antigravity CLI）payload 是 camelCase：conversationId / transcriptPath
+    if "conversationId" in payload or "antigravity-cli" in transcript:
+        return "antigravity"
     return "claude-code"
 
 
@@ -95,6 +100,9 @@ def main() -> None:
         adapter = _load(ADAPTERS / "codex" / "notify.py", "feige_codex")
         # 每群自动开关：路由文件里配了本项目 → 即使未开全局 hook 也发
         common.run(lambda: adapter.main_hook(payload), project=common.project_label(str(payload.get("cwd") or "")))
+    elif host == "antigravity":
+        adapter = _load(ADAPTERS / "antigravity" / "stop_notify.py", "feige_antigravity")
+        common.run(lambda: adapter.main(payload), project=common.project_label(str(payload.get("cwd") or "")))
     elif host == "kimi-code":
         # kimi 适配器自带开关（注册即开启），不走 common.run 的 FEIGE_HOOK_NOTIFY 默认关
         adapter = _load(ADAPTERS / "kimi-code" / "stop_notify.py", "feige_kimi_code")

@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Antigravity CLI（agy）适配器**：新增 `adapters/antigravity/stop_notify.py`，agy 原生
+  Stop hook（`<workspace>/.agents/hooks.json` 或 `~/.gemini/config/hooks.json`）→ 会话
+  收尾战报卡。hook payload（camelCase：`conversationId`/`transcriptPath`）与转录
+  schema（`PLANNER_RESPONSE` 的 model/usage/thinking/tool_calls）均按本机 agy 1.5.11
+  实证；💭/🔧/🎫/⏱️ 只算最后一轮，上下文水位 = input+cache_read（agy 不暴露
+  cache_creation），模型窗口表含 gemini-3.8-flash / claude-sonnet-4 / gpt-oss-120b。
+  `hooks/stop.py` 按 `conversationId` 或 `antigravity-cli` 转录路径识别分发；
+  后台发送进程重读转录同样识别（feige.py）。
+
 ## [1.1.1] - 2026-11-22 — 🕊️ 面板导航对齐卡片 + 提示文案窄屏截断
 
 ### Fixed
