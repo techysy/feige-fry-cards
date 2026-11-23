@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-23 — 🕊️ Antigravity CLI（反重力）适配器
+
 ### Added
 
 - **Antigravity CLI（agy）适配器**：新增 `adapters/antigravity/stop_notify.py`，agy 原生
@@ -170,7 +172,8 @@
 - 联调排错指南：230002 与 `setx` 陈旧环境变量坑（`de97166`）
 - 快速开始、使用指南目录锚链、家族表格绝对链接（`7b4945a` `a6878d4` `f3b6bff`）
 
-[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/techysy/feige-fry-cards/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/techysy/feige-fry-cards/compare/v1.1.0...v1.1.1
 <!-- v1.0.1 当年只更了清单没打 tag，compare 从 v1.0.0 起 -->
 [1.1.0]: https://github.com/techysy/feige-fry-cards/compare/v1.0.0...v1.1.0
