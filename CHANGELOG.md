@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-26 — 🕊️ 模型图标认得出路由：别名按智能体显示，未识别兜底宿主图
+
 ### Added
 
 - **未识别模型兜底智能体图标**：面板头左侧原来只在命中厂商家族时才有图标，代理池 /
@@ -292,7 +294,8 @@
 - 联调排错指南：230002 与 `setx` 陈旧环境变量坑（`de97166`）
 - 快速开始、使用指南目录锚链、家族表格绝对链接（`7b4945a` `a6878d4` `f3b6bff`）
 
-[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/techysy/feige-fry-cards/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/techysy/feige-fry-cards/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/techysy/feige-fry-cards/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/techysy/feige-fry-cards/compare/v1.2.0...v2.0.0
