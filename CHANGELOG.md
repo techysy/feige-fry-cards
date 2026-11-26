@@ -16,6 +16,14 @@
   口径不变（厂商图 + 官方名）；`vendor_logo_enabled` / `FEIGE_VENDOR_LOGO` 关掉时
   依旧一个图标都不出。Studio 预览页同步（模型速选新增 `chat-mode-pool` 一档可直接
   预览兜底效果），`/assets/agent-logos/` 与厂商目录同等做路径越界校验。
+- **路由别名模型按路由目标显示智能体图标**：网关的池化入口（`chat-mode-pool`、
+  `openai/chat-mode-pool`、上游真名 `qwork-claude-chat-mode-pool` 等）名字里常带厂商词，
+  按厂商规则会先匹配出 OpenAI / Claude 的厂商 logo，而真正执行的是卡片宿主。现在这类
+  别名**先于厂商判定**被识别（`is_alias_model`），面板头显示路由到的智能体图标与名称
+  （`Claude Code` / `Codex` …），展开面板的「模型：」同时保留原串便于回查网关。路由目标
+  取值优先级：模型串显式标记（`alias:claude-code` / `→ codex`）> 发卡时上报的宿主
+  （适配器元数据，即真实执行者）> `宿主 · ` 前缀；**都解析不出时回退厂商 logo**，
+  认不出也不会空着。具体厂商模型（`deepseek-v4.1-flash`、`claude-sonnet-4`）不受影响。
 
 ### Fixed
 

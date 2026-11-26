@@ -576,8 +576,67 @@ def resolve_agent_logo_asset(model: str, host: str = "") -> str | None:
     return None
 
 
+# 路由别名（池化模型）识别：这些名字是网关侧的「路由入口」，不是真实厂商模型。
+# 它们往往自带厂商词（`openai/chat-mode-pool`、`qwork-claude-chat-mode-pool`），
+# 若按厂商规则匹配就会出 OpenAI / Claude 的厂商 logo —— 而真正执行的是卡片宿主
+# 智能体（Claude Code / Codex …）。所以别名必须先于厂商判定被认出来。
+ALIAS_MODEL_MARKERS: tuple[str, ...] = (
+    "chat-mode-pool",
+    "chat_mode_pool",
+    "chatmodepool",
+    "mode-pool",
+)
+
+
+def is_alias_model(model: str) -> bool:
+    """模型名是否是路由别名（池化入口），而不是具体厂商模型。
+
+    只看 `宿主 · ` 之后的原始模型段，避免把宿主名前缀误判成别名。
+    """
+    _, raw_model = _split_host_model(model)
+    lower = (raw_model or "").strip().lower()
+    if not lower:
+        return False
+    if lower.startswith("alias:"):
+        return True
+    return any(marker in lower for marker in ALIAS_MODEL_MARKERS)
+
+
+def resolve_alias_route_asset(model: str, host: str = "") -> str | None:
+    """别名模型路由到的智能体 logo；解析不出路由目标返回 None。
+
+    优先级：
+    1. 模型串自带的路由目标标记 `alias:claude-code` / `→ codex`（网关或配置显式给出）；
+    2. 显式 `host` 参数（发卡时适配器上报的宿主，也就是真实执行者）；
+    3. 模型串 `宿主 · ` 前缀。
+    拿不到任何一层时才返回 None，由调用方回退厂商 logo。
+    """
+    _, raw_model = _split_host_model(model)
+    lower = (raw_model or "").strip().lower()
+    if lower.startswith("alias:"):
+        target = lower.split(":", 1)[1].strip()
+        name = AGENT_LOGO_FILES.get(target)
+        if name:
+            return name
+    if "→" in raw_model or "->" in raw_model:
+        tail = re.split(r"→|->", raw_model, maxsplit=1)[-1].strip().lower()
+        name = AGENT_LOGO_FILES.get(tail)
+        if name:
+            return name
+    return resolve_agent_logo_asset(model, host)
+
+
 def resolve_logo_asset(model: str, host: str = "") -> str | None:
-    """面板头 Logo 资产名：命中厂商家族用厂商图，未命中兜底宿主/智能体图。"""
+    """面板头 Logo 资产名。
+
+    顺序：路由别名 → 它路由到的智能体图；否则厂商家族图；都未命中再兜底宿主图。
+    别名若解析不出路由目标，回落厂商图（`openai/chat-mode-pool` → openai.png），
+    保证「认不出路由目标也不会空着」。
+    """
+    if is_alias_model(model):
+        routed = resolve_alias_route_asset(model, host)
+        if routed:
+            return routed
     return resolve_vendor_logo_asset(model) or resolve_agent_logo_asset(model, host)
 
 
@@ -603,6 +662,20 @@ def resolve_vendor_logo_asset(model: str) -> str | None:
     return None
 
 
+def resolve_route_label(model: str, host: str = "") -> str | None:
+    """别名模型路由到的智能体展示名（`Claude Code` / `Codex` …）；解析不出返回 None。
+
+    与 `resolve_alias_route_asset` 同一套优先级，只是给展示名用。
+    """
+    asset = resolve_alias_route_asset(model, host)
+    if not asset:
+        return None
+    for slug, name in AGENT_LOGO_FILES.items():
+        if name == asset:
+            return _HOST_LABELS.get(slug, slug)
+    return None
+
+
 def resolve_vendor_display_name(model: str) -> str | None:
     """代理拼接名 → 官方模型展示名（与 hermes/claw-fry-cards 同口径）；未命中返回 None。"""
     _, raw_model = _split_host_model(model)
@@ -624,20 +697,29 @@ def resolve_vendor_display_name(model: str) -> str | None:
     return f"{official} {tail}".strip() or official
 
 
-def format_panel_model(model: str, host_prefix: bool | None = None) -> str:
+def format_panel_model(model: str, host_prefix: bool | None = None,
+                       host: str = "") -> str:
     """面板标题里的模型展示名：默认不重复宿主前缀，只留模型官方名。
 
     卡片标题已含「项目 · 宿主」，面板头再带一遍宿主就是同一张卡说三遍；
     host_prefix 为真（FEIGE_PANEL_HOST_PREFIX / 设置 panel_host_prefix）时才还原
     「claude-code · Qwen 4-max」旧口径。显式传参优先于配置。
+
+    路由别名（`chat-mode-pool` 一类）不按字面厂商展示——它真正跑在哪个智能体上
+    才是这张卡该说的：解析出路由目标就显示目标名（`Claude Code`），解析不出
+    才退回厂商官方名。
     """
     prefix_allowed = panel_host_prefix_enabled() if host_prefix is None else bool(host_prefix)
     host_prefix_text, raw_model = _split_host_model(model)
     if not raw_model:
         # 只有宿主没有模型（'claude-code'）：关前缀时留空让调用方回落标题兜底
         return host_prefix_text if prefix_allowed else ""
-    official = resolve_vendor_display_name(raw_model)
-    shown = official or raw_model.split("/")[-1]
+    if is_alias_model(model):
+        # 整串传下去：宿主前缀本身就是路由目标，别只拿 raw 段丢了这个信息
+        shown = (resolve_route_label(model, host) or resolve_vendor_display_name(raw_model)
+                 or raw_model.split("/")[-1])
+    else:
+        shown = resolve_vendor_display_name(raw_model) or raw_model.split("/")[-1]
     return f"{host_prefix_text} · {shown}" if (host_prefix_text and prefix_allowed) else shown
 
 
@@ -900,11 +982,13 @@ def compact_count(value: int) -> str:
 def _build_panel_header_text(stats: dict | None, logo_image_key: str = "",
                              fields: list[str] | tuple[str, ...] | None = None,
                              context_style: str = "",
-                             panel_host_prefix: bool | None = None) -> str:
+                             panel_host_prefix: bool | None = None,
+                             host: str = "") -> str:
     """统一面板标题文本（对齐 fry-cards）：不添加多余 emoji，保持图标干净（未传 custom_icon 时仅展示统计标题）。
 
     字段与顺序走独立的面板配置（panel_fields / FEIGE_PANEL_FIELDS），默认不含
     项目名——卡片标题已含「项目 · 宿主」，同一张卡不重复三遍。
+    `host` 是发卡时上报的宿主（真实执行者），别名模型靠它解析路由目标。
     """
     parts: list[str] = []
     if stats:
@@ -915,7 +999,7 @@ def _build_panel_header_text(stats: dict | None, logo_image_key: str = "",
             fmap["project"] = f"📦 {project}"
         model = str(stats.get("model") or "").strip()
         if model:
-            fmap["model"] = format_panel_model(model, host_prefix=panel_host_prefix)
+            fmap["model"] = format_panel_model(model, host_prefix=panel_host_prefix, host=host)
         thinking = stats.get("thinking")
         if thinking is not None and str(thinking).strip():
             try:
@@ -987,11 +1071,19 @@ def _build_unified_panel(
         meta_parts.append(f"宿主：{_HOST_LABELS.get(host.lower(), host)}")
     raw_model = str((stats or {}).get("model") or "").strip()
     if raw_model:
-        official = resolve_vendor_display_name(raw_model)
-        if official and official not in raw_model:
-            meta_parts.append(f"模型：{official}（`{raw_model}`）")
+        # 别名模型展示路由目标，同时把原名留在括号里，方便回查网关侧是哪条池
+        if is_alias_model(raw_model):
+            route = resolve_route_label(raw_model, host) or resolve_vendor_display_name(raw_model)
+            if route and route not in raw_model:
+                meta_parts.append(f"模型：{route}（`{raw_model}`）")
+            else:
+                meta_parts.append(f"模型：`{raw_model}`")
         else:
-            meta_parts.append(f"模型：`{raw_model}`")
+            official = resolve_vendor_display_name(raw_model)
+            if official and official not in raw_model:
+                meta_parts.append(f"模型：{official}（`{raw_model}`）")
+            else:
+                meta_parts.append(f"模型：`{raw_model}`")
     if ctx_id:
         meta_parts.append(f"上下文：`#{ctx_id[:8]}`")
     if meta_parts:
@@ -1012,7 +1104,8 @@ def _build_unified_panel(
 
     header_title = _build_panel_header_text(stats, logo_image_key=logo_image_key,
                                             context_style=context_style,
-                                            panel_host_prefix=panel_host_prefix)
+                                            panel_host_prefix=panel_host_prefix,
+                                            host=host)
     header_obj: dict = {
         "title": {
             "tag": "plain_text",

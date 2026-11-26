@@ -1195,8 +1195,9 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
                               inter_on, "完成态卡片附带追问表单与防误触快捷按钮")
             + _checkbox_field("feishu_ws_enabled", "启用飞书长连接监听（WSClient）",
                               ws_on, "接收 card.action.trigger 并随 Studio 保活，无需公网域名")
-            + _checkbox_field("vendor_logo_enabled", "展示 Logo（厂商图 + 智能体兜底）与官方模型名",
-                              feige.vendor_logo_enabled(), "CardKit 自动上传并本地缓存图片 key；未识别模型用宿主图标兜底")
+            + _checkbox_field("vendor_logo_enabled", "展示 Logo（厂商图 + 智能体图）与官方模型名",
+                              feige.vendor_logo_enabled(),
+                              "CardKit 自动上传并本地缓存图片 key；路由别名按宿主显示智能体图，未识别模型用宿主图标兜底")
             + _checkbox_field("panel_expanded", "底部统一折叠面板默认展开",
                               feige.panel_expanded_default())
             + _checkbox_field("panel_host_prefix", "面板头模型名带宿主前缀",
@@ -1751,6 +1752,7 @@ _SAMPLE_MODELS = [
     ("qwen4-max", "Qwen4 Max · 阿里云"),
     ("mimo-v2.6-flash-free", "MiMo V2.6 · 小米"),
     ("chat-mode-pool", "chat-mode-pool · 未识别厂商（兜底智能体图标）"),
+    ("openai/chat-mode-pool", "openai/chat-mode-pool · 路由别名（按宿主显示智能体）"),
 ]
 
 _PREVIEW_PRESETS = [
@@ -1925,9 +1927,20 @@ def build_preview_payload(params: dict) -> dict:
             payload_obj = {"raw": raw_detail}
     logo_file = feige.resolve_logo_asset(model, host) if feige.vendor_logo_enabled() else None
     logo_url = _logo_asset_url(logo_file)
-    logo_kind = ("agent" if logo_file and feige.resolve_vendor_logo_asset(model) is None
-                 else "vendor" if logo_file else "")
-    official_model = feige.resolve_vendor_display_name(model) if model else ""
+    if not logo_file:
+        logo_kind = ""
+    elif logo_file in feige.AGENT_LOGO_FILES.values():
+        logo_kind = "agent"
+    else:
+        logo_kind = "vendor"
+    alias_route: str = ""
+    official_model: str = ""
+    if model:
+        if feige.is_alias_model(model):
+            alias_route = feige.resolve_route_label(model, host) or ""
+            official_model = alias_route or (feige.resolve_vendor_display_name(model) or "")
+        else:
+            official_model = feige.resolve_vendor_display_name(model) or ""
     return {
         "ok": bool(ok),
         "channel": effective_ch,
@@ -1938,6 +1951,7 @@ def build_preview_payload(params: dict) -> dict:
         "logo_url": logo_url,
         "logo_kind": logo_kind,
         "official_model": official_model,
+        "alias_route": alias_route,
         "host": host,
         "host_label": feige_interactive.host_label(host) if host else "",
         "resumable": bool(host and feige_interactive.is_host_resumable(host)),
@@ -2308,7 +2322,8 @@ def page_preview(q: dict) -> bytes:
         logo_html = f"<img class='vlogo' src='{esc(logo_url)}' alt=''>" if logo_url else ""
         panel_title = feige._build_panel_header_text(stats, logo_image_key="preview" if logo_url else "",
                                                      context_style=eff_cstyle,
-                                                     panel_host_prefix=eff_php)
+                                                     panel_host_prefix=eff_php,
+                                                     host=host)
         panel_html = ""
         if status != "running" and (stats.get("model") or stats.get("project") or cur_detail or cur_tool_sum or host):
             det_parts = []

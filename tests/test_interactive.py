@@ -182,6 +182,55 @@ class VendorLogoAndFamilyCardTest(unittest.TestCase):
         # 兜底目录与厂商目录不得重名，否则上传缓存键（只用文件名）会串图
         self.assertEqual(present & {p.name for p in feige._ASSETS_VENDOR_DIR.glob("*.png")}, set())
 
+    def test_alias_model_shows_routed_agent_not_vendor(self):
+        """路由别名（池名）显示它路由到的智能体，而不是名字里带的厂商。
+
+        DM #278 截图的面板头是 `OpenAI chat-mode-pool`——`chat-mode-pool` 只是网关
+        的路由入口（上游真名 `qwork-claude-chat-mode-pool`），由 Claude Code 执行；
+        含 `openai` / `claude` 子串会被厂商规则先吃掉，所以别名必须优先于厂商判定。
+        """
+        cases = [
+            # (model, host, 期望 logo, 期望面板展示名)
+            ("openai/chat-mode-pool", "claude-code", "claude-code.png", "Claude Code"),
+            ("qwork-openai-chat-mode-pool", "claude-code", "claude-code.png", "Claude Code"),
+            ("qwork-claude-chat-mode-pool", "codex", "codex.png", "Codex"),
+            ("claude-code · openai/chat-mode-pool", "", "claude-code.png", "Claude Code"),
+            ("codex · chat-mode-pool", "", "codex.png", "Codex"),
+            ("chat-mode-pool", "claude-code", "claude-code.png", "Claude Code"),
+            ("alias:codex", "", "codex.png", "Codex"),
+        ]
+        for model, host, exp_logo, exp_panel in cases:
+            with self.subTest(model=model, host=host):
+                self.assertTrue(feige.is_alias_model(model))
+                self.assertEqual(feige.resolve_logo_asset(model, host), exp_logo)
+                self.assertEqual(feige.format_panel_model(model, host=host), exp_panel)
+
+        # 解析不出路由目标 → 回退厂商 logo（认不出也不空着）
+        self.assertTrue(feige.is_alias_model("OpenAI chat-mode-pool"))
+        self.assertEqual(feige.resolve_logo_asset("OpenAI chat-mode-pool"), "openai.png")
+        self.assertEqual(feige.format_panel_model("OpenAI chat-mode-pool"), "OpenAI chat-mode-pool")
+
+        # 具体厂商模型不受影响，别名规则不能误伤正常模型名
+        for model in ("deepseek-v4.1-flash", "claude-code · claude-sonnet-4",
+                      "codex · gpt-5.1-codex", "longcat/LongCat-2.5-Preview"):
+            with self.subTest(model=model):
+                self.assertFalse(feige.is_alias_model(model))
+
+    def test_alias_model_panel_header_and_detail_line(self):
+        """面板头与展开面板的「模型：」都要说清路由目标，并保留别名原串便于回查。"""
+        stats = {"model": "openai/chat-mode-pool", "thinking": 185, "tools": 271,
+                 "context": "288.5k/1.0m (29%)", "tokens": 143900, "elapsed": "54m 11s"}
+        header = feige._build_panel_header_text(stats, host="claude-code")
+        self.assertIn("Claude Code", header)
+        self.assertNotIn("OpenAI", header)
+
+        panel = feige._build_unified_panel(stats=stats, host="claude-code",
+                                          detail_body="正文")
+        meta = next(c["content"] for c in panel["elements"]
+                    if c.get("tag") == "markdown" and "模型：" in c.get("content", ""))
+        self.assertIn("Claude Code", meta)
+        self.assertIn("openai/chat-mode-pool", meta)   # 原名留在括号里，能回查网关
+
     def test_collapsible_panel_and_logo_in_card(self):
         card = feige.build_card(
             "任务完成",
