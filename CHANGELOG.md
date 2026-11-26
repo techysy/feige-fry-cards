@@ -7,6 +7,30 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **「具体设置」弹层排版错乱、字段跑到框外**：`showModal()` 不可用（内嵌浏览器 / 旧版
+  Chromium 里会缺失或抛错）时走的是非模态兜底，浏览器只给 `open` 属性、不给任何限高与
+  居中，弹窗按普通块排版一路长到视口外，保存条被内容推着浮在半空，下半截字段（飞书域名、
+  10Router 群 chat_id、Webhook）露在框外。现在弹层自己定死 `position:fixed; inset:0;
+  margin:auto` + `max-height`，头固定、正文内部滚动、保存条 `sticky` 贴底，两条路径几何
+  完全一致；兜底路径另补一层自有遮罩，页面正文不再从缝里透出来。
+- **三个渠道弹层同时叠在页面上**：上面那组选择器优先级高于浏览器默认的
+  `dialog:not([open]){display:none}`，又给出了 `display`，于是「关着」的弹窗也被排出来、
+  相互叠压（打开飞书时 Telegram 压在上面）。改为 `:not([open])` 显式不显示、`[open]` 才
+  `display:flex`。
+- **收起态折叠区依赖引擎行为**：新 Chrome 靠 `::details-content{content-visibility:hidden}`
+  隐藏收起内容，内嵌/旧引擎不认，收起的 Webhook 字段仍占位并绘制。加
+  `details.fold-card:not([open])>.fold-body{display:none}`，不依赖引擎。
+- **每次点击都抛 `SyntaxError`**：`.menu-select` 的 document 点击监听写成
+  `e.target.closest(box)`，`closest` 只接受选择器字符串，传 Element 抛
+  「`[object HTMLSpanElement]` is not a valid selector」，等于每次点页面都在控制台报错。
+  改为 `box.contains(e.target)`。
+- **宿主 Claude Code 图标是黑白方块**：`agent-logos/claude-code.png` 原本是深灰瓦片 +
+  白色机器人，白底面板上是「黑块 + 白机器人」。换成 Anthropic 品牌橙 `#D97757` 瓦片 +
+  白色机器人、四角透明，仍为 640×640、64 色 P 模式，与同目录其他 agent 图标同规格。
+  上传缓存键早已含 `sha256[:12]`，已发过卡的机器会重新上传新图。
+
 ## [2.3.0] - 2026-11-26 — 🕊️ 模型图标认得出路由：别名按智能体显示，未识别兜底宿主图
 
 ### Added

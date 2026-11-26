@@ -457,6 +457,32 @@ class ContextStyleStudioTest(unittest.TestCase):
         self.assertIn("name='form' value='dingtalk'", page)
         self.assertIn("name='form' value='telegram'", page)
 
+    def test_modal_css_seals_both_open_paths(self):
+        """弹层样式必须自己定死几何，且收起态显式不显示。
+
+        showModal() 不可用时会退回非模态 open 属性，那时 UA 不给限高/居中/遮罩，
+        内容就长到视口外（用户截图里「字段跑到框外」）；而基样式一旦给出 display，
+        优先级又高于 dialog:not([open]){display:none}，关着的弹窗也会被排出来互相叠压。
+        """
+        page = webui.page_studio().decode("utf-8")
+        base = page.split("dialog.feige-modal{")[1].split("}")[0]
+        self.assertNotIn("display", base)          # 基样式不许声明 display
+        for decl in ("position:fixed", "inset:0", "margin:auto", "max-height:calc(100vh - 32px)"):
+            self.assertIn(decl, base)              # 两条路径都居中限高
+        self.assertIn("dialog.feige-modal:not([open]){display:none}", page)
+        self.assertIn("dialog.feige-modal[open]{display:flex}", page)
+        # 收起的折叠区不能押 ::details-content 的引擎行为
+        self.assertIn("details.fold-card:not([open])>.fold-body{display:none}", page)
+        # 兜底路径没有 ::backdrop，必须自带遮罩
+        self.assertIn("data-scrim-for=", page)
+        self.assertIn(".fm-scrim{position:fixed", page)
+
+    def test_menu_select_outside_click_uses_contains(self):
+        """closest() 只吃选择器字符串，传 Element 会在每次点击时抛 SyntaxError。"""
+        page = webui.page_studio().decode("utf-8")
+        self.assertNotIn("closest(box)", page)
+        self.assertIn("box.contains(t)", page)
+
     def test_status_lamps_render_with_badges(self):
         page = webui.page_studio().decode("utf-8")
         self.assertIn("class='lamp'", page)          # 未配置 = 灰灯

@@ -28,13 +28,11 @@ import feige_interactive  # noqa: E402
 import webui  # noqa: E402
 
 
-def logo_luminance(path: Path) -> tuple[float, float]:
-    """Logo PNG 可见像素的 (最暗亮度, 深色像素占比)——只用标准库，本仓不许拉 Pillow。
+def logo_pixels(path: Path) -> list[tuple[int, int, int]]:
+    """Logo PNG 里可见像素的 RGB 列表——只用标准库，本仓不许拉 Pillow。
 
-    亮度 0~255，深色阈值 200：飞书卡片面板头是浅底，整片接近白色的图标（此前 7 张
-    厂商图正是 lobehub 的 dark 变体＝纯白）画上去等于没画，也就是用户看到的
-    「模型那头空着」。只支持资产实际的形态（8 位调色板 + 无过滤/Sub/Up），
-    换了编码方式会明确报错而不是静默放行。
+    只支持资产实际的形态（8 位调色板 + 无过滤/Sub/Up），换了编码方式会明确报错
+    而不是静默放行。透明度 >40 视为不可见（圆角外的透明像素不计入）。
     """
     data = path.read_bytes()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
@@ -59,7 +57,7 @@ def logo_luminance(path: Path) -> tuple[float, float]:
         raise AssertionError(f"{path.name} 需为 8 位调色板 PNG（depth={depth} color={color}）")
     raw = zlib.decompress(bytes(idat))
     stride = width
-    lums: list[float] = []
+    out: list[tuple[int, int, int]] = []
     at = 0
     prev = bytearray(stride)
     for _ in range(height):
@@ -80,8 +78,18 @@ def logo_luminance(path: Path) -> tuple[float, float]:
             alpha = trns[idx] if idx < len(trns) else 255
             if alpha <= 40:
                 continue
-            r, g, b = plte[3 * idx:3 * idx + 3]
-            lums.append(0.2126 * r + 0.7152 * g + 0.0722 * b)
+            out.append(tuple(plte[3 * idx:3 * idx + 3]))
+    return out
+
+
+def logo_luminance(path: Path) -> tuple[float, float]:
+    """Logo PNG 可见像素的 (最暗亮度, 深色像素占比)。
+
+    亮度 0~255，深色阈值 200：飞书卡片面板头是浅底，整片接近白色的图标（此前 7 张
+    厂商图正是 lobehub 的 dark 变体＝纯白）画上去等于没画，也就是用户看到的
+    「模型那头空着」。
+    """
+    lums = [0.2126 * r + 0.7152 * g + 0.0722 * b for r, g, b in logo_pixels(path)]
     if not lums:
         return (255.0, 0.0)
     return (min(lums), sum(1 for v in lums if v < 200) / len(lums))
@@ -181,6 +189,23 @@ class VendorLogoAndFamilyCardTest(unittest.TestCase):
 
         # 兜底目录与厂商目录不得重名，否则上传缓存键（只用文件名）会串图
         self.assertEqual(present & {p.name for p in feige._ASSETS_VENDOR_DIR.glob("*.png")}, set())
+
+    def test_claude_code_logo_is_brand_orange(self):
+        """Claude Code 图标要是品牌橙，不能是深灰/黑瓦片。
+
+        用户看到的是「黑块 + 白机器人」，而橙是 Claude 的品牌色。只查「有深色像素」
+        的守卫拦不住这个——深灰瓦片同样满足。这里直接锁色相：主体像素得明显偏暖
+        （R 比 B 高出一截），且不是纯白图形压在深底上的那种低饱和黑。
+        """
+        pixels = logo_pixels(feige._ASSETS_AGENT_DIR / "claude-code.png")
+        self.assertGreater(len(pixels), 1000, "图标几乎全透明，等于没画")
+        reds = sum(1 for r, g, b in pixels if r > 150 and r - b > 40)
+        self.assertGreater(reds / len(pixels), 0.5,
+                           "claude-code.png 主体不是暖橙色（仍是深灰/黑瓦片？）")
+        # 品牌橙 #D97757 ≈ (217,119,87)：抽查最饱和的一档确实落在橙区间
+        sat = max(pixels, key=lambda p: p[0] - p[2])
+        self.assertGreater(sat[0], 180)
+        self.assertLess(sat[2], 140)
 
     def test_alias_model_shows_routed_agent_not_vendor(self):
         """路由别名（池名）显示它路由到的智能体，而不是名字里带的厂商。

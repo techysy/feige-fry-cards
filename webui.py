@@ -199,6 +199,10 @@ details.fold-card>summary.fold-summary::-webkit-details-marker{display:none}
   border-top:5px solid var(--text-3);transition:transform .16s}
 details.fold-card[open]>summary .fold-caret{transform:rotate(180deg)}
 details.fold-card .fold-body{margin-top:12px;padding-top:12px;border-top:1px solid var(--border-subtle)}
+/* 收起态必须显式不显示：新 Chrome 靠 ::details-content 的 content-visibility 隐藏，
+   个别引擎（内嵌浏览器 / 旧版 Chromium）不认这条，折叠区内容会照常占位并画出来，
+   弹层里就表现为「收起的 webhook 字段跑到框外」。这里不依赖引擎行为。 */
+details.fold-card:not([open])>.fold-body{display:none}
 
 details.hint-fold{margin:8px 0 12px;background:var(--surface-2);border:1px solid var(--border-subtle);
   border-radius:10px;padding:8px 10px}
@@ -381,14 +385,33 @@ footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
 .menu-select .ms-item:hover{background:var(--hover)}
 .menu-select .ms-item.on{border-color:var(--pri);background:color-mix(in srgb,var(--pri) 8%,transparent)}
 
-/* ---------- 「具体设置」弹窗：渠道细节收进菜单行，点「具体设置」弹出 dialog ---------- */
-dialog.feige-modal{border:1px solid var(--border);border-radius:14px;padding:0;max-width:560px;
+/* ---------- 「具体设置」弹窗：渠道细节收进菜单行，点「具体设置」弹出 dialog ----------
+   弹层自己定死位置与高度：showModal() 不可用（或在个别浏览器里抛错）时会退回
+   非模态的 open 属性，那时浏览器只给 width:fit-content 不给任何限高/居中，
+   内容就会长到视口外面、页面正文从缝里露出来。position:fixed + inset:0 + margin:auto
+   两种模式都居中，max-height 兜住高度，头部固定、正文自己滚、保存条贴在底部。 */
+dialog.feige-modal{position:fixed;inset:0;margin:auto;z-index:1001;height:fit-content;
+  max-height:calc(100vh - 32px);flex-direction:column;overflow:hidden;
+  border:1px solid var(--border);border-radius:14px;padding:0;max-width:560px;
   width:min(560px,calc(100vw - 40px));background:var(--card);color:var(--txt);
   box-shadow:0 24px 64px rgba(0,0,0,.28)}
+/* 收起态必须显式不显示。浏览器默认靠 dialog:not([open]) 隐藏，但上面这组选择器
+   优先级更高、又写在后面，只要给出 display 就会把「关着」的弹窗也排出来——
+   三个渠道弹窗同时铺在页面上互相叠压。display 只在 [open] 时给。 */
+dialog.feige-modal:not([open]){display:none}
+dialog.feige-modal[open]{display:flex}
 dialog.feige-modal::backdrop{background:rgba(0,0,0,.45)}
-dialog.feige-modal .fm-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+/* 非模态兜底时用的遮罩，模态打开（top layer）时它挂在 dialog 的 ::backdrop 上 */
+.fm-scrim{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.45)}
+.fm-scrim.hidden{display:none}
+/* 弹层打开期间锁住正文滚动：滚轮压在遮罩上时不该把身后整页带着一起滚 */
+body.fm-open{overflow:hidden}
+dialog.feige-modal .fm-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px;
   padding:12px 16px;border-bottom:1px solid var(--border-subtle);font-size:13px;font-weight:700}
-dialog.feige-modal .fm-body{padding:14px 16px;max-height:70vh;overflow-y:auto}
+dialog.feige-modal .fm-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px 16px 0;overscroll-behavior:contain}
+/* 保存条贴底：正文再长也停在弹层底边，不再被内容推着跑到框外 */
+dialog.feige-modal .fm-body form>p:last-child{position:sticky;bottom:0;z-index:2;margin:0;
+  padding:10px 0 14px;background:var(--card);border-top:1px solid var(--border-subtle)}
 dialog.feige-modal .fm-close{border:none;background:var(--hover);color:var(--muted);border-radius:8px;
   width:26px;height:26px;padding:0;cursor:pointer;font-size:14px;line-height:1}
 dialog.feige-modal .fm-close:hover{background:var(--active);color:var(--txt)}
@@ -808,32 +831,57 @@ function positionMenu(menu, btn){
       close();
       hidden.dispatchEvent(new Event('change', {bubbles: true}));
     });
+    // 点盒子外面才收起。这里别用 closest 判归属 —— 它只接受选择器字符串，把 box 这个
+    // Element 传进去会抛 SyntaxError（「[object HTMLSpanElement] is not a valid selector」），
+    // 这个监听器挂在 document 上，等于每次点击都在控制台报错、后续逻辑也别指望它跑。
     document.addEventListener('click', function(e){
-      if(!e.target.closest(box)) close();
+      var t = e.target;
+      if(t && t.nodeType === 1 && box.contains(t)) return;
+      close();
     });
   });
 })();
 
 // 「具体设置」弹窗：触发钮打开 <dialog>，关闭钮 / 点遮罩收起（表单仍在 dialog 内照常提交）。
+// 优先 showModal()（浏览器送上 top layer，自带遮罩与取中）；它缺失或抛错时退回
+// 「加 open 属性 + 自己那层 .fm-scrim」——这条兜底路径必须也能用，否则弹层会按
+// 普通块排版、长到视口外、页面正文压在它上面。
 (function(){
   document.querySelectorAll('[data-modal-open]').forEach(function(btn){
     var dlg = document.getElementById(btn.getAttribute('data-modal-open'));
     if(!dlg) return;
+    var scrim = document.querySelector(".fm-scrim[data-scrim-for='" + btn.getAttribute('data-modal-open') + "']");
+    function showScrim(on){ if(scrim) scrim.classList.toggle('hidden', !on); }
+    function openDialog(){
+      try {
+        if(typeof dlg.showModal === 'function'){ dlg.showModal(); return; }
+      } catch(err) { /* 落到兜底 */ }
+      dlg.setAttribute('open', '');
+      showScrim(true);
+      document.body.classList.add('fm-open');
+    }
+    function closeDialog(){
+      if(typeof dlg.close === 'function' && dlg.open) dlg.close();
+      else dlg.removeAttribute('open');
+      showScrim(false);
+      document.body.classList.remove('fm-open');
+    }
     btn.addEventListener('click', function(e){
       e.preventDefault();
-      if(typeof dlg.showModal === 'function') dlg.showModal();
-      else dlg.setAttribute('open', '');
+      openDialog();
     });
     dlg.querySelectorAll('[data-modal-close]').forEach(function(c){
       c.addEventListener('click', function(e){
         e.preventDefault();
-        if(typeof dlg.close === 'function') dlg.close();
-        else dlg.removeAttribute('open');
+        closeDialog();
       });
     });
     dlg.addEventListener('click', function(e){
-      if(e.target === dlg) dlg.close && dlg.close();
+      if(e.target === dlg) closeDialog();
     });
+    // Esc / 点弹层自己关闭后同步兜底遮罩（模态路径只会触发 close 事件）
+    dlg.addEventListener('close', function(){ showScrim(false); document.body.classList.remove('fm-open'); });
+    if(scrim) scrim.addEventListener('click', closeDialog);
   });
 })();
 </script>"""
@@ -1041,8 +1089,13 @@ def _ch_row(icon_html: str, title: str, configured: bool, dialog_id: str,
 
 
 def _modal(dialog_id: str, title: str, icon_html: str, inner_html: str) -> str:
-    """「具体设置」弹窗：表单在 dialog 内照常独立提交，不再内联铺开整段字段。"""
-    return (f"<dialog class='feige-modal' id='{esc(dialog_id)}' aria-label='{esc(title)} 具体设置'>"
+    """「具体设置」弹窗：表单在 dialog 内照常独立提交，不再内联铺开整段字段。
+
+    `.fm-scrim` 只在 showModal() 用不了的兜底路径下显示——那时 dialog 落在普通文档流里，
+    没有浏览器给的遮罩，必须自己补一层，否则页面正文会从弹层边上露出来。
+    """
+    return (f"<div class='fm-scrim hidden' data-scrim-for='{esc(dialog_id)}'></div>"
+            f"<dialog class='feige-modal' id='{esc(dialog_id)}' aria-label='{esc(title)} 具体设置'>"
             f"<div class='fm-head'><span class='fold-title'>{icon_html} {esc(title)}</span>"
             f"<button type='button' class='fm-close' data-modal-close aria-label='关闭'>✕</button></div>"
             f"<div class='fm-body'>{inner_html}</div></dialog>")
