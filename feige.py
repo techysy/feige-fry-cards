@@ -688,21 +688,36 @@ def footer_enabled() -> bool:
     return _bool_setting("FEIGE_FOOTER_ENABLED", default=False)
 
 
-_CONTEXT_STYLES = ("bar", "plain")
+_CONTEXT_STYLES = ("text", "bar", "text_bar")
+# 旧口径兼容：2.0.x 试用的 plain 等价于家族的 text
+_CONTEXT_STYLE_ALIASES = {"plain": "text"}
+
+
+def normalize_context_style(value) -> str:
+    """把任意输入（含旧口径 plain、大小写/空格噪声）归一到三档之一，认不出返回空串。"""
+    v = str(value or "").strip().lower()
+    v = _CONTEXT_STYLE_ALIASES.get(v, v)
+    return v if v in _CONTEXT_STYLES else ""
 
 
 def context_style(env: dict | None = None, settings: dict | None = None) -> str:
-    """统一面板头上下文水位样式：bar（进度条 █▓▒░，默认）| plain（原样 '165.4k/1.0m (17%)'）。
+    """统一面板头上下文水位样式（三档，口径对齐 claw / hermes-fry-cards）：
 
-    优先级：FEIGE_CONTEXT_STYLE > ~/.feige-settings.json 的 context_style > bar。
+    - ``text``：纯文本 ``165.4k/1.0m (17%)``
+    - ``bar``：纯进度条 ``[█▓▒░] 17%``
+    - ``text_bar``：文本 + 进度条 ``165.4k/1.0m [█▓▒░] 17%``（默认）
+
+    优先级：FEIGE_CONTEXT_STYLE > ~/.feige-settings.json 的 context_style > text_bar；
+    非法值回落默认，旧口径 ``plain`` 等价 ``text``。默认取 text_bar——2.0.0 的面板头
+    本来就是「文本 + 密度条」，旧配置不写键也落回同一呈现。
     只作用于飞书卡片统一面板头；脚注与钉钉/Telegram 静态版式保持原样口径。
     """
     env = env if env is not None else os.environ
-    v = str(env.get("FEIGE_CONTEXT_STYLE") or "").strip().lower()
-    if v in _CONTEXT_STYLES:
+    v = normalize_context_style(env.get("FEIGE_CONTEXT_STYLE"))
+    if v:
         return v
-    v = str((load_settings() if settings is None else settings).get("context_style") or "").strip().lower()
-    return v if v in _CONTEXT_STYLES else "bar"
+    v = normalize_context_style((load_settings() if settings is None else settings).get("context_style"))
+    return v or "text_bar"
 
 
 def _context_progress_bar(pct: float, width: int = 8) -> str:
@@ -733,22 +748,31 @@ def _context_progress_bar(pct: float, width: int = 8) -> str:
 
 
 def _format_panel_context(context_str: str, style: str = "") -> str:
-    """将 '153.6k/1.0m (15%)' 或 '42%' 增强为家族进度条格式（如 '153.6k/1.0m [█▓░░░░░░] 15%'）。
+    """将 '153.6k/1.0m (15%)' 或 '42%' 按面板头样式渲染（三档，对齐 claw / hermes）。
 
-    style 为空时读设置（context_style()）：bar = 进度条（默认），plain = 上游原样。
+    style 为空时读设置（context_style()）：
+    - text：上游原样 ``153.6k/1.0m (15%)``
+    - bar：纯进度条 ``[█▓░░░░░░] 15%``
+    - text_bar（默认）：文本 + 进度条 ``153.6k/1.0m [█▓░░░░░░] 15%``
+    不带文本的 '42%' 在 text 档保持 '42%'，bar / text_bar 档给进度条。
     """
     s = (context_str or "").strip()
     if not s:
         return ""
-    if (style or context_style()) == "plain":
-        return s
+    mode = normalize_context_style(style) or context_style()
     m = re.match(r"^(.+?)\s*\((\d+(?:\.\d+)?)%\)$", s)
     if m:
         ratio, pct = m.group(1).strip(), float(m.group(2))
+        if mode == "text":
+            return s
+        if mode == "bar":
+            return f"[{_context_progress_bar(pct)}] {pct:.0f}%"
         return f"{ratio} [{_context_progress_bar(pct)}] {pct:.0f}%"
     m_pct = re.match(r"^(\d+(?:\.\d+)?)%$", s)
     if m_pct:
         pct = float(m_pct.group(1))
+        if mode == "text":
+            return s
         return f"[{_context_progress_bar(pct)}] {pct:.0f}%"
     return s
 
@@ -1643,7 +1667,7 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
     dry_run=True 只返回将发送的载荷 JSON 字符串，不发网络请求。
     webhook/token/chat_id/secret 为路由目标级别的显式覆盖，缺省读各渠道环境变量
     （secret 是 webhook 的签名密钥，只对 feishu-webhook / dingtalk-webhook 有效）。
-    context_style 显式覆盖面板头上下文样式（bar/plain，Studio 预览用），空 = 读设置。
+    context_style 显式覆盖面板头上下文样式（text / bar / text_bar，Studio 预览用），空 = 读设置。
     """
     channel = channel or pick_channel()
     if channel and channel not in CHANNELS:

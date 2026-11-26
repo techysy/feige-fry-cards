@@ -1074,10 +1074,11 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
             + _checkbox_field("panel_expanded", "底部统一折叠面板默认展开",
                               feige.panel_expanded_default())
             + _menu_field("context_style", "面板头上下文样式",
-                          [("bar", "进度条 165.4k/1.0m [█▓▒░] 17%"),
-                           ("plain", "原样 165.4k/1.0m (17%)")],
+                          [("text_bar", "文本+进度条 165.4k/1.0m [█▓▒░] 17%"),
+                           ("text", "纯文本 165.4k/1.0m (17%)"),
+                           ("bar", "纯进度条 [█▓▒░] 17%")],
                           feige.context_style(),
-                          hint="只切统一面板头的水位呈现；脚注与钉钉/Telegram 保持原样")
+                          hint="三档口径对齐 claw / hermes-fry-cards；只切统一面板头的水位呈现，脚注与钉钉/Telegram 保持原样")
             + _panel_chips_html()
             + _checkbox_field("footer_enabled", "显示底部统计脚注行",
                               feige.footer_enabled(),
@@ -1255,11 +1256,12 @@ def apply_settings_card(form: dict, settings: dict) -> str:
             settings[key] = v
             continue
         if key == "context_style":
-            v = (form.get(key) or [""])[0].strip().lower()
-            if not v:
+            raw = (form.get(key) or [""])[0].strip()
+            if not raw:
                 continue  # 表单没带这个键（手搓请求）：保持现状
-            if v not in feige._CONTEXT_STYLES:
-                return f"非法上下文样式：{v}"
+            v = feige.normalize_context_style(raw)
+            if not v:
+                return f"非法上下文样式：{raw}"
             settings[key] = v
             continue
         if key in _SECRET_KEYS:
@@ -1746,9 +1748,7 @@ def build_preview_payload(params: dict) -> dict:
     if status not in feige.STATUS_TEMPLATE:
         status = "ok"
     # 面板头上下文样式：预览可临时覆盖（不写设置文件），非法/缺省回落设置口径
-    cstyle = p("context_style", "").strip().lower()
-    if cstyle not in feige._CONTEXT_STYLES:
-        cstyle = ""
+    cstyle = feige.normalize_context_style(p("context_style", ""))
     eff_cstyle = cstyle or feige.context_style()
     ch = p("channel", "").strip()
     if ch and ch not in feige.CHANNELS:
@@ -2132,9 +2132,7 @@ def page_preview(q: dict) -> bytes:
     cur_context = gv("context", "")
     cur_elapsed = gv("elapsed", "")
     cur_tool_sum = gv("tool_summary", "")
-    cur_cstyle = gv("context_style", "").strip().lower()
-    if cur_cstyle not in ("", "bar", "plain"):
-        cur_cstyle = ""
+    cur_cstyle = feige.normalize_context_style(gv("context_style", ""))
     eff_cstyle = cur_cstyle or feige.context_style()
 
     ssr_html = ""
@@ -2223,7 +2221,9 @@ def page_preview(q: dict) -> bytes:
         for pr in _PREVIEW_PRESETS
     )
     cstyle_opts = [("", f"跟随设置（{feige.context_style()}）"),
-                   ("bar", "进度条 [█▓▒░] 17%"), ("plain", "原样 (17%)")]
+                   ("text_bar", "文本+进度条 165.4k/1.0m [█▓▒░] 17%"),
+                   ("text", "纯文本 165.4k/1.0m (17%)"),
+                   ("bar", "纯进度条 [█▓▒░] 17%")]
 
     left_card = (
         "<div class='card'><h3>🎛️ 卡片参数 & 场景预设</h3>"

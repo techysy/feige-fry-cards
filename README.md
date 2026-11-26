@@ -327,6 +327,7 @@ export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
 | `FEIGE_VENDOR_LOGO` | 厂商家族 Logo 展示开关（默认 `1`，`0` 关闭自定义图标） |
 | `FEIGE_PANEL_EXPANDED` | 底部统一折叠面板默认展开开关（默认 `0` 折叠） |
 | `FEIGE_PANEL_FIELDS` | 统一面板头字段与顺序（逗号分隔；默认 `model,thinking,tools,context,tokens,elapsed`，不含项目名） |
+| `FEIGE_CONTEXT_STYLE` | 面板头上下文水位样式：`text_bar`（默认，文本+进度条 `165.4k/1.0m [█▓▒░] 17%`）/ `text`（纯文本 `165.4k/1.0m (17%)`）/ `bar`（纯进度条 `[█▓▒░] 17%`），口径对齐 claw / hermes-fry-cards；旧值 `plain` 等价 `text` |
 | `FEIGE_FOOTER_FIELDS` | 底部脚注字段与顺序（逗号分隔；默认全字段含 `project`；仅脚注开启时可见） |
 | `FEIGE_FOOTER_ENABLED` | 完成卡底部 hr+统计脚注行开关（默认 `0` 关——面板头已承载统计；钉钉/Telegram 静态版式不受影响） |
 | `FEIGE_RESUME_TIMEOUT` | 无头续跑子进程超时秒数（`30~1800`，默认 `300`） |

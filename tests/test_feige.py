@@ -149,7 +149,7 @@ class PanelFooterSplitTest(unittest.TestCase):
 
 
 class ContextStyleTest(unittest.TestCase):
-    """面板头上下文样式可切换：bar（进度条，默认）/ plain（原样），只作用面板头。"""
+    """面板头上下文样式三档（text / bar / text_bar，默认 text_bar），只作用面板头。"""
 
     STATS = {"model": "m", "context": "44.4k/1.0m (4%)", "tokens": 1700}
 
@@ -169,46 +169,70 @@ class ContextStyleTest(unittest.TestCase):
         panels = [e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel"]
         return panels[0]["header"]["title"]["content"]
 
-    def test_default_is_bar(self):
-        self.assertEqual(feige.context_style(), "bar")
-        self.assertIn("[▓░░░░░░░] 4%", self._panel_header())
+    def test_default_is_text_bar(self):
+        self.assertEqual(feige.context_style(), "text_bar")
+        self.assertIn("44.4k/1.0m [▓░░░░░░░] 4%", self._panel_header())
 
-    def test_settings_file_switch(self):
+    def test_three_styles_render(self):
+        """三档口径对齐 claw / hermes-fry-cards：text 纯文本、bar 纯条、text_bar 组合。"""
+        cases = {
+            "text": "44.4k/1.0m (4%)",
+            "bar": "[▓░░░░░░░] 4%",
+            "text_bar": "44.4k/1.0m [▓░░░░░░░] 4%",
+        }
+        for style, expected in cases.items():
+            self.settings.write_text(json.dumps({"context_style": style}), encoding="utf-8")
+            self.assertEqual(feige.context_style(), style)
+            self.assertIn(expected, self._panel_header())
+            self.assertEqual(feige._format_panel_context("44.4k/1.0m (4%)", style), expected)
+
+    def test_legacy_plain_maps_to_text(self):
+        """2.0.x 试用的 plain 等价家族 text；设置与环境变量两层都归一。"""
         self.settings.write_text(json.dumps({"context_style": "plain"}), encoding="utf-8")
-        self.assertEqual(feige.context_style(), "plain")
-        header = self._panel_header()
-        self.assertIn("44.4k/1.0m (4%)", header)
-        self.assertNotIn("█", header)
+        self.assertEqual(feige.context_style(), "text")
+        self.assertIn("44.4k/1.0m (4%)", self._panel_header())
+        os.environ["FEIGE_CONTEXT_STYLE"] = "plain"
+        self.assertEqual(feige.context_style(), "text")
+        del os.environ["FEIGE_CONTEXT_STYLE"]
 
     def test_env_overrides_settings(self):
-        self.settings.write_text(json.dumps({"context_style": "plain"}), encoding="utf-8")
+        self.settings.write_text(json.dumps({"context_style": "text"}), encoding="utf-8")
         os.environ["FEIGE_CONTEXT_STYLE"] = "bar"
         self.assertEqual(feige.context_style(), "bar")
         self.assertIn("[▓░░░░░░░] 4%", self._panel_header())
 
     def test_bogus_value_falls_back(self):
         self.settings.write_text(json.dumps({"context_style": "sparkline"}), encoding="utf-8")
-        self.assertEqual(feige.context_style(), "bar")
+        self.assertEqual(feige.context_style(), "text_bar")
+        self.assertIn("[▓░░░░░░░] 4%", self._panel_header())
 
     def test_explicit_override_argument(self):
         """显式 context_style 参数（Studio 预览用）优先于设置，不改任何配置。"""
-        self.settings.write_text(json.dumps({"context_style": "plain"}), encoding="utf-8")
-        header = self._panel_header(context_style="bar")
+        self.settings.write_text(json.dumps({"context_style": "text_bar"}), encoding="utf-8")
+        header = self._panel_header(context_style="text")
+        self.assertIn("44.4k/1.0m (4%)", header)
+
+    def test_bar_drops_text_segment(self):
+        """bar 档只留进度条：有文本时丢弃 '44.4k/1.0m' 前缀，百分比保留。"""
+        self.settings.write_text(json.dumps({"context_style": "bar"}), encoding="utf-8")
+        header = self._panel_header()
         self.assertIn("[▓░░░░░░░] 4%", header)
+        self.assertNotIn("44.4k/1.0m", header)
 
     def test_footer_and_static_channels_unaffected(self):
         """脚注与静态渠道保持原样口径，不受 context_style 影响。"""
-        for style in ("bar", "plain"):
+        for style in ("text", "bar", "text_bar"):
             self.settings.write_text(json.dumps({"context_style": style}), encoding="utf-8")
             self.assertEqual(feige.stats_footer(self.STATS), "m · 44.4k/1.0m (4%) · 🎫 1.7k")
             ding = feige.render_dingtalk("t", "b", stats=dict(self.STATS), allow_summarize=False)
             self.assertIn("44.4k/1.0m (4%)", ding["markdown"]["text"])
 
-    def test_plain_percent_only(self):
-        self.settings.write_text(json.dumps({"context_style": "plain"}), encoding="utf-8")
+    def test_percent_only_string(self):
+        self.assertEqual(feige._format_panel_context("42%", "text"), "42%")
+        self.assertEqual(feige._format_panel_context("42%", "bar"), "[███▓░░░░] 42%")
+        self.assertEqual(feige._format_panel_context("42%", "text_bar"), "[███▓░░░░] 42%")
+        self.settings.write_text(json.dumps({"context_style": "text"}), encoding="utf-8")
         self.assertEqual(feige._format_panel_context("42%"), "42%")
-        self.settings.write_text(json.dumps({"context_style": "bar"}), encoding="utf-8")
-        self.assertEqual(feige._format_panel_context("42%"), "[███▓░░░░] 42%")
 
 
 class RedactTest(unittest.TestCase):

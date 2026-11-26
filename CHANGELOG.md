@@ -9,10 +9,13 @@
 
 ### Added
 
-- **面板头上下文样式可切换**：统一折叠面板头的上下文水位支持两种呈现——进度条
-  `165.4k/1.0m [█▓▒░] 17%`（默认）与原样 `165.4k/1.0m (17%)`。设置键
-  `context_style` / 环境变量 `FEIGE_CONTEXT_STYLE`（`bar` / `plain`，非法值回落默认）；
-  Studio 配置页新增下拉菜单，预览页带「临时预览」切换（不写设置文件即可 A/B 对比）。
+- **面板头上下文样式可切换（三档，对齐兄弟项目）**：统一折叠面板头的上下文水位
+  支持三档呈现，口径与 `claw-fry-cards` 的 `panel.contextDisplayMode` /
+  `hermes-fry-cards` 的 `display.context_display_mode` 一致——
+  `text_bar` 文本+进度条 `165.4k/1.0m [█▓▒░] 17%`（默认）、`text` 纯文本
+  `165.4k/1.0m (17%)`、`bar` 纯进度条 `[█▓▒░] 17%`。设置键 `context_style` /
+  环境变量 `FEIGE_CONTEXT_STYLE`（非法值回落默认，旧值 `plain` 等价 `text`）；
+  Studio 配置页新增样式菜单，预览页带「临时预览」三档切换（不写设置文件即可对比）。
   只切统一面板头，统计脚注与钉钉 / Telegram 静态版式保持原样。
 
 ### Changed

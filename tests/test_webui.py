@@ -464,39 +464,50 @@ class ContextStyleStudioTest(unittest.TestCase):
         self.assertIn("面板头上下文样式", page)
         self.assertIn("name='context_style'", page)
         self.assertIn("menu-select", page)
-        # 默认 bar：菜单按钮显示进度条选项标签
-        self.assertIn("data-value='bar'", page)
-        self.assertIn("data-value='plain'", page)
+        # 三档齐备，默认 text_bar（菜单按钮显示组合档标签）
+        for v in ("text", "bar", "text_bar"):
+            self.assertIn(f"data-value='{v}'", page)
+        webui.handle_settings_post(b"form=interactive&context_style=text")
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["context_style"],
+                         "text")
+        self.assertEqual(feige.context_style(), "text")
+        # 旧口径 plain 归一存成 text（不再写回旧值）
         webui.handle_settings_post(b"form=interactive&context_style=plain")
         self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["context_style"],
-                         "plain")
-        self.assertEqual(feige.context_style(), "plain")
-        # 非法值拒绝
+                         "text")
+        # 非法值原样拒绝
         resp = webui.handle_settings_post(b"form=interactive&context_style=sparkline").decode("utf-8")
         self.assertIn("非法上下文样式", resp)
         # 留空（手搓请求不带键）保持现状
         webui.handle_settings_post(b"form=interactive")
         self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["context_style"],
-                         "plain")
+                         "text")
 
     def test_preview_passes_context_style_without_writing_settings(self):
-        q = urllib.parse.parse_qs(urllib.parse.urlencode({
-            "go": "1", "channel": "feishu-cardkit", "model": "claude-sonnet-4",
-            "context": "150.0k/1.0m (15%)", "context_style": "plain"}))
+        for style, expect_bar in (("text", False), ("bar", "bare"), ("text_bar", True)):
+            q = urllib.parse.parse_qs(urllib.parse.urlencode({
+                "go": "1", "channel": "feishu-cardkit", "model": "claude-sonnet-4",
+                "context": "150.0k/1.0m (15%)", "context_style": style}))
+            with mock.patch.object(webui.feige, "send_report",
+                                   return_value=(True, '{"ok":true}')) as send:
+                page = webui.page_preview(q).decode("utf-8")
+            self.assertEqual(send.call_args.kwargs["context_style"], style)
+            self.assertFalse(self.settings.exists())  # 预览临时覆盖，绝不写设置文件
+            if expect_bar is True:
+                self.assertIn("150.0k/1.0m [█▓░░░░░░] 15%", page)
+            elif expect_bar == "bare":
+                self.assertIn("[█▓░░░░░░] 15%", page)
+                self.assertNotIn("150.0k/1.0m [█▓░░░░░░] 15%", page)
+            else:
+                self.assertNotIn("[█▓░░░░░░] 15%", page)  # SSR 基线不画进度条
+                self.assertIn("150.0k/1.0m (15%)", page)
+        # 跟随设置口径（默认 text_bar）
         with mock.patch.object(webui.feige, "send_report",
                                return_value=(True, '{"ok":true}')) as send:
-            page = webui.page_preview(q).decode("utf-8")
-        self.assertEqual(send.call_args.kwargs["context_style"], "plain")
-        self.assertNotIn("[█▓░░░░░░] 15%", page)  # SSR 基线不再画进度条
-        self.assertIn("150.0k/1.0m (15%)", page)
-        self.assertFalse(self.settings.exists())  # 预览临时覆盖，绝不写设置文件
-        # 跟随设置口径（默认 bar）
-        with mock.patch.object(webui.feige, "send_report",
-                               return_value=(True, '{"ok":true}')) as send:
-            bar_page = webui.page_preview(urllib.parse.parse_qs(
+            follow_page = webui.page_preview(urllib.parse.parse_qs(
                 "go=1&context=150.0k/1.0m (15%)")).decode("utf-8")
-        self.assertEqual(send.call_args.kwargs["context_style"], "bar")
-        self.assertIn("[█▓░░░░░░] 15%", bar_page)
+        self.assertEqual(send.call_args.kwargs["context_style"], "text_bar")
+        self.assertIn("150.0k/1.0m [█▓░░░░░░] 15%", follow_page)
 
     def test_preview_channel_host_status_use_menu_selectors(self):
         page = webui.page_preview({}).decode("utf-8")
