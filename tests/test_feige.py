@@ -32,6 +32,18 @@ import webui  # noqa: E402
 
 
 class StatsFooterTest(unittest.TestCase):
+    def setUp(self):
+        # 脚注字段顺序默认来自设置文件，测试必须与本机 ~/.feige-settings.json
+        # 及环境变量隔离，否则用户改过 footer_fields 时断言会随机器漂移
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("FEIGE_", "FEISHU_", "LARK_"))}
+        env["FEIGE_SETTINGS_FILE"] = str(Path(self.tmp.name) / "absent.json")
+        self._patch = mock.patch.dict(os.environ, env, clear=True)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
     def test_full(self):
         s = feige.stats_footer({"project": "p", "model": "vendor/m1", "thinking": 3,
                                 "tools": 5, "context": "42%", "elapsed": "1m 2s"})
