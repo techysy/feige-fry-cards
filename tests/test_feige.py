@@ -148,6 +148,69 @@ class PanelFooterSplitTest(unittest.TestCase):
         self.assertIn("📦 CreditDaddy", tg)
 
 
+class ContextStyleTest(unittest.TestCase):
+    """面板头上下文样式可切换：bar（进度条，默认）/ plain（原样），只作用面板头。"""
+
+    STATS = {"model": "m", "context": "44.4k/1.0m (4%)", "tokens": 1700}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = Path(self.tmp.name) / "s.json"
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("FEIGE_", "FEISHU_", "LARK_"))}
+        env["FEIGE_SETTINGS_FILE"] = str(self.settings)
+        self._patch = mock.patch.dict(os.environ, env, clear=True)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def _panel_header(self, **kw):
+        card = feige.build_card("t", "b", stats=dict(self.STATS), status="ok", **kw)
+        panels = [e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel"]
+        return panels[0]["header"]["title"]["content"]
+
+    def test_default_is_bar(self):
+        self.assertEqual(feige.context_style(), "bar")
+        self.assertIn("[▓░░░░░░░] 4%", self._panel_header())
+
+    def test_settings_file_switch(self):
+        self.settings.write_text(json.dumps({"context_style": "plain"}), encoding="utf-8")
+        self.assertEqual(feige.context_style(), "plain")
+        header = self._panel_header()
+        self.assertIn("44.4k/1.0m (4%)", header)
+        self.assertNotIn("█", header)
+
+    def test_env_overrides_settings(self):
+        self.settings.write_text(json.dumps({"context_style": "plain"}), encoding="utf-8")
+        os.environ["FEIGE_CONTEXT_STYLE"] = "bar"
+        self.assertEqual(feige.context_style(), "bar")
+        self.assertIn("[▓░░░░░░░] 4%", self._panel_header())
+
+    def test_bogus_value_falls_back(self):
+        self.settings.write_text(json.dumps({"context_style": "sparkline"}), encoding="utf-8")
+        self.assertEqual(feige.context_style(), "bar")
+
+    def test_explicit_override_argument(self):
+        """显式 context_style 参数（Studio 预览用）优先于设置，不改任何配置。"""
+        self.settings.write_text(json.dumps({"context_style": "plain"}), encoding="utf-8")
+        header = self._panel_header(context_style="bar")
+        self.assertIn("[▓░░░░░░░] 4%", header)
+
+    def test_footer_and_static_channels_unaffected(self):
+        """脚注与静态渠道保持原样口径，不受 context_style 影响。"""
+        for style in ("bar", "plain"):
+            self.settings.write_text(json.dumps({"context_style": style}), encoding="utf-8")
+            self.assertEqual(feige.stats_footer(self.STATS), "m · 44.4k/1.0m (4%) · 🎫 1.7k")
+            ding = feige.render_dingtalk("t", "b", stats=dict(self.STATS), allow_summarize=False)
+            self.assertIn("44.4k/1.0m (4%)", ding["markdown"]["text"])
+
+    def test_plain_percent_only(self):
+        self.settings.write_text(json.dumps({"context_style": "plain"}), encoding="utf-8")
+        self.assertEqual(feige._format_panel_context("42%"), "42%")
+        self.settings.write_text(json.dumps({"context_style": "bar"}), encoding="utf-8")
+        self.assertEqual(feige._format_panel_context("42%"), "[███▓░░░░] 42%")
+
+
 class RedactTest(unittest.TestCase):
     def test_patterns(self):
         s = feige.redact('tenant_access_token":"t-abcdef123456 bot123456789:AAAAAAAAAAAAAAAA')

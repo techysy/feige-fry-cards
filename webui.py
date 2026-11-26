@@ -348,6 +348,53 @@ footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
 
 /* SVG 线性图标标准样式 */
 .ic { display: inline-block; vertical-align: middle; flex-shrink: 0; margin-right: 4px; }
+
+/* ---------- 配置状态灯：有值绿 / 默认灰 / 环境变量接管橙（徽章文字旁的小圆点） ---------- */
+.lamp{display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;
+  vertical-align:1px;background:var(--text-3);box-shadow:0 0 0 2px color-mix(in srgb,var(--text-3) 18%,transparent)}
+.lamp.on{background:var(--ok);box-shadow:0 0 0 2px color-mix(in srgb,var(--ok) 22%,transparent)}
+.lamp.env{background:var(--warn-c);box-shadow:0 0 0 2px color-mix(in srgb,var(--warn-c) 22%,transparent)}
+.tag .lamp{margin-right:5px}
+
+/* ---------- 菜单式选择器（.preset-picker 风格的通用控件，替代原生 select） ---------- */
+.menu-select{display:inline-flex;flex-direction:column;gap:3px;min-width:0;position:relative}
+.menu-select .ms-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);
+  color:var(--txt);font-size:13px;cursor:pointer;text-align:left;transition:border-color .15s,background .15s}
+.menu-select .ms-btn:hover{border-color:var(--border-strong);background:var(--hover)}
+.menu-select .ms-btn.open{border-color:var(--pri)}
+.menu-select .ms-btn[disabled]{opacity:.74;border-style:dashed;cursor:not-allowed}
+.menu-select .ms-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.menu-select .ms-caret{width:0;height:0;flex-shrink:0;border-left:4px solid transparent;
+  border-right:4px solid transparent;border-top:5px solid var(--text-3);transition:transform .15s}
+.menu-select .ms-btn.open .ms-caret{transform:rotate(180deg)}
+.menu-select .ms-menu{position:absolute;z-index:40;top:calc(100% + 4px);left:0;right:0;max-height:300px;
+  overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:5px;
+  box-shadow:0 12px 32px rgba(0,0,0,.16);display:flex;flex-direction:column;gap:2px}
+.menu-select .ms-item{display:flex;align-items:center;gap:7px;width:100%;text-align:left;cursor:pointer;
+  padding:5px 9px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--txt);
+  font-size:12.5px;transition:background .12s}
+.menu-select .ms-item:hover{background:var(--hover)}
+.menu-select .ms-item.on{border-color:var(--pri);background:color-mix(in srgb,var(--pri) 8%,transparent)}
+
+/* ---------- 「具体设置」弹窗：渠道细节收进菜单行，点「具体设置」弹出 dialog ---------- */
+dialog.feige-modal{border:1px solid var(--border);border-radius:14px;padding:0;max-width:560px;
+  width:min(560px,calc(100vw - 40px));background:var(--card);color:var(--txt);
+  box-shadow:0 24px 64px rgba(0,0,0,.28)}
+dialog.feige-modal::backdrop{background:rgba(0,0,0,.45)}
+dialog.feige-modal .fm-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:12px 16px;border-bottom:1px solid var(--border-subtle);font-size:13px;font-weight:700}
+dialog.feige-modal .fm-body{padding:14px 16px;max-height:70vh;overflow-y:auto}
+dialog.feige-modal .fm-close{border:none;background:var(--hover);color:var(--muted);border-radius:8px;
+  width:26px;height:26px;padding:0;cursor:pointer;font-size:14px;line-height:1}
+dialog.feige-modal .fm-close:hover{background:var(--active);color:var(--txt)}
+
+/* ---------- 渠道菜单：一行一渠道，状态灯 + 具体设置弹窗 ---------- */
+.ch-menu{display:flex;flex-direction:column;gap:7px}
+.ch-row{display:flex;align-items:center;gap:9px;padding:8px 11px;border:1px solid var(--border-subtle);
+  border-radius:10px;background:var(--surface-2)}
+.ch-row .ch-name{font-weight:600;display:inline-flex;align-items:center;gap:5px;min-width:0}
+.ch-row .ch-spacer{flex:1}
 """
 
 # 主题在样式表加载前确定，避免暗色用户看到白闪（对齐 ImgMark 的 head 引导脚本）
@@ -599,6 +646,70 @@ _THEME_JS = """
     syncInterUI();
   }
 })();
+
+// 菜单式选择器（.menu-select）：点击展开菜单选项，选中写 hidden input 并派发 change，
+// 替代原生 <select>；表单脏检测与交互卡联动照常触发。
+(function(){
+  document.querySelectorAll('.menu-select[data-key]').forEach(function(box){
+    var btn = box.querySelector('.ms-btn');
+    var menu = box.querySelector('.ms-menu');
+    var hidden = box.querySelector('input[type=hidden]');
+    var label = box.querySelector('.ms-label');
+    if(!btn || !menu || !hidden) return;
+    function close(){ menu.classList.add('hidden'); btn.classList.remove('open'); }
+    function open(){
+      menu.classList.remove('hidden'); btn.classList.add('open');
+      document.querySelectorAll('.menu-select .ms-menu').forEach(function(m){
+        if(m !== menu){ m.classList.add('hidden'); }
+      });
+      document.querySelectorAll('.menu-select .ms-btn.open').forEach(function(b){
+        if(b !== btn){ b.classList.remove('open'); }
+      });
+    }
+    btn.addEventListener('click', function(e){
+      e.preventDefault(); e.stopPropagation();
+      if(btn.disabled) return;
+      menu.classList.contains('hidden') ? open() : close();
+    });
+    menu.addEventListener('click', function(e){
+      var item = e.target.closest('.ms-item');
+      if(!item || btn.disabled) return;
+      var val = item.getAttribute('data-value') || '';
+      hidden.value = val;
+      if(label) label.textContent = item.getAttribute('data-label') || val;
+      menu.querySelectorAll('.ms-item').forEach(function(it){ it.classList.remove('on'); });
+      item.classList.add('on');
+      close();
+      hidden.dispatchEvent(new Event('change', {bubbles: true}));
+    });
+    document.addEventListener('click', function(e){
+      if(!e.target.closest(box)) close();
+    });
+  });
+})();
+
+// 「具体设置」弹窗：触发钮打开 <dialog>，关闭钮 / 点遮罩收起（表单仍在 dialog 内照常提交）。
+(function(){
+  document.querySelectorAll('[data-modal-open]').forEach(function(btn){
+    var dlg = document.getElementById(btn.getAttribute('data-modal-open'));
+    if(!dlg) return;
+    btn.addEventListener('click', function(e){
+      e.preventDefault();
+      if(typeof dlg.showModal === 'function') dlg.showModal();
+      else dlg.setAttribute('open', '');
+    });
+    dlg.querySelectorAll('[data-modal-close]').forEach(function(c){
+      c.addEventListener('click', function(e){
+        e.preventDefault();
+        if(typeof dlg.close === 'function') dlg.close();
+        else dlg.removeAttribute('open');
+      });
+    });
+    dlg.addEventListener('click', function(e){
+      if(e.target === dlg) dlg.close && dlg.close();
+    });
+  });
+})();
 </script>"""
 
 # ── SVG 图标集（对齐 ImgMark / CreditDaddy：使用标准规范线性矢量图标，减少 Emoji） ──────
@@ -671,14 +782,28 @@ def key_source(skey: str) -> str:
     return ""
 
 
+def _lamp_html(src: str) -> str:
+    """配置状态灯：橙=环境变量接管、绿=设置文件已配、灰=未配置/默认。"""
+    if src == "环境变量":
+        return "<i class='lamp env'></i>"
+    return "<i class='lamp on'></i>" if src else "<i class='lamp'></i>"
+
+
+def _config_badge(src: str, *, configured: str = "已配置", empty: str = "未配置") -> str:
+    """状态灯 + 文字徽章（文字口径不变：「已配置 · 来源」/「未配置」/「默认」）。"""
+    if src:
+        return (f"<span class='tag on'>{_lamp_html(src)}"
+                f"{esc(configured)} · {esc(src)}</span>")
+    return f"<span class='tag'>{_lamp_html('')}{esc(empty)}</span>"
+
+
 # ── 表单控件小件 ─────────────────────────────────────────────────────────────
 
 def _field(skey: str, label: str, placeholder: str = "", hint: str = "") -> str:
     src = key_source(skey)
     env_name = _ENV_FOR_KEY.get(skey, "")
     locked = src == "环境变量"
-    badge = (f"<span class='tag on'>已配置 · {esc(src)}</span>" if src
-             else "<span class='tag'>未配置</span>")
+    badge = _config_badge(src)
     if skey in _SECRET_KEYS:
         if locked:
             field = (f"<input type='password' name='{skey}' disabled class='env-locked' "
@@ -776,20 +901,25 @@ def _save_btn(card_id: str, preview_btn: bool = False) -> str:
             f"<span class='dirty-dot'>● 未保存</span></p>")
 
 
-def _fold_card(icon_html: str, title: str, configured: bool, inner_html: str) -> str:
-    """对齐 fry-cards Studio 的次要配置折叠卡（已配置自动展开，未配置默认折叠）。"""
-    badge = ("<span class='fold-badge on'>已配置</span>" if configured
-             else "<span class='fold-badge empty'>未配置</span>")
-    open_attr = " open" if configured else ""
-    return (
-        f"<div class='card'><details class='fold-card'{open_attr}>"
-        f"<summary class='fold-summary'>"
-        f"<span class='fold-title'>{icon_html} {esc(title)}</span>"
-        f"<span class='fold-right'>{badge}<span class='fold-caret'></span></span>"
-        f"</summary>"
-        f"<div class='fold-body'>{inner_html}</div>"
-        f"</details></div>"
-    )
+def _ch_row(icon_html: str, title: str, configured: bool, dialog_id: str,
+            note: str = "") -> str:
+    """渠道菜单的一行：状态灯 + 已配置/未配置 + 「具体设置」弹窗触发钮。"""
+    lamp = _lamp_html("设置文件" if configured else "")
+    badge = (f"<span class='fold-badge on'>{lamp}已配置</span>" if configured
+             else f"<span class='fold-badge empty'>{lamp}未配置</span>")
+    tip = f"<span class='small'>{esc(note)}</span>" if note else ""
+    return (f"<div class='ch-row'><span class='ch-name'>{icon_html} {esc(title)}</span>"
+            f"<span class='ch-spacer'>{tip}</span>{badge}"
+            f"<button type='button' class='tiny' data-modal-open='{esc(dialog_id)}'"
+            f" title='弹窗打开该渠道的具体设置'>具体设置</button></div>")
+
+
+def _modal(dialog_id: str, title: str, icon_html: str, inner_html: str) -> str:
+    """「具体设置」弹窗：表单在 dialog 内照常独立提交，不再内联铺开整段字段。"""
+    return (f"<dialog class='feige-modal' id='{esc(dialog_id)}' aria-label='{esc(title)} 具体设置'>"
+            f"<div class='fm-head'><span class='fold-title'>{icon_html} {esc(title)}</span>"
+            f"<button type='button' class='fm-close' data-modal-close aria-label='关闭'>✕</button></div>"
+            f"<div class='fm-body'>{inner_html}</div></dialog>")
 
 
 def _banner(msg: str, err: str) -> str:
@@ -814,8 +944,7 @@ def _warn_html() -> str:
 def _checkbox_field(skey: str, label: str, checked: bool, hint: str = "") -> str:
     src = key_source(skey)
     env_name = _ENV_FOR_KEY.get(skey, "")
-    badge = (f"<span class='tag on'>已配置 · {esc(src)}</span>" if src
-             else "<span class='tag'>默认</span>")
+    badge = _config_badge(src, empty="默认")
     sub = f"<span class='check-sub'>{esc(hint)}</span>" if hint else ""
     env_note = (f"<span class='check-sub' style='color:var(--warn-c)'>🔒 环境变量 <code>{esc(env_name)}</code> 优先</span>"
                 if src == "环境变量" and env_name else "")
@@ -842,9 +971,7 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
                  else "<span class='tag'>未启用（正文超长直接截断）</span>")
     cur_model = feige._env(_ENV_FOR_KEY.get("llm_model", "")) or ""
     allow_val = feige._env("FEIGE_ALLOW_USERS")
-    allow_src = key_source("interactive_allow_users")
-    allow_badge = (f"<span class='tag on'>已配置 · {esc(allow_src)}</span>" if allow_src
-                   else "<span class='tag'>不限（建议配置）</span>")
+    allow_badge = _config_badge(key_source("interactive_allow_users"), empty="不限（建议配置）")
     st_ch = channel_status()
     has_webhook = bool(st_ch.get("feishu-webhook"))
     has_cardkit = bool(st_ch.get("feishu-cardkit"))
@@ -888,19 +1015,52 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
         + _field("feishu_webhook_secret", "webhook 签名密钥", hint="机器人开「签名校验」才需要")
         + "</div></details>"
     )
+    # 四个渠道收进一张菜单卡：每行一个渠道（状态灯 + 已配置/未配置），
+    # 「具体设置」走弹窗，配置页不再被四段长表单撑成一屏半。
+    feishu_detail = (
+        "<form method='post' action='/settings'>"
+        + mode_banner
+        + _field("feishu_app_id", "App ID（CardKit）", "cli_…", "支持交互卡片、折叠面板与长连接")
+        + _field("feishu_app_secret", "App Secret（CardKit）")
+        + _field("feishu_chat_id", "接收群 chat_id", "oc_…", "CardKit 通道必配（全项目默认群）")
+        + _field("feishu_base_url", "飞书域名", feige.DEFAULT_BASE_URL, "Lark 国际版填 open.larksuite.com")
+        # 每群一个接收群：键名 feishu_chat_id__<项目名>，项目名必须与路由标签逐字一致
+        + _field("feishu_chat_id__10router", "10Router 群 chat_id（按项目覆盖）", "oc_…",
+                 "键名 feishu_chat_id__<项目名>：留空沿用默认群")
+        + webhook_fold
+        + _save_btn("feishu", preview_btn=True) + "</form>"
+    )
+    dingtalk_detail = (
+        "<form method='post' action='/settings'>"
+        + _field("dingtalk_webhook", "机器人 webhook")
+        + _field("dingtalk_secret", "加签密钥", hint="SEC 开头，安全设置选「加签」才需要")
+        + "<p class='small'>钉钉无交互卡，发 markdown 消息；需显式 <code>--channel</code> "
+          "或群路由指定。</p>"
+        + _save_btn("dingtalk") + "</form>"
+    )
+    telegram_detail = (
+        "<form method='post' action='/settings'>"
+        + _field("telegram_bot_token", "Bot token", hint="BotFather 发放，形如 123456:ABC-…")
+        + _field("telegram_chat_id", "目标 chat", "-100…（群）或个人 id")
+        + "<p class='small'>纯文本版式（≤4096 UTF-16 单元）；需显式渠道或路由指定。</p>"
+        + _save_btn("telegram") + "</form>"
+    )
+    ch_menu = (
+        f"<div class='card'><h3>{ICONS['feishu']} 渠道</h3>"
+        "<div class='ch-menu'>"
+        + _ch_row(ICONS["feishu"], "飞书渠道", has_webhook or has_cardkit, "modal-feishu",
+                  "App / Webhook 凭据")
+        + _ch_row(ICONS["dingtalk"], "钉钉渠道", bool(st_ch.get("dingtalk-webhook")),
+                  "modal-dingtalk", "markdown 消息")
+        + _ch_row(ICONS["telegram"], "Telegram 渠道", bool(st_ch.get("telegram")),
+                  "modal-telegram", "纯文本")
+        + "</div>"
+        + _modal("modal-feishu", "飞书渠道 · 凭据", ICONS["feishu"], feishu_detail)
+        + _modal("modal-dingtalk", "钉钉渠道", ICONS["dingtalk"], dingtalk_detail)
+        + _modal("modal-telegram", "Telegram 渠道", ICONS["telegram"], telegram_detail)
+        + "</div>"
+    )
     cards = {
-        "feishu": (
-            f"<div class='card'><h3>{ICONS['feishu']} 飞书渠道 · 凭据</h3><form method='post' action='/settings'>"
-            + mode_banner
-            + _field("feishu_app_id", "App ID（CardKit）", "cli_…", "支持交互卡片、折叠面板与长连接")
-            + _field("feishu_app_secret", "App Secret（CardKit）")
-            + _field("feishu_chat_id", "接收群 chat_id", "oc_…", "CardKit 通道必配（全项目默认群）")
-            + _field("feishu_base_url", "飞书域名", feige.DEFAULT_BASE_URL, "Lark 国际版填 open.larksuite.com")
-            # 每群一个接收群：键名 feishu_chat_id__<项目名>，项目名必须与路由标签逐字一致
-            + _field("feishu_chat_id__10router", "10Router 群 chat_id（按项目覆盖）", "oc_…",
-                     "键名 feishu_chat_id__<项目名>：留空沿用默认群")
-            + webhook_fold
-            + _save_btn("feishu", preview_btn=True) + "</form></div>"),
         "interactive": (
             f"<div class='card'><h3 style='display:flex;align-items:center;justify-content:space-between;gap:8px'>"
             f"<span>{ICONS['behavior']} 交互与长连接</span>{ws_badge}</h3>"
@@ -913,6 +1073,11 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
                               feige.vendor_logo_enabled(), "CardKit 自动上传并本地缓存图片 key")
             + _checkbox_field("panel_expanded", "底部统一折叠面板默认展开",
                               feige.panel_expanded_default())
+            + _menu_field("context_style", "面板头上下文样式",
+                          [("bar", "进度条 165.4k/1.0m [█▓▒░] 17%"),
+                           ("plain", "原样 165.4k/1.0m (17%)")],
+                          feige.context_style(),
+                          hint="只切统一面板头的水位呈现；脚注与钉钉/Telegram 保持原样")
             + _panel_chips_html()
             + _checkbox_field("footer_enabled", "显示底部统计脚注行",
                               feige.footer_enabled(),
@@ -931,27 +1096,14 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
             + feishu_guide
             + "</div></details></div>"
             + _save_btn("interactive", preview_btn=True) + "</form></div>"),
-        "dingtalk": _fold_card(
-            ICONS["dingtalk"], "钉钉渠道", bool(st_ch.get("dingtalk-webhook")),
-            "<form method='post' action='/settings'>"
-            + _field("dingtalk_webhook", "机器人 webhook")
-            + _field("dingtalk_secret", "加签密钥", hint="SEC 开头，安全设置选「加签」才需要")
-            + "<p class='small'>钉钉无交互卡，发 markdown 消息；需显式 <code>--channel</code> "
-              "或群路由指定。</p>"
-            + _save_btn("dingtalk") + "</form>"),
-        "telegram": _fold_card(
-            ICONS["telegram"], "Telegram 渠道", bool(st_ch.get("telegram")),
-            "<form method='post' action='/settings'>"
-            + _field("telegram_bot_token", "Bot token", hint="BotFather 发放，形如 123456:ABC-…")
-            + _field("telegram_chat_id", "目标 chat", "-100…（群）或个人 id")
-            + "<p class='small'>纯文本版式（≤4096 UTF-16 单元）；需显式渠道或路由指定。</p>"
-            + _save_btn("telegram") + "</form>"),
         "llm": (
             f"<div class='card'><h3>{ICONS['llm']} 正文总结（LLM）{llm_state}</h3>"
             "<form method='post' action='/settings'>"
             + _field("llm_api_key", "API key", "OpenAI 兼容 chat/completions；配了才启用")
             + _field("llm_base_url", "Base URL", feige.DEFAULT_LLM_BASE_URL)
-            + ("<div class='frow'><div class='lab'>模型 <span class='tag on' id='llm-model-badge'>"
+            + ("<div class='frow'><div class='lab'>模型 <span class='tag"
+               + (" on' id='llm-model-badge'>" if key_source("llm_model") else "' id='llm-model-badge'>")
+               + _lamp_html(key_source("llm_model"))
                + (f"已配置 · {esc(key_source('llm_model'))}" if key_source("llm_model") else "默认")
                + "</span> <span class='sub'>输入或点击下拉拉取模型</span></div>"
                "<div class='preset-picker' id='llm-model-picker'>"
@@ -988,19 +1140,49 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
             + _save_btn("behavior") + "</form></div>"),
     }
     body = (_banner(msg, err) + _warn_html()
-            + "<div class='grid'>" + cards["feishu"] + cards["interactive"]
-            + cards["llm"] + cards["dingtalk"] + cards["telegram"]
-            + cards["behavior"] + "</div>")
+            + "<div class='grid'>" + ch_menu + cards["interactive"]
+            + cards["llm"] + cards["behavior"] + "</div>")
     # 群路由不在主页重复挂卡——独立页签已有入口
     return page("配置", body, tab="config")
+
+
+def _menu_select(name: str, options: list, current: str, *, disabled: bool = False) -> str:
+    """菜单式选择器（代替原生 select）：hidden input 提交值，按钮弹出选项菜单。
+
+    options 为 (value, label) 列表；disabled 时 hidden input 不随表单提交（环境变量接管）。
+    """
+    cur_label = next((lb for v, lb in options if v == current),
+                     options[0][1] if options else "")
+    items = "".join(
+        f"<button type='button' class='ms-item{' on' if v == current else ''}'"
+        f" data-value='{esc(v)}' data-label='{esc(lb)}'>{esc(lb)}</button>"
+        for v, lb in options)
+    dis = " disabled" if disabled else ""
+    return (f"<span class='menu-select' data-key='{esc(name)}'>"
+            f"<input type='hidden' name='{esc(name)}' value='{esc(current)}'{dis}>"
+            f"<button type='button' class='ms-btn'{dis}><span class='ms-label'>{esc(cur_label)}</span>"
+            f"<span class='ms-caret'></span></button>"
+            f"<span class='ms-menu hidden'>{items}</span></span>")
+
+
+def _menu_field(skey: str, label: str, options: list, current: str, hint: str = "") -> str:
+    """设置键的菜单选择器：状态灯徽章 + 菜单控件 + 环境变量锁定提示。"""
+    src = key_source(skey)
+    env_name = _ENV_FOR_KEY.get(skey, "")
+    locked = src == "环境变量"
+    badge = _config_badge(src, empty="默认")
+    sub = f" <span class='sub'>{esc(hint)}</span>" if hint else ""
+    env_note = (f"<div class='env-note'>🔒 环境变量 <code>{esc(env_name)}</code> 生效中，此处改动不会覆盖它</div>"
+                if locked and env_name else "")
+    return (f"<div class='frow'><div class='lab'>{esc(label)} {badge}{sub}</div>"
+            + _menu_select(skey, options, current, disabled=locked) + env_note + "</div>")
 
 
 def _select_field(skey: str, label: str, options: dict, current: str) -> str:
     src = key_source(skey)
     env_name = _ENV_FOR_KEY.get(skey, "")
     locked = src == "环境变量"
-    badge = (f"<span class='tag on'>已配置 · {esc(src)}</span>" if src
-             else "<span class='tag'>默认</span>")
+    badge = _config_badge(src, empty="默认")
     opts = "".join(f"<option value='{esc(k)}' {'selected' if current == k else ''}>{esc(v)}</option>"
                    for k, v in options.items())
     dis = " disabled class='env-locked'" if locked else ""
@@ -1015,7 +1197,7 @@ def _select_field(skey: str, label: str, options: dict, current: str) -> str:
 _INTERACTIVE_KEYS = [
     "feishu_interactive", "feishu_ws_enabled", "vendor_logo_enabled",
     "panel_expanded", "panel_fields", "footer_enabled", "footer_fields",
-    "interactive_allow_users", "resume_timeout_seconds",
+    "interactive_allow_users", "resume_timeout_seconds", "context_style",
 ]
 _CARD_KEYS = {
     "feishu": ["feishu_webhook", "feishu_webhook_secret", "feishu_app_id",
@@ -1070,6 +1252,14 @@ def apply_settings_card(form: dict, settings: dict) -> str:
                 continue  # 表单没带这个键（手搓请求）：保持现状
             if v not in feige._STATS_SCOPES:
                 return f"非法统计口径：{v}"
+            settings[key] = v
+            continue
+        if key == "context_style":
+            v = (form.get(key) or [""])[0].strip().lower()
+            if not v:
+                continue  # 表单没带这个键（手搓请求）：保持现状
+            if v not in feige._CONTEXT_STYLES:
+                return f"非法上下文样式：{v}"
             settings[key] = v
             continue
         if key in _SECRET_KEYS:
@@ -1178,7 +1368,8 @@ def page_status(msg: str = "") -> bytes:
     status = channel_status()
     rows = "".join(
         f"<tr><td><code>{esc(ch)}</code></td>"
-        f"<td><span class='badge {'ok' if ok else 'mute'}'>{'已配置' if ok else '未配置'}</span></td>"
+        f"<td><span class='badge {'ok' if ok else 'mute'}'>"
+        f"{_lamp_html('设置文件' if ok else '')}{'已配置' if ok else '未配置'}</span></td>"
         f"<td><form method='post' action='/test' style='margin:0'>"
         f"<input type='hidden' name='channel' value='{esc(ch)}'>"
         f"<button {'disabled' if not ok else ''}>发送测试卡</button></form></td></tr>"
@@ -1554,6 +1745,11 @@ def build_preview_payload(params: dict) -> dict:
     status = p("status", "ok").strip()
     if status not in feige.STATUS_TEMPLATE:
         status = "ok"
+    # 面板头上下文样式：预览可临时覆盖（不写设置文件），非法/缺省回落设置口径
+    cstyle = p("context_style", "").strip().lower()
+    if cstyle not in feige._CONTEXT_STYLES:
+        cstyle = ""
+    eff_cstyle = cstyle or feige.context_style()
     ch = p("channel", "").strip()
     if ch and ch not in feige.CHANNELS:
         ch = ""
@@ -1575,6 +1771,7 @@ def build_preview_payload(params: dict) -> dict:
     ok, raw_detail = feige.send_report(
         title, body, stats=stats, status=status, channel=ch, dry_run=True,
         host=host, detail_body=detail_txt, tool_summary=tool_sum,
+        context_style=eff_cstyle,
     )
     payload_obj = None
     card_obj = None
@@ -1600,6 +1797,7 @@ def build_preview_payload(params: dict) -> dict:
         "host": host,
         "host_label": feige_interactive.host_label(host) if host else "",
         "resumable": bool(host and feige_interactive.is_host_resumable(host)),
+        "context_style": eff_cstyle,
     }
 
 
@@ -1839,6 +2037,21 @@ _PREVIEW_JS = r"""
     timer = setTimeout(refreshPreview, 200);
   }
 
+  // 程序化改值（预设切换）后同步菜单选择器的标签与选中态
+  function syncMenuSel(name){
+    var el = form.elements[name];
+    var box = el && el.closest ? el.closest('.menu-select') : null;
+    if(!box) return;
+    var hit = null;
+    box.querySelectorAll('.ms-item').forEach(function(it){
+      var on = (it.getAttribute('data-value') || '') === el.value;
+      it.classList.toggle('on', on);
+      if(on) hit = it;
+    });
+    var lab = box.querySelector('.ms-label');
+    if(lab && hit) lab.textContent = hit.getAttribute('data-label') || el.value;
+  }
+
   // 预设切换
   document.querySelectorAll('.preset-pill[data-preset]').forEach(function(btn){
     btn.addEventListener('click', function(){
@@ -1849,7 +2062,7 @@ _PREVIEW_JS = r"""
       btn.classList.add('on');
       ['title','channel','host','status','body','detail','project','model','thinking','tools','context','elapsed','tool_summary'].forEach(function(k){
         var el = form.elements[k];
-        if(el && k in item) el.value = item[k];
+        if(el && k in item){ el.value = item[k]; syncMenuSel(k); }
       });
       if(modelSel) modelSel.value = item.model || '';
       refreshPreview();
@@ -1919,6 +2132,10 @@ def page_preview(q: dict) -> bytes:
     cur_context = gv("context", "")
     cur_elapsed = gv("elapsed", "")
     cur_tool_sum = gv("tool_summary", "")
+    cur_cstyle = gv("context_style", "").strip().lower()
+    if cur_cstyle not in ("", "bar", "plain"):
+        cur_cstyle = ""
+    eff_cstyle = cur_cstyle or feige.context_style()
 
     ssr_html = ""
     ssr_json = ""
@@ -1928,7 +2145,7 @@ def page_preview(q: dict) -> bytes:
             "channel": cur_channel, "host": cur_host, "detail": cur_detail,
             "tool_summary": cur_tool_sum, "project": cur_project, "model": cur_model,
             "thinking": cur_thinking, "tools": cur_tools, "context": cur_context,
-            "elapsed": cur_elapsed,
+            "elapsed": cur_elapsed, "context_style": cur_cstyle,
         })
         stats = {
             "project": cur_project, "model": cur_model,
@@ -1941,7 +2158,8 @@ def page_preview(q: dict) -> bytes:
         footer = feige.stats_footer(stats)
         logo_url = pv["logo_url"]
         logo_html = f"<img class='vlogo' src='{esc(logo_url)}' alt=''>" if logo_url else ""
-        panel_title = feige._build_panel_header_text(stats, logo_image_key="preview" if logo_url else "")
+        panel_title = feige._build_panel_header_text(stats, logo_image_key="preview" if logo_url else "",
+                                                     context_style=eff_cstyle)
         panel_html = ""
         if status != "running" and (stats.get("model") or stats.get("project") or cur_detail or cur_tool_sum or host):
             det_parts = []
@@ -1992,14 +2210,10 @@ def page_preview(q: dict) -> bytes:
             f"</div>"
         )
 
-    opts = "".join(f"<option {'selected' if cur_channel == c else ''}>{c}</option>"
-                   for c in feige.CHANNELS)
-    sopts = "".join(f"<option {'selected' if cur_status == s else ''}>{s}</option>"
-                    for s in ("ok", "error", "running"))
+    opts = [("", "自动选择")] + [(c, c) for c in feige.CHANNELS]
+    sopts = [(s, s) for s in ("ok", "error", "running")]
     host_choices = [("", "(无/静态)"), ("claude-code", "Claude Code"), ("codex", "Codex"),
                     ("zcode", "ZCode"), ("kimi-code", "kimi-code"), ("antigravity", "Antigravity")]
-    hopts = "".join(f"<option value='{esc(k)}' {'selected' if cur_host == k else ''}>{esc(v)}</option>"
-                    for k, v in host_choices)
     mopts = "<option value=''>速选官方示例模型…</option>" + "".join(
         f"<option value='{esc(mid)}' {'selected' if cur_model == mid else ''}>{esc(mlabel)}</option>"
         for mid, mlabel in _SAMPLE_MODELS
@@ -2008,6 +2222,8 @@ def page_preview(q: dict) -> bytes:
         f"<button type='button' class='preset-pill' data-preset='{esc(pr['id'])}'>{esc(pr['label'])}</button>"
         for pr in _PREVIEW_PRESETS
     )
+    cstyle_opts = [("", f"跟随设置（{feige.context_style()}）"),
+                   ("bar", "进度条 [█▓▒░] 17%"), ("plain", "原样 (17%)")]
 
     left_card = (
         "<div class='card'><h3>🎛️ 卡片参数 & 场景预设</h3>"
@@ -2016,9 +2232,11 @@ def page_preview(q: dict) -> bytes:
         "<input type='hidden' name='go' value='1'>"
         f"<p>标题 <input type='text' name='title' value='{esc(cur_title)}'></p>"
         f"<p style='display:flex;gap:8px;flex-wrap:wrap'>"
-        f"<span style='flex:1 1 130px'>渠道<br><select name='channel' style='width:100%'>{opts}</select></span>"
-        f"<span style='flex:1 1 120px'>宿主<br><select name='host' style='width:100%'>{hopts}</select></span>"
-        f"<span style='flex:0 1 90px'>状态<br><select name='status' style='width:100%'>{sopts}</select></span></p>"
+        f"<span style='flex:1 1 130px'>渠道<br>{_menu_select('channel', opts, cur_channel)}</span>"
+        f"<span style='flex:1 1 120px'>宿主<br>{_menu_select('host', host_choices, cur_host)}</span>"
+        f"<span style='flex:0 1 90px'>状态<br>{_menu_select('status', sopts, cur_status)}</span></p>"
+        f"<p>面板头上下文样式（临时预览，不写设置文件）<br>"
+        f"{_menu_select('context_style', cstyle_opts, cur_cstyle)}</p>"
         f"<p>战报摘要正文<br><textarea name='body' rows='3'>{esc(cur_body)}</textarea></p>"
         f"<p>折叠面板详细正文（可选，支持表格/代码块）<br><textarea name='detail' rows='3' placeholder='展开折叠面板可见的完整内容…'>{esc(cur_detail)}</textarea></p>"
         f"<p style='display:flex;gap:8px;flex-wrap:wrap'>"
