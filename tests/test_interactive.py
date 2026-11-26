@@ -468,9 +468,9 @@ class WSDegradationAndStudioIntegrationTest(unittest.TestCase):
         self.assertIn("collapsible_panel", html_out)
 
     def test_studio_fold_cards_and_status_badges_and_version_2_0(self):
-        self.assertEqual(feige.__version__, "2.0.0")
+        self.assertEqual(feige.__version__, "2.1.0")
         pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "2.0.0"', pyproject)
+        self.assertIn('version = "2.1.0"', pyproject)
 
         studio_html = webui.page_studio().decode("utf-8")
         self.assertIn("fold-card", studio_html)

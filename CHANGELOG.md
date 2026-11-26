@@ -5,7 +5,7 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [2.1.0] - 2026-11-26 — 🕊️ Studio 三档上下文样式 + 渠道菜单收拢 + 具体设置弹窗 + 状态灯
 
 ### Added
 
@@ -238,7 +238,8 @@
 - 联调排错指南：230002 与 `setx` 陈旧环境变量坑（`de97166`）
 - 快速开始、使用指南目录锚链、家族表格绝对链接（`7b4945a` `a6878d4` `f3b6bff`）
 
-[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/techysy/feige-fry-cards/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/techysy/feige-fry-cards/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/techysy/feige-fry-cards/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/techysy/feige-fry-cards/compare/v1.1.0...v1.1.1
