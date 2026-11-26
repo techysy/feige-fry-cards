@@ -82,6 +82,14 @@ def logo_pixels(path: Path) -> list[tuple[int, int, int]]:
     return out
 
 
+def logo_size(path: Path) -> tuple[int, int]:
+    """Logo PNG 的 IHDR 宽高——同样只用标准库。"""
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        raise AssertionError(f"{path.name} 不是 PNG")
+    return struct.unpack(">II", data[16:24])
+
+
 def logo_luminance(path: Path) -> tuple[float, float]:
     """Logo PNG 可见像素的 (最暗亮度, 深色像素占比)。
 
@@ -189,6 +197,18 @@ class VendorLogoAndFamilyCardTest(unittest.TestCase):
 
         # 兜底目录与厂商目录不得重名，否则上传缓存键（只用文件名）会串图
         self.assertEqual(present & {p.name for p in feige._ASSETS_VENDOR_DIR.glob("*.png")}, set())
+
+    def test_logo_assets_are_256_square(self):
+        """源图统一 256×256：卡片上图标最大渲染尺寸远小于此，640 只是上传负担。
+
+        v2.3.2 把两目录 25 张全部从 640×640 等比重采样到 256×256（体积 −47.7%）。
+        这里锁住尺寸口径，避免以后混进大图把上传体积悄悄涨回去。
+        """
+        for d in (feige._ASSETS_AGENT_DIR, feige._ASSETS_VENDOR_DIR):
+            for p in sorted(d.glob("*.png")):
+                with self.subTest(asset=f"{d.name}/{p.name}"):
+                    self.assertEqual(logo_size(p), (256, 256),
+                                     f"{p.name} 不是 256×256，上传体积会白白翻倍")
 
     def test_claude_code_logo_is_brand_orange(self):
         """Claude Code 图标要是品牌橙，不能是深灰/黑瓦片。
@@ -804,17 +824,17 @@ class WSDegradationAndStudioIntegrationTest(unittest.TestCase):
             conn.close()
 
     def test_studio_fold_cards_and_status_badges_and_version_2_0(self):
-        # 版本号必须六处齐更：漏一处就是「Studio 显示 2.3.0、插件清单还是 2.2.0」
-        self.assertEqual(feige.__version__, "2.3.1")
+        # 版本号必须六处齐更：漏一处就是「Studio 显示 2.3.1、插件清单还是 2.3.0」
+        self.assertEqual(feige.__version__, "2.3.2")
         pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "2.3.1"', pyproject)
+        self.assertIn('version = "2.3.2"', pyproject)
         for rel in (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
                     ".zcode-plugin/plugin.json", ".zcode-plugin/marketplace.json"):
             with self.subTest(manifest=rel):
                 doc = json.loads((REPO / rel).read_text(encoding="utf-8"))
                 blob = json.dumps(doc)
-                self.assertIn("2.3.1", blob, f"{rel} 版本号未同步")
-                self.assertNotIn('"2.3.0"', blob, f"{rel} 仍留着旧版本号")
+                self.assertIn("2.3.2", blob, f"{rel} 版本号未同步")
+                self.assertNotIn('"2.3.1"', blob, f"{rel} 仍留着旧版本号")
 
         studio_html = webui.page_studio().decode("utf-8")
         self.assertIn("fold-card", studio_html)
