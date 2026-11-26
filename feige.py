@@ -76,7 +76,7 @@ from pathlib import Path
 # 主插件版本号单一来源：面板（webui.VERSION）从这里读，两份插件清单
 # （.claude-plugin / .zcode-plugin 的 plugin.json + marketplace.json）同步一致，
 # 由测试锁住防漂移。
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 DEFAULT_BASE_URL = "https://open.feishu.cn"
 STREAMING_ELEMENT_ID = "streaming_content"  # 流式正文元素 id（家族固定口径）
