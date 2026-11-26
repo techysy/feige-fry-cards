@@ -37,8 +37,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import (body_for_card, compact, fmt_elapsed, log, project_label,  # noqa: E402
-                    read_payload, send_card, stats_scope)
+from common import (body_for_card, compact, detail_for_card, fmt_elapsed,  # noqa: E402
+                    fmt_tool_summary, log, project_label, read_payload,
+                    send_card, stats_scope)
 
 _OFF = ("0", "false", "no", "off")
 _MODEL_PLACEHOLDERS = {"__kimi_env_model__", "agent-loop"}
@@ -53,6 +54,8 @@ KNOWN_CONTEXT_WINDOWS = {
 
 
 def hook_enabled() -> bool:
+    if os.environ.get("FEIGE_RESUME_CHILD") == "1":
+        return False
     # 与其他宿主「默认关」相反：kimi-code 手挂注册即开启，显式 0 才关。
     return (os.environ.get("FEIGE_HOOK_NOTIFY") or "1").strip().lower() not in _OFF
 
@@ -127,6 +130,8 @@ def summarize_wire(path: Path) -> dict | None:
     last_text = ""
     turn_first: dict[str, float] = {}
     turn_tools: dict[str, int] = {}
+    turn_tool_names: dict[str, list[str]] = {}
+    all_tool_names: list[str] = []
     turn_thinking: dict[str, int] = {}
     turn_text: dict[str, str] = {}  # 每轮最后一条 text：正文只取最后一轮，绝不回落上一轮
     last_turn = None
@@ -182,6 +187,11 @@ def summarize_wire(path: Path) -> dict | None:
             etype = event.get("type")
             if etype == "tool.call":
                 tools += 1
+                tname = str(event.get("name") or "").strip()
+                if tname:
+                    all_tool_names.append(tname)
+                    if tid is not None:
+                        turn_tool_names.setdefault(tid, []).append(tname)
                 if tid is not None:
                     turn_tools[tid] = turn_tools.get(tid, 0) + 1
                 saw_turn = True
@@ -206,8 +216,10 @@ def summarize_wire(path: Path) -> dict | None:
     # 💭/🔧/🎫/正文 只算最后一轮（全程口径 / 无 turnId 的老格式保留全文件统计）
     if stats_scope() == "session":
         last_turn = None
+    tool_names = all_tool_names
     if last_turn is not None:
         tools = turn_tools.get(last_turn, 0)
+        tool_names = turn_tool_names.get(last_turn, [])
         last_text = turn_text.get(last_turn, "")  # 最后一轮没文本就发占位符，不回落上一轮
         thinking = turn_thinking.get(last_turn, 0)
         start = turn_first.get(last_turn)
@@ -226,6 +238,8 @@ def summarize_wire(path: Path) -> dict | None:
 
     return {
         "body": body_for_card(last_text),
+        "detail": detail_for_card(last_text),
+        "tool_summary": fmt_tool_summary(tool_names),
         # 约定：CLI/Mirasim 场景模型名前带工具名
         "model": f"kimi-code · {model}" if model else "kimi-code",
         "raw_model": model,
@@ -242,7 +256,8 @@ def main(payload: dict | None = None) -> None:
     if not hook_enabled():
         return
     payload = read_payload() if payload is None else payload
-    project = project_label(str(payload.get("cwd") or ""))
+    cwd = str(payload.get("cwd") or "")
+    project = project_label(cwd)
     session_id = str(payload.get("session_id") or "")
     wire = find_wire(session_id)
     if not wire:
@@ -263,7 +278,10 @@ def main(payload: dict | None = None) -> None:
     }
     send_card("", summary["body"], stats, agent="kimi-code", session=session_id,
               # 传转录路径：后台发送进程开卡前重读一次，治宿主落盘滞后
-              transcript=str(wire))
+              transcript=str(wire),
+              cwd=cwd,
+              detail=summary.get("detail", ""),
+              tool_summary=summary.get("tool_summary", ""))
 
 
 if __name__ == "__main__":

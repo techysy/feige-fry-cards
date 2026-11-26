@@ -336,6 +336,40 @@ class StatsScopeTest(unittest.TestCase):
         self.assertIn("总结触发字数", page)
         self.assertIn("llm_min_chars", page)
 
+    def test_panel_and_footer_chips_save_independently(self):
+        """面板头/脚注两套 chips + 脚注显隐开关：交互卡白名单内独立保存。"""
+        page = webui.page_studio().decode("utf-8")
+        self.assertIn("统一面板头字段（panel）", page)
+        self.assertIn("底部脚注字段（footer）", page)
+        self.assertIn("显示底部统计脚注行", page)
+        self.assertIn("panel_fields-chips-box", page)
+        self.assertIn("footer_fields-chips-box", page)
+        # 面板默认不含项目 chip 激活；脚注默认全字段激活
+        self.assertIn("name='panel_fields' id='panel_fields_val' value='model,thinking,tools,context,tokens,elapsed'", page)
+        self.assertIn("name='footer_fields' id='footer_fields_val' value='project,model,thinking,tools,context,tokens,elapsed'", page)
+
+        body = urllib.parse.urlencode({
+            "form": "interactive",
+            "panel_fields": "model,tools",
+            "footer_enabled": "1",
+            "footer_fields": "project,elapsed",
+        }).encode("utf-8")
+        resp = webui.handle_settings_post(body).decode("utf-8")
+        self.assertIn("交互与长连接已保存", resp)
+        saved = json.loads(self.settings.read_text(encoding="utf-8"))
+        self.assertEqual(saved["panel_fields"], ["model", "tools"])
+        self.assertEqual(saved["footer_fields"], ["project", "elapsed"])
+        self.assertEqual(saved["footer_enabled"], "1")
+        self.assertEqual(feige._panel_field_order(), ("model", "tools"))
+        self.assertTrue(feige.footer_enabled())
+        # 不勾开关再存：显式写 0（关），字段配置保留
+        webui.handle_settings_post(b"form=interactive&panel_fields=model&footer_fields=")
+        saved = json.loads(self.settings.read_text(encoding="utf-8"))
+        self.assertEqual(saved["footer_enabled"], "0")
+        self.assertEqual(saved["panel_fields"], ["model"])
+        self.assertEqual(saved["footer_fields"], [])  # 空 = 全隐藏（合法）
+        self.assertFalse(feige.footer_enabled())
+
     def test_llm_off_toggle_writes_and_clears_summarize(self):
         webui.handle_settings_post(b"form=llm&llm_api_key=sk-1&llm_off=1")
         self.assertIs(json.loads(self.settings.read_text(encoding="utf-8"))["summarize"], False)

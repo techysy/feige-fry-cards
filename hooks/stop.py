@@ -78,6 +78,8 @@ def run_zcode(raw: str) -> None:
 
 
 def main() -> None:
+    if os.environ.get("FEIGE_RESUME_CHILD") == "1":
+        return
     try:
         raw = sys.stdin.read() or ""
     except (ValueError, OSError):

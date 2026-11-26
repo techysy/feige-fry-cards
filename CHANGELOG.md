@@ -7,6 +7,49 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **终态卡信息去重**：完成/报错态卡片默认不再输出底部 `hr` + 统计脚注行——统一折叠面板头
+  已承载同一组统计，重复输出刷屏；面板头字段默认去掉 `project`（标题已含项目与宿主）。
+  新增 `FEIGE_FOOTER_ENABLED`（设置键 `footer_enabled`，默认关）可恢复脚注行，
+  `FEIGE_PANEL_FIELDS`（设置键 `panel_fields`）与 `FEIGE_FOOTER_FIELDS` 拆分为面板/脚注
+  两套独立字段配置（旧 `footer_fields` 配置保持兼容、不迁移）；钉钉 / Telegram 静态版式
+  与 running 态不受影响。Studio 配置页两套字段各自成组可拖拽排序，预览页同步。
+- **正文总结更稳**：总结 LLM 请求超时 20s → 45s（只在后台发送进程里等，宿主 hook 前台
+  零阻塞不变），缓解免费/慢速池偶发超时导致顶层回落截断原文；失败仍 fail-open 且日志可辨。
+
+### Fixed
+
+- **README 密钥占位**：文档示例中的真实网关密钥替换为占位符（该密钥已进入历史提交，
+  建议到网关侧轮换）。
+
+## [2.0.0] - 2026-11-25 — 🕊️ 家族卡片规范对齐 + 折叠面板 + 交互式飞书长连接续跑 + feige Studio 2.0
+
+### Added
+
+- **底部统一折叠面板（`collapsible_panel`）**：对齐 `hermes-fry-cards` / `claw-fry-cards`
+  CardKit v2.0 规范，顶层保持精简战报摘要，底部新增默认折叠的 `unified_panel` 面板
+  （绿/红/蓝状态边框、上下文密度进度条 `█▓▒░`）承载详细正文、工具调用摘要与安全脱敏的会话信息。
+- **厂商家族 Logo + 官方模型名展示**：引入 20 套 `@lobehub/icons-static-png` 厂商 Logo 资产
+  （`assets/vendor-logos/`）与官方模型名映射规则（如 `tencent/hy4-flash:free` → `Hy4 flash`）。
+  `feishu-cardkit` 渠道自动上传并本地缓存 `image_key`（`custom_icon` 左置）；`feishu-webhook`
+  及未命中/失败场景保持干净纯标题 + 旋转箭头，Studio 预览页同步支持本地静态 Logo 渲染。
+- **完整交互式卡片与飞书长连接（`feige_interactive.py`）**：
+  - `feishu-cardkit` 完成态卡片在绑定本地会话上下文后渲染「追问 / 继续指令」表单及防误触快捷按钮
+    （`▶️ 继续执行`、`🧪 跑测试核验`，均带飞书原生二次确认弹窗）；
+  - 接入飞书长连接 `WSClient` 接收 `card.action.trigger`（可随 `python webui.py start`
+    守护进程自动保活，亦支持 `python feige.py listen` 独立前台监听）；3 秒内同步返回
+    Toast + 蓝色「续跑处理中」中间态卡片防重复提交；
+  - 敏感路径（`cwd`）与原始 `session_id` 仅保存于本机 `~/.feige-sessions.json`，卡片公开字段
+    只暴露随机不透明令牌 `ctx_id`；校验操作人白名单（兼容 Schema 2 `open_id`/`user_id`）及群聊
+    一致性后，对支持无头续跑的宿主（Claude Code / Codex CLI / ZCode / kimi-code）后台续跑并
+    回写更新原卡（原卡过期/失败时自动退化为回复新卡）；对不支持宿主（如 Antigravity）给出清晰提示。
+  - 新增 `pyproject.toml` 声明可选依赖 `lark-oapi>=1.4.0`（`[interactive]`），未安装时优雅降级，
+    发卡核心与其余渠道仍保持纯标准库零依赖与 fail-open。
+- **Studio 设置页同步升级（`webui.py`）**：飞书卡片新增交互式开关、长连接开关、厂商 Logo 开关、
+  折叠面板默认展开开关、操作人白名单、无头续跑超时配置；状态页新增 WS 长连接状态与本机宿主
+  CLI 续跑能力探测及「同步长连接状态」操作；预览页同步还原折叠面板、厂商 Logo 与交互组件。
+
 ## [1.2.0] - 2026-11-23 — 🕊️ Antigravity CLI（反重力）适配器
 
 ### Added
@@ -172,7 +215,8 @@
 - 联调排错指南：230002 与 `setx` 陈旧环境变量坑（`de97166`）
 - 快速开始、使用指南目录锚链、家族表格绝对链接（`7b4945a` `a6878d4` `f3b6bff`）
 
-[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/techysy/feige-fry-cards/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/techysy/feige-fry-cards/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/techysy/feige-fry-cards/compare/v1.1.0...v1.1.1
 <!-- v1.0.1 当年只更了清单没打 tag，compare 从 v1.0.0 起 -->

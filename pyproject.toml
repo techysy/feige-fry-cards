@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feige-fry-cards"
+version = "2.0.0"
+description = "🕊️ feige-fry-cards — 飞鸽卡片：跨 Agent 会话战报与交互式飞书卡片"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+# 仅飞书长连接（WSClient）交互回调监听需要；未安装时自动优雅降级，
+# 发卡核心（webhook / CardKit / 钉钉 / Telegram）与 Studio 设置页保持纯标准库零依赖运行。
+interactive = [
+  "lark-oapi>=1.4.0",
+]

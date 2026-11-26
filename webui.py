@@ -36,6 +36,7 @@ import argparse
 import html
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -48,6 +49,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import feige  # noqa: E402
+import feige_interactive  # noqa: E402
 
 REPO = Path(__file__).resolve().parent
 VERSION = feige.__version__  # 面板版本号与主插件同源，发版只改 feige.__version__ + 清单
@@ -172,17 +174,125 @@ pre{background:var(--surface-2);border:1px solid var(--border-subtle);border-rad
   padding:10px;overflow:auto;font:12px/1.6 Consolas,"Cascadia Mono",monospace}
 code{font:12px/1.4 Consolas,"Cascadia Mono",monospace;background:var(--tertiary);
   padding:1px 5px;border-radius:5px}
-/* 预览页卡片外观示意的状态条（背景色由内联 style 给） */
+/* 预览页卡片外观与 CardKit v2.0 仿真容器（对齐 fry-cards Studio） */
 .bar{height:6px;border-radius:12px 12px 0 0}
+.pv-panel{border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin:10px 0;background:var(--surface-2)}
+.pv-panel.b-green{border-color:#22c55e66}.pv-panel.b-red{border-color:#ef444466}.pv-panel.b-blue{border-color:#3b82f666}
+.pv-panel summary{cursor:pointer;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;list-style:none}
+.pv-panel summary::-webkit-details-marker{display:none}
+.vlogo{width:16px;height:16px;border-radius:3px;object-fit:contain;vertical-align:middle;flex-shrink:0}
+.pv-form{border:1px dashed var(--border-strong);border-radius:8px;padding:8px;margin-top:8px;background:var(--surface-2)}
+.pv-btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 
-/* 表单行：12px 灰标签 + 徽章 + 全宽控件 */
+/* 可折叠渠道卡 & 联调折叠提示 & 状态胶囊（学习 hermes-fry-cards Studio） */
+details.fold-card>summary.fold-summary{list-style:none;cursor:pointer;display:flex;align-items:center;
+  justify-content:space-between;gap:10px;font-size:13px;font-weight:700;user-select:none}
+details.fold-card>summary.fold-summary::-webkit-details-marker{display:none}
+.fold-title{display:inline-flex;align-items:center;gap:4px;min-width:0}
+.fold-right{display:inline-flex;align-items:center;gap:8px;flex-shrink:0}
+.fold-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.fold-badge.on{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
+.fold-badge.empty{background:var(--tertiary);color:var(--text-3)}
+.fold-caret{width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;
+  border-top:5px solid var(--text-3);transition:transform .16s}
+details.fold-card[open]>summary .fold-caret{transform:rotate(180deg)}
+details.fold-card .fold-body{margin-top:12px;padding-top:12px;border-top:1px solid var(--border-subtle)}
+
+details.hint-fold{margin:8px 0 12px;background:var(--surface-2);border:1px solid var(--border-subtle);
+  border-radius:10px;padding:8px 10px}
+details.hint-fold>summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--muted);
+  list-style:none;display:flex;align-items:center;gap:6px}
+details.hint-fold>summary::-webkit-details-marker{display:none}
+details.hint-fold .hint-body{margin-top:8px;font-size:12px;color:var(--muted);line-height:1.65}
+details.hint-fold ol{margin:4px 0 0 18px;padding:0}
+
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;
+  font-size:11px;font-weight:600;white-space:nowrap}
+.badge.ok{background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok)}
+.badge.bad{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
+.badge.warn{background:color-mix(in srgb,var(--warn-c) 15%,transparent);color:var(--warn-c)}
+.badge.mute{background:var(--tertiary);color:var(--text-3)}
+
+/* 真实 CardKit v2.0 预览器布局与白底飞书仿真卡片 */
+.pv-grid{display:grid;grid-template-columns:minmax(320px,450px) 1fr;gap:14px;align-items:start}
+@media (max-width:920px){.pv-grid{grid-template-columns:1fr}}
+.preset-pills{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.preset-pill{font-size:11px;padding:4px 9px;border-radius:999px;border:1px solid var(--border);
+  background:var(--surface-2);color:var(--txt);cursor:pointer;transition:all .15s}
+.preset-pill:hover{border-color:var(--pri);background:color-mix(in srgb,var(--pri) 9%,transparent)}
+.preset-pill.on{border-color:var(--pri);background:var(--btn-bg);color:var(--btn-fg)}
+
+.pv-stage-wrap{background:linear-gradient(135deg,color-mix(in srgb,var(--surface-2) 90%,transparent),
+  color-mix(in srgb,var(--tertiary) 75%,transparent));border:1px solid var(--border-subtle);
+  border-radius:12px;padding:16px;display:flex;flex-direction:column;align-items:center;gap:12px}
+.feishu-card{width:100%;max-width:480px;background:#ffffff;color:#1f2329;border:1px solid #dee0e3;
+  border-radius:12px;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,.08);text-align:left;font-size:13px}
+.fc-header{padding:11px 14px;font-size:15px;font-weight:700;display:flex;align-items:center;gap:6px;
+  border-bottom:1px solid rgba(0,0,0,.05)}
+.fc-header.t-blue{background:linear-gradient(90deg,#e8f3ff,#f4f8ff);color:#1456f0}
+.fc-header.t-green{background:linear-gradient(90deg,#e8f8ef,#f4fbf7);color:#117a43}
+.fc-header.t-red{background:linear-gradient(90deg,#ffece8,#fff6f5);color:#c9352f}
+.fc-header.t-grey{background:linear-gradient(90deg,#f2f3f5,#fafafa);color:#4e5969}
+.fc-body{padding:12px 14px;display:flex;flex-direction:column;gap:9px}
+.fc-md{line-height:1.58;word-break:break-word;color:#1f2329}
+.fc-md p{margin:0 0 6px}.fc-md p:last-child{margin-bottom:0}
+.fc-md h4,.fc-md h5{margin:4px 0;font-size:13px;font-weight:700;color:#1f2329}
+.fc-md code{background:#f2f3f5;color:#1f2329;padding:1px 4px;border-radius:4px;font-size:12px}
+.fc-md pre{background:#f5f6f7;color:#1f2329;border:1px solid #e5e6eb;padding:8px;border-radius:6px;margin:4px 0;overflow:auto}
+.fc-md pre code{background:none;padding:0}
+.fc-md table{margin:4px 0;border-collapse:collapse;width:100%;font-size:12px}
+.fc-md th,.fc-md td{border:1px solid #dee0e3;padding:4px 7px;background:#fff;color:#1f2329}
+.fc-md th{background:#f5f6f7;font-weight:600}
+.fc-md ul,.fc-md ol{margin:4px 0 4px 18px;padding:0}
+.fc-md blockquote{margin:4px 0;padding:2px 8px;border-left:3px solid #c9cdd4;color:#646a73}
+.fc-hr{border:none;border-top:1px solid #ebedf0;margin:2px 0}
+.feishu-card .pv-panel{background:#f8f9fa;border:1px solid #dee0e3;margin:0}
+.feishu-card .pv-panel.b-green{border-color:#8ce0b3}.feishu-card .pv-panel.b-red{border-color:#f9a7a4}
+.feishu-card .pv-panel.b-blue{border-color:#93c5fd}
+.feishu-card .pv-panel summary{color:#4e5969;justify-content:space-between}
+.fc-sum-left{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.fc-sum-arrow{color:#8f959e;font-size:14px;transition:transform .16s}
+details.pv-panel[open] .fc-sum-arrow{transform:rotate(90deg)}
+.fc-panel-body{margin-top:8px;padding-top:8px;border-top:1px dashed #e5e6eb;color:#1f2329;font-size:12px}
+.fc-form{background:#f7f8fa;border:1px solid #e5e6eb;border-radius:8px;padding:9px;display:flex;flex-direction:column;gap:7px}
+.fc-input{width:100%;padding:6px 8px;border:1px solid #d0d3d6;border-radius:6px;background:#fff;color:#1f2329;font-size:12px}
+.fc-actions{display:flex;flex-wrap:wrap;gap:6px}
+.fc-btn{border:1px solid #d0d3d6;background:#fff;color:#1f2329;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:500;cursor:pointer}
+.fc-btn:hover{background:#f2f3f5}
+.fc-btn.primary{background:#1456f0;border-color:#1456f0;color:#fff}
+.fc-btn.primary:hover{background:#0f46c7;opacity:1}
+.fc-confirm-tag{font-size:10px;opacity:.75;margin-left:2px}
+.fc-notation{font-size:11.5px;color:#8f959e;line-height:1.5}
+.pv-toast{position:fixed;right:20px;bottom:20px;z-index:80;max-width:360px;background:#1f2329;color:#fff;
+  padding:10px 14px;border-radius:10px;font-size:12px;box-shadow:0 10px 28px rgba(0,0,0,.25);display:none}
+.pv-toast.show{display:block}
+
+/* 表单行：12px 灰标签 + 徽章 + 全宽控件 + 环境变量锁定 + 复选框对齐 */
 .frow{margin:0 0 12px}
 .frow .lab{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
 .frow .lab .sub{color:var(--text-3)}
 .frow input[type=text],.frow input[type=password]{margin-top:0}
+input.env-locked,textarea.env-locked,select.env-locked{opacity:.74;background:var(--tertiary);
+  border-style:dashed;cursor:not-allowed}
+.env-note{font-size:11px;color:var(--warn-c);margin-top:3px;line-height:1.4}
 .clearline{font-size:11px;color:var(--text-3);margin-top:3px}
-.clearline label,.checkrow label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
-.checkrow{font-size:13px;margin:0 0 12px}
+.clearline label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+.checkrow{margin:0 0 11px;font-size:13px}
+.check-top{display:flex;align-items:flex-start;gap:7px;line-height:1.45;cursor:pointer}
+.check-top input[type=checkbox]{margin:3px 0 0;flex-shrink:0}
+.check-main{flex:1;min-width:0}
+.check-main .tag{margin-left:5px;vertical-align:1px}
+.check-sub{display:block;font-size:11.5px;color:var(--text-3);margin:2px 0 0 21px;line-height:1.45}
+.mode-banner{border:1px solid color-mix(in srgb,var(--warn-c) 35%,transparent);
+  background:color-mix(in srgb,var(--warn-c) 9%,var(--card));border-radius:10px;
+  padding:8px 10px;font-size:12px;margin-bottom:12px;line-height:1.55}
+.mode-banner.ok-mode{border-color:color-mix(in srgb,var(--ok) 35%,transparent);
+  background:color-mix(in srgb,var(--ok) 7%,var(--card))}
+.dirty-dot{display:none;font-size:11px;color:var(--warn-c);font-weight:600;margin-left:auto}
+form.dirty .dirty-dot{display:inline-flex;align-items:center;gap:4px}
+form.dirty button[type=submit].primary{box-shadow:0 0 0 2px color-mix(in srgb,var(--warn-c) 45%,transparent)}
+.cond-wrap{transition:opacity .16s}
+.cond-wrap.dimmed{opacity:.52}
 .card form{display:flex;flex-direction:column}
 .card form p{margin:0 0 10px}
 .card form p:last-child{margin-bottom:0}
@@ -385,29 +495,9 @@ _THEME_JS = """
 })();
 
 // 字段 chips（点按显隐 + 拖动排序，对齐 fry-cards Studio / CreditDaddy）
+// 面板头 / 脚注两套独立 chips，各自写各自的 hidden input
 (function(){
-  var box = document.getElementById('footer-chips-box');
-  if(!box) return;
-  var hiddenInput = document.getElementById('footer_fields_val');
-  var dragChip = null;
-
-  function updateValue(){
-    var picked = [];
-    box.querySelectorAll('.field-chip').forEach(function(c){
-      if(!c.classList.contains('off')) picked.push(c.dataset.field);
-    });
-    if(hiddenInput) hiddenInput.value = picked.join(',');
-  }
-
-  box.addEventListener('click', function(e){
-    var chip = e.target.closest('.field-chip');
-    if(!chip) return;
-    var off = chip.classList.toggle('off');
-    chip.setAttribute('aria-pressed', off ? 'false' : 'true');
-    updateValue();
-  });
-
-  function dropRefChip(b, x, y) {
+  function dropRefChip(b, x, y, dragChip) {
     var chips = Array.prototype.slice.call(b.querySelectorAll('.field-chip')).filter(function(c){ return c !== dragChip; });
     for(var i=0; i<chips.length; i++){
       var r = chips[i].getBoundingClientRect();
@@ -418,39 +508,96 @@ _THEME_JS = """
     return null;
   }
 
-  box.addEventListener('dragstart', function(e){
-    var chip = e.target.closest('.field-chip');
-    if(!chip) { e.preventDefault(); return; }
-    dragChip = chip;
-    chip.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', chip.dataset.field);
+  document.querySelectorAll('.field-chips[data-target]').forEach(function(box){
+    var hiddenInput = document.getElementById(box.dataset.target);
+    var dragChip = null;
+
+    function updateValue(){
+      var picked = [];
+      box.querySelectorAll('.field-chip').forEach(function(c){
+        if(!c.classList.contains('off')) picked.push(c.dataset.field);
+      });
+      if(hiddenInput) hiddenInput.value = picked.join(',');
+    }
+
+    box.addEventListener('click', function(e){
+      var chip = e.target.closest('.field-chip');
+      if(!chip) return;
+      var off = chip.classList.toggle('off');
+      chip.setAttribute('aria-pressed', off ? 'false' : 'true');
+      updateValue();
+    });
+
+    box.addEventListener('dragstart', function(e){
+      var chip = e.target.closest('.field-chip');
+      if(!chip) { e.preventDefault(); return; }
+      dragChip = chip;
+      chip.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', chip.dataset.field);
+    });
+    box.addEventListener('dragover', function(e){
+      if(!dragChip) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      box.querySelectorAll('.field-chip.drop-mark').forEach(function(c){ c.classList.remove('drop-mark'); });
+      var ref = dropRefChip(box, e.clientX, e.clientY, dragChip);
+      if(ref) ref.classList.add('drop-mark');
+    });
+    box.addEventListener('drop', function(e){
+      if(!dragChip) return;
+      e.preventDefault();
+      var ref = dropRefChip(box, e.clientX, e.clientY, dragChip);
+      if(ref) box.insertBefore(dragChip, ref);
+      else box.appendChild(dragChip);
+      updateValue();
+    });
+    box.addEventListener('dragleave', function(e){
+      if(e.relatedTarget && box.contains(e.relatedTarget)) return;
+      box.querySelectorAll('.field-chip.drop-mark').forEach(function(c){ c.classList.remove('drop-mark'); });
+    });
+    box.addEventListener('dragend', function(){
+      box.querySelectorAll('.field-chip.drop-mark').forEach(function(c){ c.classList.remove('drop-mark'); });
+      if(dragChip) dragChip.classList.remove('dragging');
+      dragChip = null;
+    });
   });
-  box.addEventListener('dragover', function(e){
-    if(!dragChip) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    box.querySelectorAll('.field-chip.drop-mark').forEach(function(c){ c.classList.remove('drop-mark'); });
-    var ref = dropRefChip(box, e.clientX, e.clientY);
-    if(ref) ref.classList.add('drop-mark');
+})();
+
+// Studio 配置页交互增强：未保存脏检测 + 「交互与长连接」条件展开联动
+(function(){
+  document.querySelectorAll("form[action='/settings']").forEach(function(f){
+    var markDirty = function(){ f.classList.add('dirty'); };
+    f.addEventListener('input', markDirty);
+    f.addEventListener('change', markDirty);
   });
-  box.addEventListener('drop', function(e){
-    if(!dragChip) return;
-    e.preventDefault();
-    var ref = dropRefChip(box, e.clientX, e.clientY);
-    if(ref) box.insertBefore(dragChip, ref);
-    else box.appendChild(dragChip);
-    updateValue();
-  });
-  box.addEventListener('dragleave', function(e){
-    if(e.relatedTarget && box.contains(e.relatedTarget)) return;
-    box.querySelectorAll('.field-chip.drop-mark').forEach(function(c){ c.classList.remove('drop-mark'); });
-  });
-  box.addEventListener('dragend', function(){
-    box.querySelectorAll('.field-chip.drop-mark').forEach(function(c){ c.classList.remove('drop-mark'); });
-    if(dragChip) dragChip.classList.remove('dragging');
-    dragChip = null;
-  });
+  var cbInter = document.querySelector("input[name='feishu_interactive']");
+  var cbWs = document.querySelector("input[name='feishu_ws_enabled']");
+  var advWrap = document.getElementById('interactive-advanced-wrap');
+  var advDetails = document.getElementById('interactive-advanced-fold');
+  if(cbInter && cbWs && advWrap){
+    function syncInterUI(){
+      var active = cbInter.checked || cbWs.checked;
+      advWrap.classList.toggle('dimmed', !active);
+      if(advDetails && active && !advDetails.dataset.userClosed){
+        advDetails.open = true;
+      }else if(advDetails && !active){
+        advDetails.open = false;
+      }
+    }
+    if(advDetails){
+      advDetails.addEventListener('toggle', function(){
+        if(!advDetails.open && (cbInter.checked || cbWs.checked)){
+          advDetails.dataset.userClosed = '1';
+        }else if(advDetails.open){
+          delete advDetails.dataset.userClosed;
+        }
+      });
+    }
+    cbInter.addEventListener('change', syncInterUI);
+    cbWs.addEventListener('change', syncInterUI);
+    syncInterUI();
+  }
 })();
 </script>"""
 
@@ -528,21 +675,30 @@ def key_source(skey: str) -> str:
 
 def _field(skey: str, label: str, placeholder: str = "", hint: str = "") -> str:
     src = key_source(skey)
+    env_name = _ENV_FOR_KEY.get(skey, "")
+    locked = src == "环境变量"
     badge = (f"<span class='tag on'>已配置 · {esc(src)}</span>" if src
              else "<span class='tag'>未配置</span>")
     if skey in _SECRET_KEYS:
-        field = (f"<input type='password' name='{skey}' autocomplete='new-password' "
-                 f"placeholder='留空不修改'>")
+        if locked:
+            field = (f"<input type='password' name='{skey}' disabled class='env-locked' "
+                     f"autocomplete='new-password' placeholder='已由环境变量接管（优先于设置文件）'>")
+        else:
+            field = (f"<input type='password' name='{skey}' autocomplete='new-password' "
+                     f"placeholder='留空不修改'>")
         clear = (f"<div class='clearline'><label><input type='checkbox' "
                  f"name='clear_{skey}' value='1'> 清除已存值</label></div>")
     else:
-        cur = feige._env(_ENV_FOR_KEY[skey]) if skey in _ENV_FOR_KEY else ""
+        cur = feige._env(env_name) if env_name else ""
+        ro = " readonly class='env-locked' title='当前由环境变量接管，本页改动不会覆盖'" if locked else ""
         field = (f"<input type='text' name='{skey}' value='{esc(cur)}' "
-                 f"placeholder='{esc(placeholder)}'>")
+                 f"placeholder='{esc(placeholder)}'{ro}>")
         clear = ""
+    env_note = (f"<div class='env-note'>🔒 环境变量 <code>{esc(env_name)}</code> 生效中，此处改动不会覆盖它</div>"
+                if locked and env_name else "")
     sub = f" <span class='sub'>{esc(hint)}</span>" if hint else ""
     return (f"<div class='frow'><div class='lab'>{esc(label)} {badge}{sub}</div>"
-            f"{field}{clear}</div>")
+            f"{field}{clear}{env_note}</div>")
 
 
 
@@ -556,10 +712,11 @@ FOOTER_FIELD_NAMES = {
     "elapsed": "耗时",
 }
 
-def _footer_chips_html() -> str:
-    saved = feige.load_settings().get("footer_fields")
+def _field_chips_html(skey: str, label: str, defaults: tuple, tip: str = "") -> str:
+    """一套字段 chips（点按显隐 + 拖动排序）。skey 对应设置键与 hidden input 名。"""
+    saved = feige.load_settings().get(skey)
     if saved is None:
-        saved_list = list(feige.DEFAULT_FOOTER_FIELDS)
+        saved_list = list(defaults)
     else:
         saved_list = [str(x).strip() for x in saved if str(x).strip()]
 
@@ -569,7 +726,7 @@ def _footer_chips_html() -> str:
         if k in FOOTER_FIELD_NAMES:
             chips.append((k, FOOTER_FIELD_NAMES[k], True))
             active_keys.add(k)
-    for k in feige.DEFAULT_FOOTER_FIELDS:
+    for k in defaults:
         if k not in active_keys:
             chips.append((k, FOOTER_FIELD_NAMES[k], False))
 
@@ -587,18 +744,52 @@ def _footer_chips_html() -> str:
                           f'{grip_svg}<span>{esc(name)}</span></button>')
 
     active_val = ",".join(k for k, _, is_on in chips if is_on)
+    tip_html = f"<span class='field-tip'>{esc(tip)}</span>" if tip else ""
     return (
         "<div class='frow'>"
-        f"<div class='lab'>脚注字段（footer） <span class='tag on'>可拖动排序</span></div>"
+        f"<div class='lab'>{esc(label)} <span class='tag on'>可拖动排序</span></div>"
         "<span class='field-tip'>点按切换显隐（置灰 = 隐藏）；按住拖动调整展示顺序。</span>"
-        f"<div class='field-chips' id='footer-chips-box'>{''.join(chips_html)}</div>"
-        f"<input type='hidden' name='footer_fields' id='footer_fields_val' value='{esc(active_val)}'>"
+        + tip_html +
+        f"<div class='field-chips' id='{esc(skey)}-chips-box' data-target='{esc(skey)}_val'>{''.join(chips_html)}</div>"
+        f"<input type='hidden' name='{esc(skey)}' id='{esc(skey)}_val' value='{esc(active_val)}'>"
         "</div>"
     )
 
-def _save_btn(card_id: str) -> str:
-    return (f"<p><input type='hidden' name='form' value='{card_id}'>"
-            f"<button class='primary' type='submit'>{ICONS['save']} 保存本卡片</button></p>")
+
+def _panel_chips_html() -> str:
+    return _field_chips_html(
+        "panel_fields", "统一面板头字段（panel）", feige.DEFAULT_PANEL_FIELDS,
+        tip="卡片标题已含项目与宿主，面板头默认不重复项目名；与底部脚注各自独立。")
+
+
+def _footer_chips_html() -> str:
+    return _field_chips_html(
+        "footer_fields", "底部脚注字段（footer）", feige.DEFAULT_FOOTER_FIELDS,
+        tip="脚注行默认隐藏（面板头已承载同一套统计）；勾选上方开关才显示。")
+
+def _save_btn(card_id: str, preview_btn: bool = False) -> str:
+    extra = (f" <button type='submit' name='_next' value='preview'>{ICONS['preview']} 保存并预览</button>"
+             if preview_btn else "")
+    return (f"<p style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+            f"<input type='hidden' name='form' value='{card_id}'>"
+            f"<button class='primary' type='submit'>{ICONS['save']} 保存本卡片</button>{extra}"
+            f"<span class='dirty-dot'>● 未保存</span></p>")
+
+
+def _fold_card(icon_html: str, title: str, configured: bool, inner_html: str) -> str:
+    """对齐 fry-cards Studio 的次要配置折叠卡（已配置自动展开，未配置默认折叠）。"""
+    badge = ("<span class='fold-badge on'>已配置</span>" if configured
+             else "<span class='fold-badge empty'>未配置</span>")
+    open_attr = " open" if configured else ""
+    return (
+        f"<div class='card'><details class='fold-card'{open_attr}>"
+        f"<summary class='fold-summary'>"
+        f"<span class='fold-title'>{icon_html} {esc(title)}</span>"
+        f"<span class='fold-right'>{badge}<span class='fold-caret'></span></span>"
+        f"</summary>"
+        f"<div class='fold-body'>{inner_html}</div>"
+        f"</details></div>"
+    )
 
 
 def _banner(msg: str, err: str) -> str:
@@ -620,38 +811,141 @@ def _warn_html() -> str:
             '（徽章标注来源），此处改动对被遮蔽的键不生效。</span></div>')
 
 
+def _checkbox_field(skey: str, label: str, checked: bool, hint: str = "") -> str:
+    src = key_source(skey)
+    env_name = _ENV_FOR_KEY.get(skey, "")
+    badge = (f"<span class='tag on'>已配置 · {esc(src)}</span>" if src
+             else "<span class='tag'>默认</span>")
+    sub = f"<span class='check-sub'>{esc(hint)}</span>" if hint else ""
+    env_note = (f"<span class='check-sub' style='color:var(--warn-c)'>🔒 环境变量 <code>{esc(env_name)}</code> 优先</span>"
+                if src == "环境变量" and env_name else "")
+    chk = "checked" if checked else ""
+    return (f"<div class='checkrow'><label class='check-top'>"
+            f"<input type='checkbox' name='{esc(skey)}' value='1' {chk}>"
+            f"<span class='check-main'>{esc(label)} {badge}</span></label>{sub}{env_note}</div>")
+
+
+def _ws_badge_html(ws: dict) -> str:
+    ws_badge_map = {
+        "running": "<span class='badge ok'>🟢 监听中</span>",
+        "connecting": "<span class='badge warn'>🟡 连接中</span>",
+        "stopped": "<span class='badge mute'>⚪ 未启动</span>",
+        "unavailable": "<span class='badge warn'>🟠 缺少 lark-oapi</span>",
+        "error": "<span class='badge bad'>🔴 连接异常</span>",
+    }
+    return ws_badge_map.get(ws.get("state", ""), f"<span class='badge mute'>{esc(ws.get('state', ''))}</span>")
+
+
 def page_studio(msg: str = "", err: str = "") -> bytes:
     llm = feige.llm_config()
     llm_state = ("<span class='tag on'>已启用</span>" if llm["enabled"]
                  else "<span class='tag'>未启用（正文超长直接截断）</span>")
     cur_model = feige._env(_ENV_FOR_KEY.get("llm_model", "")) or ""
+    allow_val = feige._env("FEIGE_ALLOW_USERS")
+    allow_src = key_source("interactive_allow_users")
+    allow_badge = (f"<span class='tag on'>已配置 · {esc(allow_src)}</span>" if allow_src
+                   else "<span class='tag'>不限（建议配置）</span>")
+    st_ch = channel_status()
+    has_webhook = bool(st_ch.get("feishu-webhook"))
+    has_cardkit = bool(st_ch.get("feishu-cardkit"))
+    if has_webhook:
+        mode_banner = ("<div class='mode-banner'>⚠️ <b>当前生效：自定义 Webhook 模式</b>"
+                       "（优先级高于 App ID；交互卡片与长连接监听暂不生效）。若想开启交互卡片，请清空并清除下方的 Webhook。</div>")
+    elif has_cardkit:
+        mode_banner = ("<div class='mode-banner ok-mode'>🟢 <b>当前生效：CardKit 应用模式</b>"
+                       "（支持交互追问卡片、长连接回调与厂商 Logo）。</div>")
+    else:
+        mode_banner = ("<div class='mode-banner'>尚未配置飞书通道凭据：推荐填写下方 <b>App ID / Secret + 接收群</b>"
+                       "（或展开使用自定义 Webhook）。</div>")
+
+    ws = feige_interactive.get_ws_manager().status()
+    ws_badge = _ws_badge_html(ws)
+    inter_on = feige.interactive_enabled()
+    ws_on = feige.ws_enabled()
+    adv_open = " open" if (inter_on or ws_on or allow_val.strip()) else ""
+    adv_dim = "" if (inter_on or ws_on) else " dimmed"
+
+    feishu_guide = (
+        "<details class='hint-fold'>"
+        "<summary>ℹ️ 查看飞书长连接（WSClient）与交互卡片联调说明</summary>"
+        "<div class='hint-body'><ol>"
+        "<li>确保当前环境已安装可选依赖 <code>pip install lark-oapi>=1.4.0</code>（未安装时仅关闭交互监听，不影响发卡）；</li>"
+        "<li>在飞书开放平台应用「事件与回调 → 事件订阅方式」选择 <b>使用长连接接收事件</b>，并添加回调 <code>card.action.trigger</code>；</li>"
+        "<li>确认权限包含发消息（<code>im:message:send_as_bot</code>）、上传图片（<code>im:resource</code>）、CardKit 卡片，并发布版本且将机器人拉入目标群；</li>"
+        "<li>开启长连接后，建议填写「操作人白名单（<code>open_id</code>）」防群内误触，并用 <code>python webui.py start</code> 常驻保活。</li>"
+        "</ol></div></details>"
+    )
+    webhook_fold = (
+        f"<details class='fold-card' id='feishu-webhook-fold' style='margin:6px 0 12px'{' open' if has_webhook else ''}>"
+        f"<summary class='fold-summary'>"
+        f"<span class='fold-title'>自定义机器人 Webhook（静态覆盖）</span>"
+        f"<span class='fold-right'><span class='fold-badge {'on' if has_webhook else 'empty'}'>"
+        f"{'优先覆盖中' if has_webhook else '未启用'}</span><span class='fold-caret'></span></span>"
+        f"</summary>"
+        f"<div class='fold-body'>"
+        + _field("feishu_webhook", "自定义机器人 webhook",
+                 "https://open.feishu.cn/open-apis/bot/v2/hook/…", "填了就强制走静态 webhook（无按钮/表单交互）")
+        + _field("feishu_webhook_secret", "webhook 签名密钥", hint="机器人开「签名校验」才需要")
+        + "</div></details>"
+    )
     cards = {
         "feishu": (
-            f"<div class='card'><h3>{ICONS['feishu']} 飞书渠道</h3><form method='post' action='/settings'>"
-            + _field("feishu_webhook", "自定义机器人 webhook",
-                     "https://open.feishu.cn/open-apis/bot/v2/hook/…", "填了就走 webhook 通道")
-            + _field("feishu_webhook_secret", "webhook 签名密钥", hint="机器人开「签名校验」才需要")
-            + _field("feishu_app_id", "App ID（CardKit）", "cli_…", "不用 webhook 时填")
+            f"<div class='card'><h3>{ICONS['feishu']} 飞书渠道 · 凭据</h3><form method='post' action='/settings'>"
+            + mode_banner
+            + _field("feishu_app_id", "App ID（CardKit）", "cli_…", "支持交互卡片、折叠面板与长连接")
             + _field("feishu_app_secret", "App Secret（CardKit）")
-            + _field("feishu_base_url", "飞书域名", feige.DEFAULT_BASE_URL, "Lark 国际版填 open.larksuite.com")
             + _field("feishu_chat_id", "接收群 chat_id", "oc_…", "CardKit 通道必配（全项目默认群）")
+            + _field("feishu_base_url", "飞书域名", feige.DEFAULT_BASE_URL, "Lark 国际版填 open.larksuite.com")
             # 每群一个接收群：键名 feishu_chat_id__<项目名>，项目名必须与路由标签逐字一致
             + _field("feishu_chat_id__10router", "10Router 群 chat_id（按项目覆盖）", "oc_…",
-                     "键名 feishu_chat_id__<项目名>：留空则该项目沿用上面的默认群")
-            + _save_btn("feishu") + "</form></div>"),
-        "dingtalk": (
-            f"<div class='card'><h3>{ICONS['dingtalk']} 钉钉渠道</h3><form method='post' action='/settings'>"
+                     "键名 feishu_chat_id__<项目名>：留空沿用默认群")
+            + webhook_fold
+            + _save_btn("feishu", preview_btn=True) + "</form></div>"),
+        "interactive": (
+            f"<div class='card'><h3 style='display:flex;align-items:center;justify-content:space-between;gap:8px'>"
+            f"<span>{ICONS['behavior']} 交互与长连接</span>{ws_badge}</h3>"
+            "<form method='post' action='/settings'>"
+            + _checkbox_field("feishu_interactive", "启用 CardKit 交互式卡片",
+                              inter_on, "完成态卡片附带追问表单与防误触快捷按钮")
+            + _checkbox_field("feishu_ws_enabled", "启用飞书长连接监听（WSClient）",
+                              ws_on, "接收 card.action.trigger 并随 Studio 保活，无需公网域名")
+            + _checkbox_field("vendor_logo_enabled", "展示厂商家族 Logo 与官方模型名",
+                              feige.vendor_logo_enabled(), "CardKit 自动上传并本地缓存图片 key")
+            + _checkbox_field("panel_expanded", "底部统一折叠面板默认展开",
+                              feige.panel_expanded_default())
+            + _panel_chips_html()
+            + _checkbox_field("footer_enabled", "显示底部统计脚注行",
+                              feige.footer_enabled(),
+                              "默认关：面板头已承载同一套统计，不再重复一行；钉钉/Telegram 静态版式不受影响")
+            + _footer_chips_html()
+            + f"<div id='interactive-advanced-wrap' class='cond-wrap{adv_dim}'>"
+              f"<details class='fold-card' id='interactive-advanced-fold' style='margin:6px 0 12px'{adv_open}>"
+              "<summary class='fold-summary'>"
+              "<span class='fold-title'>权限白名单与无头续跑参数</span>"
+              "<span class='fold-right'><span class='fold-badge empty'>按需配置</span><span class='fold-caret'></span></span>"
+              "</summary><div class='fold-body'>"
+            + (f"<div class='frow'><div class='lab'>操作人白名单（open_id / user_id） {allow_badge} "
+               f"<span class='sub'>逗号或换行分隔，留空=群内成员均可操作</span></div>"
+               f"<textarea name='interactive_allow_users' rows='2' placeholder='ou_xxx, ou_yyy'>{esc(allow_val)}</textarea></div>")
+            + _field("resume_timeout_seconds", "无头续跑超时秒数", "300", "30~1800，默认 300")
+            + feishu_guide
+            + "</div></details></div>"
+            + _save_btn("interactive", preview_btn=True) + "</form></div>"),
+        "dingtalk": _fold_card(
+            ICONS["dingtalk"], "钉钉渠道", bool(st_ch.get("dingtalk-webhook")),
+            "<form method='post' action='/settings'>"
             + _field("dingtalk_webhook", "机器人 webhook")
             + _field("dingtalk_secret", "加签密钥", hint="SEC 开头，安全设置选「加签」才需要")
             + "<p class='small'>钉钉无交互卡，发 markdown 消息；需显式 <code>--channel</code> "
               "或群路由指定。</p>"
-            + _save_btn("dingtalk") + "</form></div>"),
-        "telegram": (
-            f"<div class='card'><h3>{ICONS['telegram']} Telegram 渠道</h3><form method='post' action='/settings'>"
+            + _save_btn("dingtalk") + "</form>"),
+        "telegram": _fold_card(
+            ICONS["telegram"], "Telegram 渠道", bool(st_ch.get("telegram")),
+            "<form method='post' action='/settings'>"
             + _field("telegram_bot_token", "Bot token", hint="BotFather 发放，形如 123456:ABC-…")
             + _field("telegram_chat_id", "目标 chat", "-100…（群）或个人 id")
             + "<p class='small'>纯文本版式（≤4096 UTF-16 单元）；需显式渠道或路由指定。</p>"
-            + _save_btn("telegram") + "</form></div>"),
+            + _save_btn("telegram") + "</form>"),
         "llm": (
             f"<div class='card'><h3>{ICONS['llm']} 正文总结（LLM）{llm_state}</h3>"
             "<form method='post' action='/settings'>"
@@ -687,7 +981,6 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
                             {"turn": "单轮（只算最后一轮）",
                              "session": "全程（整个会话累计）"},
                             feige.stats_scope())
-            + _footer_chips_html()
             + _field("debounce_seconds", "收尾去抖秒数", "0", "同会话 N 秒内又收尾只发最后一张；0=每轮都发")
             + _field("routes_file", "群路由文件路径", "~/.feige-routes.json", "留空用默认")
             + "<p class='small'>宿主 hook 的启用开关（hook_notify）与凭据在各自插件设置里"
@@ -695,36 +988,51 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
             + _save_btn("behavior") + "</form></div>"),
     }
     body = (_banner(msg, err) + _warn_html()
-            + "<div class='grid'>" + cards["feishu"] + cards["llm"]
-            + cards["dingtalk"] + cards["telegram"] + cards["behavior"] + "</div>")
+            + "<div class='grid'>" + cards["feishu"] + cards["interactive"]
+            + cards["llm"] + cards["dingtalk"] + cards["telegram"]
+            + cards["behavior"] + "</div>")
     # 群路由不在主页重复挂卡——独立页签已有入口
     return page("配置", body, tab="config")
 
 
 def _select_field(skey: str, label: str, options: dict, current: str) -> str:
     src = key_source(skey)
+    env_name = _ENV_FOR_KEY.get(skey, "")
+    locked = src == "环境变量"
     badge = (f"<span class='tag on'>已配置 · {esc(src)}</span>" if src
              else "<span class='tag'>默认</span>")
     opts = "".join(f"<option value='{esc(k)}' {'selected' if current == k else ''}>{esc(v)}</option>"
                    for k, v in options.items())
+    dis = " disabled class='env-locked'" if locked else ""
+    env_note = (f"<div class='env-note'>🔒 环境变量 <code>{esc(env_name)}</code> 生效中，此处改动不会覆盖它</div>"
+                if locked and env_name else "")
     return (f"<div class='frow'><div class='lab'>{esc(label)} {badge}</div>"
-            f"<select name='{skey}'>{opts}</select></div>")
+            f"<select name='{skey}'{dis}>{opts}</select>{env_note}</div>")
 
 
 # ── POST /settings：按卡片白名单保存 ─────────────────────────────────────────
 
+_INTERACTIVE_KEYS = [
+    "feishu_interactive", "feishu_ws_enabled", "vendor_logo_enabled",
+    "panel_expanded", "panel_fields", "footer_enabled", "footer_fields",
+    "interactive_allow_users", "resume_timeout_seconds",
+]
 _CARD_KEYS = {
     "feishu": ["feishu_webhook", "feishu_webhook_secret", "feishu_app_id",
                "feishu_app_secret", "feishu_base_url", "feishu_chat_id",
                # 按项目覆盖接收群：键名 feishu_chat_id__<项目名>（与路由标签逐字一致）
                "feishu_chat_id__10router"],
+    "interactive": list(_INTERACTIVE_KEYS),
     "dingtalk": ["dingtalk_webhook", "dingtalk_secret"],
     "telegram": ["telegram_bot_token", "telegram_chat_id"],
     "llm": ["llm_api_key", "llm_base_url", "llm_model", "llm_max_chars", "llm_min_chars"],
-    "behavior": ["stats_scope", "debounce_seconds", "routes_file", "footer_fields"],
+    "behavior": ["stats_scope", "debounce_seconds", "routes_file"],
 }
-_CARD_TITLES = {"feishu": "飞书渠道", "dingtalk": "钉钉渠道", "telegram": "Telegram",
-                "llm": "正文总结", "behavior": "行为开关"}
+_BOOL_KEYS = {"feishu_interactive", "feishu_ws_enabled", "vendor_logo_enabled",
+              "panel_expanded", "footer_enabled"}
+_FIELD_LIST_KEYS = {"footer_fields", "panel_fields"}
+_CARD_TITLES = {"feishu": "飞书渠道", "interactive": "交互与长连接", "dingtalk": "钉钉渠道",
+                "telegram": "Telegram", "llm": "正文总结", "behavior": "行为开关"}
 
 
 def _set_text(form: dict, settings: dict, key: str) -> None:
@@ -751,7 +1059,11 @@ def apply_settings_card(form: dict, settings: dict) -> str:
     card = (form.get("form") or [""])[0]
     if card not in _CARD_KEYS:
         return f"未知设置卡片：{card or '(空)'}"
-    for key in _CARD_KEYS[card]:
+    keys = list(_CARD_KEYS[card])
+    # 兼容旧测试/直接调用：form=feishu 且附带任意交互键时顺带更新（普通凭据卡提交不会误清开关）
+    if card == "feishu" and any(k in form for k in _INTERACTIVE_KEYS):
+        keys.extend(_INTERACTIVE_KEYS)
+    for key in keys:
         if key == "stats_scope":
             v = (form.get(key) or [""])[0].strip().lower()
             if not v:
@@ -762,6 +1074,22 @@ def apply_settings_card(form: dict, settings: dict) -> str:
             continue
         if key in _SECRET_KEYS:
             _set_secret(form, settings, key)
+            continue
+        if key in _BOOL_KEYS:
+            settings[key] = "1" if (form.get(key) or [""])[0].strip() in ("1", "true", "on") else "0"
+            continue
+        if key == "resume_timeout_seconds":
+            v = (form.get(key) or [""])[0].strip()
+            if v:
+                try:
+                    num = int(float(v))
+                    if not (30 <= num <= 1800):
+                        return f"非法续跑超时秒数：{v}（须在 30~1800 之间）"
+                    settings[key] = str(num)
+                except ValueError:
+                    return f"非法续跑超时秒数：{v}（须为数字）"
+            else:
+                settings.pop(key, None)
             continue
         if key == "llm_max_chars":
             v = (form.get(key) or [""])[0].strip()
@@ -785,7 +1113,7 @@ def apply_settings_card(form: dict, settings: dict) -> str:
             else:
                 settings.pop(key, None)
             continue
-        if key == "footer_fields":
+        if key in _FIELD_LIST_KEYS:
             v = (form.get(key) or [""])[0].strip()
             if v:
                 settings[key] = [x.strip() for x in v.split(",") if x.strip()]
@@ -850,7 +1178,7 @@ def page_status(msg: str = "") -> bytes:
     status = channel_status()
     rows = "".join(
         f"<tr><td><code>{esc(ch)}</code></td>"
-        f"<td class={'ok' if ok else 'bad'}>{'已配置' if ok else '未配置'}</td>"
+        f"<td><span class='badge {'ok' if ok else 'mute'}'>{'已配置' if ok else '未配置'}</span></td>"
         f"<td><form method='post' action='/test' style='margin:0'>"
         f"<input type='hidden' name='channel' value='{esc(ch)}'>"
         f"<button {'disabled' if not ok else ''}>发送测试卡</button></form></td></tr>"
@@ -862,15 +1190,50 @@ def page_status(msg: str = "") -> bytes:
     routes_info = (f"路径 <code>{esc(routes_path)}</code> · "
                    f"{'存在，' + (str(len(doc.get('routes', {}))) + ' 个项目 · ' + str(n_targets) + ' 个目标') if doc else '不存在（按需到「群路由」页创建）'}")
     llm = feige.llm_config()
-    llm_info = (f"{'🟢 已启用' if llm['enabled'] else '⚪ 未启用'} · 模型 "
+    llm_badge = "<span class='badge ok'>已启用</span>" if llm["enabled"] else "<span class='badge mute'>未启用</span>"
+    llm_info = (f"{llm_badge} · 模型 "
                 f"<code>{esc(llm['model'])}</code> · base <code>{esc(llm['base_url'])}</code> · "
                 f"超 {llm['min_chars']} 字触发 · 目标 ≤{llm['max_chars']} 字 · key 来源："
                 f"{esc(key_source('llm_api_key') or '未配置')}")
+    ws = feige_interactive.get_ws_manager().status()
+    ws_badge_map = {
+        "running": "<span class='badge ok'>🟢 监听中</span>",
+        "connecting": "<span class='badge warn'>🟡 连接中</span>",
+        "stopped": "<span class='badge mute'>⚪ 未启动</span>",
+        "unavailable": "<span class='badge warn'>🟠 缺少 lark-oapi</span>",
+        "error": "<span class='badge bad'>🔴 连接异常</span>",
+    }
+    ws_state_label = ws_badge_map.get(ws["state"], f"<span class='badge mute'>{esc(ws['state'])}</span>")
+    allow_users = feige.allow_users_list()
+    allow_info = f"白名单 {len(allow_users)} 人" if allow_users else "未设白名单（群内成员可操作）"
+    cli_probe = feige_interactive.probe_host_clis()
+    cli_rows = "".join(
+        f"<tr><td>{esc(info['label'])}</td>"
+        f"<td><code>{esc(info['cli'])}</code></td>"
+        f"<td><span class='badge {'ok' if info['available'] else ('mute' if not info['resumable'] else 'bad')}'>"
+        f"{'可用' if info['available'] else ('不支持续跑' if not info['resumable'] else '未检测到命令')}</span></td>"
+        f"<td class='small'>{esc(info['note'])}</td></tr>"
+        for info in cli_probe.values()
+    )
+    sess_count = len(feige_interactive.list_sessions())
+    ws_err_html = f"<p class='err'>{esc(ws['error'])}</p>" if ws.get("error") else ""
+    ws_card = (
+        f"<div class='card'><h3>交互式卡片 & 长连接回调</h3>"
+        f"<p>长连接状态：<b>{ws_state_label}</b> · 开关：<code>{'开' if ws['enabled'] else '关'}</code> · "
+        f"SDK（<code>lark-oapi</code>）：<code>{'已安装' if ws['available'] else '未安装'}</code> · "
+        f"已处理回调：<code>{ws['events_handled']}</code> · 活跃会话上下文：<code>{sess_count}</code> · "
+        f"{esc(allow_info)}</p>"
+        f"{ws_err_html}"
+        f"<form method='post' action='/ws/sync' style='margin:6px 0 10px'>"
+        f"<button type='submit'>{ICONS['refresh']} 同步长连接状态</button></form>"
+        f"<table><tr><th>宿主</th><th>CLI</th><th>续跑能力</th><th>说明</th></tr>{cli_rows}</table></div>"
+    )
     banner = f'<div class="msg">{esc(msg)}</div>' if msg else ""
     body = (f"{banner}<div class='card'><h3>渠道凭据</h3>"
             f"<table><tr><th>渠道</th><th>凭据</th><th>测试</th></tr>{rows}</table>"
             f"<p class='small'>凭据只显示配置与否（环境变量或设置文件），密钥值与 webhook "
             f"内容永不回显。配置请去「配置」页。</p></div>"
+            f"{ws_card}"
             f"<div class='card'><h3>正文总结（LLM）</h3><p>{llm_info}</p></div>"
             f"<div class='card'><h3>群路由</h3><p>{routes_info}</p>"
             f"<p><a href='/routes'>编辑路由 →</a></p></div>"
@@ -1051,57 +1414,645 @@ def handle_routes_post(body: bytes) -> bytes:
     return _routes_form(doc, msg=note, err=auto_err)
 
 
-# ── 页面：卡片预览 ────────────────────────────────────────────────────────────
+# ── 页面：卡片预览（对齐 fry-cards Studio CardKit v2.0 真实渲染器） ────────────
 
 # 外观示意的状态条配色：ok/error 跟随主题 token，running 用家族蓝（飞书卡蓝头）
 _STATUS_COLOR = {"running": "#3b82f6", "ok": "var(--ok)", "error": "var(--bad)"}
+
+_SAMPLE_MODELS = [
+    ("claude-sonnet-4", "Claude sonnet-4 · Anthropic"),
+    ("tencent/hy4-flash:free", "Hy4 flash · 腾讯混元"),
+    ("deepseek-v4.1-flash", "DeepSeek V4.1 · DeepSeek"),
+    ("kimi-k3", "Kimi K3 · Moonshot"),
+    ("longcat/LongCat-2.5-Preview", "LongCat 2.5 · 美团"),
+    ("glm-5.3-flashx", "GLM 5.3 · 智谱"),
+    ("qwen4-max", "Qwen4 Max · 阿里云"),
+    ("mimo-v2.6-flash-free", "MiMo V2.6 · 小米"),
+]
+
+_PREVIEW_PRESETS = [
+    {
+        "id": "ok_interactive",
+        "label": "✅ 完成+追问",
+        "title": "重构飞鸽 Studio 并升级 v2.0.0",
+        "channel": "feishu-cardkit",
+        "host": "claude-code",
+        "status": "ok",
+        "body": "**核心进展**：对齐 fry-cards Studio 真实预览器与可折叠配置体验。\n- 预览页支持 **CardKit v2.0** 仿真与场景预设\n- 全部离线自动化测试通过",
+        "detail": "详细执行摘要：\n1. 新增 POST /api/preview 实时返回真实 CardKit 2.0 结构；\n2. 前端 FeigePreview 还原折叠面板、厂商 Logo、Markdown 表格与防误触按钮。\n\n| 模块 | 状态 |\n| --- | --- |\n| CardKit Builder | 已对齐 |\n| Studio UI | v2.0.0 |",
+        "project": "feige-fry-cards",
+        "model": "claude-sonnet-4",
+        "thinking": "3",
+        "tools": "14",
+        "context": "42%",
+        "elapsed": "2m18s",
+        "tool_summary": "Read ×4 · Edit ×3 · Run ×2",
+    },
+    {
+        "id": "error_report",
+        "label": "❌ 报错+红框",
+        "title": "集成测试执行中断",
+        "channel": "feishu-cardkit",
+        "host": "codex",
+        "status": "error",
+        "body": "**失败原因**：依赖服务连接超时（`127.0.0.1:8787` 未就绪）。\n请检查本地守护进程状态后点击下方按钮续跑。",
+        "detail": "stderr 摘要：\nConnectionRefusedError: [WinError 10061] 由于目标计算机积极拒绝，无法连接。\n下一步建议：先执行 python webui.py start",
+        "project": "10router",
+        "model": "deepseek-v4.1-flash",
+        "thinking": "2",
+        "tools": "6",
+        "context": "68%",
+        "elapsed": "45s",
+        "tool_summary": "Run ×3 · Read ×3",
+    },
+    {
+        "id": "running",
+        "label": "🔵 流式运行中",
+        "title": "正在执行代码审查与打包…",
+        "channel": "feishu-cardkit",
+        "host": "claude-code",
+        "status": "running",
+        "body": "正在运行全量单元测试与风格核验，完成后自动更新为终态战报。",
+        "detail": "",
+        "project": "feige-fry-cards",
+        "model": "kimi-k3",
+        "thinking": "1",
+        "tools": "5",
+        "context": "24%",
+        "elapsed": "18s",
+        "tool_summary": "Read ×5",
+    },
+    {
+        "id": "long_detail",
+        "label": "📜 长详情+进度条",
+        "title": "多代理流水线汇总完成",
+        "channel": "feishu-cardkit",
+        "host": "zcode",
+        "status": "ok",
+        "body": "**总结**：完成 4 个模块改造并核验 180+ 测试用例。",
+        "detail": "#### 工具与产物明细\n- `feige.py`：新增 20 套厂商 Logo 映射与 `unified_panel`\n- `feige_interactive.py`：接入 WSClient `card.action.trigger`\n- `webui.py`：升级折叠配置卡与 CardKit 2.0 实时预览",
+        "project": "hermes-fry-cards",
+        "model": "tencent/hy4-flash:free",
+        "thinking": "6",
+        "tools": "28",
+        "context": "153.6k/200.0k (77%)",
+        "elapsed": "5m04s",
+        "tool_summary": "Read ×12 · Edit ×10 · Bash ×6",
+    },
+    {
+        "id": "antigravity",
+        "label": "🕊️ 不可续跑宿主",
+        "title": "Antigravity 会话收尾",
+        "channel": "feishu-cardkit",
+        "host": "antigravity",
+        "status": "ok",
+        "body": "**一句话战报**：完成方案调研与文档梳理。",
+        "detail": "本会话由 Antigravity CLI 运行完成；该宿主暂不支持无头续跑，卡片自动展示降级说明。",
+        "project": "docs-site",
+        "model": "longcat/LongCat-2.5-Preview",
+        "thinking": "2",
+        "tools": "7",
+        "context": "31%",
+        "elapsed": "1m12s",
+        "tool_summary": "Read ×7",
+    },
+    {
+        "id": "webhook_static",
+        "label": "🛰️ Webhook 降级",
+        "title": "静态群机器人战报",
+        "channel": "feishu-webhook",
+        "host": "claude-code",
+        "status": "ok",
+        "body": "**静态渠道兼容**：不发追问表单，折叠面板无自定义图标、保持干净纯标题。",
+        "detail": "feishu-webhook 渠道使用自定义机器人签名校验，不依赖 App 凭据。",
+        "project": "feige-fry-cards",
+        "model": "glm-5.3-flashx",
+        "thinking": "1",
+        "tools": "4",
+        "context": "18%",
+        "elapsed": "32s",
+        "tool_summary": "Edit ×2 · Read ×2",
+    },
+]
+
+
+def _safe_int(val, default: int = 0) -> int:
+    try:
+        return max(0, int(float(str(val).strip())))
+    except (ValueError, TypeError):
+        return default
+
+
+def build_preview_payload(params: dict) -> dict:
+    """用真实 feige.send_report(..., dry_run=True) 生成预览载荷与厂商资产元数据。"""
+    def p(key: str, default: str = "") -> str:
+        val = params.get(key)
+        if isinstance(val, list):
+            val = val[0] if val else default
+        return str(default if val is None else val)
+
+    status = p("status", "ok").strip()
+    if status not in feige.STATUS_TEMPLATE:
+        status = "ok"
+    ch = p("channel", "").strip()
+    if ch and ch not in feige.CHANNELS:
+        ch = ""
+    effective_ch = ch or feige.pick_channel() or "feishu-webhook"
+    host = p("host", "claude-code" if effective_ch == "feishu-cardkit" else "").strip()
+    title = p("title", "任务完成") or "标题"
+    body = p("body", "**一句话战报**")
+    detail_txt = p("detail", "")
+    tool_sum = p("tool_summary", "")
+    model = p("model", "claude-sonnet-4")
+    stats = {
+        "project": p("project", ""),
+        "model": model,
+        "thinking": _safe_int(p("thinking", "0")),
+        "tools": _safe_int(p("tools", "0")),
+        "context": p("context", ""),
+        "elapsed": p("elapsed", ""),
+    }
+    ok, raw_detail = feige.send_report(
+        title, body, stats=stats, status=status, channel=ch, dry_run=True,
+        host=host, detail_body=detail_txt, tool_summary=tool_sum,
+    )
+    payload_obj = None
+    card_obj = None
+    if ok:
+        try:
+            payload_obj = json.loads(raw_detail)
+            if isinstance(payload_obj, dict):
+                card_obj = payload_obj.get("card") if isinstance(payload_obj.get("card"), dict) else payload_obj
+        except ValueError:
+            payload_obj = {"raw": raw_detail}
+    logo_file = feige.resolve_vendor_logo_asset(model) if feige.vendor_logo_enabled() else None
+    logo_url = f"/assets/vendor-logos/{logo_file}" if logo_file else ""
+    official_model = feige.resolve_vendor_display_name(model) if model else ""
+    return {
+        "ok": bool(ok),
+        "channel": effective_ch,
+        "status": status,
+        "raw_json": raw_detail,
+        "payload": payload_obj,
+        "card": card_obj,
+        "logo_url": logo_url,
+        "official_model": official_model,
+        "host": host,
+        "host_label": feige_interactive.host_label(host) if host else "",
+        "resumable": bool(host and feige_interactive.is_host_resumable(host)),
+    }
+
+
+_PREVIEW_JS = r"""
+<script>
+(function(){
+  var PRESETS = __PRESETS_JSON__;
+  var form = document.getElementById('pv-form');
+  var stage = document.getElementById('pv-stage');
+  var jsonBox = document.getElementById('pv-json-out');
+  var metaEl = document.getElementById('pv-meta');
+  var toastEl = document.getElementById('pv-toast');
+  var modelSel = document.getElementById('pv-model-presets');
+  var ssrWrap = document.getElementById('ssr-preview-wrap');
+  if(!form || !stage) return;
+
+  var toastTimer = null;
+  function showToast(msg){
+    if(!toastEl) return;
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ toastEl.classList.remove('show'); }, 2600);
+  }
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(ch){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+    });
+  }
+  var FONT_COLORS = {
+    red:'#dc2626', green:'#16a34a', blue:'#1456f0', orange:'#d97706',
+    grey:'#646a73', gray:'#646a73', purple:'#7c3aed', turquoise:'#0d9488'
+  };
+  function inlineMd(text){
+    var s = esc(text);
+    // 放行安全飞书 font color 语法（先提取占位再恢复）
+    s = s.replace(/&lt;font\s+color=(?:&#39;|&quot;)?([a-zA-Z]+)(?:&#39;|&quot;)?&gt;([\s\S]*?)&lt;\/font&gt;/g,
+      function(_, col, inner){
+        var c = FONT_COLORS[col.toLowerCase()];
+        return c ? ('<span style="color:' + c + '">' + inner + '</span>') : inner;
+      });
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    return s;
+  }
+  function renderMarkdown(raw){
+    var text = String(raw == null ? '' : raw).replace(/\r\n/g, '\n');
+    if(!text.trim()) return '';
+    var lines = text.split('\n');
+    var out = [], i = 0;
+    while(i < lines.length){
+      var ln = lines[i];
+      if(/^```/.test(ln.trim())){
+        var code = []; i++;
+        while(i < lines.length && !/^```/.test(lines[i].trim())){ code.push(lines[i]); i++; }
+        if(i < lines.length) i++;
+        out.push('<pre><code>' + esc(code.join('\n')) + '</code></pre>');
+        continue;
+      }
+      if(ln.trim() === '---' || ln.trim() === '***'){
+        out.push('<hr class="fc-hr">'); i++; continue;
+      }
+      if(/^#{1,5}\s+/.test(ln)){
+        var lvl = /^#{1,3}\s/.test(ln) ? 'h4' : 'h5';
+        out.push('<' + lvl + '>' + inlineMd(ln.replace(/^#+\s+/, '')) + '</' + lvl + '>');
+        i++; continue;
+      }
+      // Markdown 表格
+      if(ln.indexOf('|') !== -1 && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i+1])){
+        var hdr = ln.trim().replace(/^\||\|$/g, '').split('|');
+        i += 2;
+        var tbl = '<table><thead><tr>' + hdr.map(function(h){ return '<th>' + inlineMd(h.trim()) + '</th>'; }).join('') + '</tr></thead><tbody>';
+        while(i < lines.length && lines[i].indexOf('|') !== -1 && lines[i].trim()){
+          var row = lines[i].trim().replace(/^\||\|$/g, '').split('|');
+          tbl += '<tr>' + row.map(function(c){ return '<td>' + inlineMd(c.trim()) + '</td>'; }).join('') + '</tr>';
+          i++;
+        }
+        tbl += '</tbody></table>';
+        out.push(tbl); continue;
+      }
+      if(/^[-*]\s+/.test(ln)){
+        var ul = [];
+        while(i < lines.length && /^[-*]\s+/.test(lines[i])){
+          ul.push('<li>' + inlineMd(lines[i].replace(/^[-*]\s+/, '')) + '</li>'); i++;
+        }
+        out.push('<ul>' + ul.join('') + '</ul>'); continue;
+      }
+      if(/^\d+\.\s+/.test(ln)){
+        var ol = [];
+        while(i < lines.length && /^\d+\.\s+/.test(lines[i])){
+          ol.push('<li>' + inlineMd(lines[i].replace(/^\d+\.\s+/, '')) + '</li>'); i++;
+        }
+        out.push('<ol>' + ol.join('') + '</ol>'); continue;
+      }
+      if(/^>\s?/.test(ln)){
+        var bq = [];
+        while(i < lines.length && /^>\s?/.test(lines[i])){
+          bq.push(inlineMd(lines[i].replace(/^>\s?/, ''))); i++;
+        }
+        out.push('<blockquote>' + bq.join('<br>') + '</blockquote>'); continue;
+      }
+      if(!ln.trim()){ i++; continue; }
+      var para = [];
+      while(i < lines.length && lines[i].trim() && !/^(```|#{1,5}\s|[-*]\s|\d+\.\s|>\s?|---$|\*\*\*$)/.test(lines[i])){
+        para.push(inlineMd(lines[i])); i++;
+      }
+      out.push('<p>' + para.join('<br>') + '</p>');
+    }
+    return out.join('');
+  }
+
+  function renderElements(elems, res){
+    if(!Array.isArray(elems)) return '';
+    return elems.map(function(el){
+      if(!el || typeof el !== 'object') return '';
+      var tag = el.tag;
+      if(tag === 'hr') return '<hr class="fc-hr">';
+      if(tag === 'markdown'){
+        var cls = el.text_size === 'notation' ? 'fc-notation' : 'fc-md';
+        return '<div class="' + cls + '">' + renderMarkdown(el.content || '') + '</div>';
+      }
+      if(tag === 'collapsible_panel'){
+        var bc = (el.border && el.border.color) || 'green';
+        var bcls = bc === 'red' ? 'b-red' : (bc === 'blue' ? 'b-blue' : 'b-green');
+        var hdr = el.header || {};
+        var htitle = (hdr.title && hdr.title.content) || '';
+        var icon = hdr.icon || {};
+        var iconHtml = '';
+        if(res.logo_url && (icon.tag === 'custom_icon' || el.element_id === 'unified_panel')){
+          iconHtml = '<img class="vlogo" src="' + esc(res.logo_url) + '" alt="">';
+        }
+        var openAttr = el.expanded ? ' open' : '';
+        return '<details class="pv-panel ' + bcls + '"' + openAttr + '>'
+          + '<summary><span class="fc-sum-left">' + iconHtml + '<span>' + inlineMd(htitle) + '</span></span>'
+          + '<span class="fc-sum-arrow">›</span></summary>'
+          + '<div class="fc-panel-body">' + renderElements(el.elements || [], res) + '</div></details>';
+      }
+      if(tag === 'input'){
+        var ph = (el.placeholder && el.placeholder.content) || '输入指令…';
+        return '<input class="fc-input" type="text" placeholder="' + esc(ph) + '">';
+      }
+      if(tag === 'button'){
+        var btxt = (el.text && el.text.content) || '按钮';
+        var bcls = (el.type === 'primary' || el.type === 'primary_filled') ? 'fc-btn primary' : 'fc-btn';
+        var ctag = el.confirm ? '<span class="fc-confirm-tag" title="带原生二次确认">🛡</span>' : '';
+        var ctitle = (el.confirm && el.confirm.title && el.confirm.title.content) || '';
+        var cbody = (el.confirm && el.confirm.text && el.confirm.text.content) || '';
+        return '<button type="button" class="' + bcls + '" data-sim-btn="1" data-confirm-title="'
+          + esc(ctitle) + '" data-confirm-body="' + esc(cbody) + '">' + esc(btxt) + ctag + '</button>';
+      }
+      if(tag === 'form'){
+        return '<div class="fc-form">' + renderElements(el.elements || [], res) + '</div>';
+      }
+      if(tag === 'column_set'){
+        var cols = (el.columns || []).map(function(c){ return renderElements(c.elements || [], res); }).join('');
+        return '<div class="fc-actions">' + cols + '</div>';
+      }
+      if(tag === 'action'){
+        return '<div class="fc-actions">' + renderElements(el.actions || [], res) + '</div>';
+      }
+      return '';
+    }).join('');
+  }
+
+  function renderCard(res){
+    if(!res || !res.ok){
+      stage.innerHTML = '<div class="err">' + esc((res && res.raw_json) || '预览生成失败') + '</div>';
+      return;
+    }
+    var card = res.card;
+    if(card && (card.schema === '2.0' || (card.body && Array.isArray(card.body.elements)))){
+      var hdr = card.header || {};
+      var tmpl = hdr.template || 'blue';
+      var tmap = {blue:'t-blue', green:'t-green', red:'t-red', grey:'t-grey', carmine:'t-red'};
+      var hcls = tmap[tmpl] || 't-blue';
+      var htitle = (hdr.title && hdr.title.content) || '';
+      var elems = (card.body && card.body.elements) || [];
+      stage.innerHTML =
+        '<div class="feishu-card">'
+        + '<div class="fc-header ' + hcls + '">' + esc(htitle) + '</div>'
+        + '<div class="fc-body">' + renderElements(elems, res) + '</div>'
+        + '</div>';
+    }else if(card && card.msgtype === 'markdown' && card.markdown){
+      stage.innerHTML =
+        '<div class="feishu-card">'
+        + '<div class="fc-header t-blue">钉钉 Markdown 消息</div>'
+        + '<div class="fc-body"><div class="fc-md">' + renderMarkdown(card.markdown.text || '') + '</div></div>'
+        + '</div>';
+    }else{
+      var rawText = (res.payload && res.payload.text) || res.raw_json || '';
+      stage.innerHTML =
+        '<div class="feishu-card">'
+        + '<div class="fc-header t-grey">' + esc(res.channel || '文本消息') + '</div>'
+        + '<div class="fc-body"><pre style="white-space:pre-wrap;margin:0">' + esc(rawText) + '</pre></div>'
+        + '</div>';
+    }
+  }
+
+  function readFormData(){
+    var fd = new FormData(form);
+    var out = {};
+    fd.forEach(function(v, k){ if(k !== 'go') out[k] = v; });
+    return out;
+  }
+
+  var reqSeq = 0;
+  function refreshPreview(){
+    var mySeq = ++reqSeq;
+    var payload = readFormData();
+    fetch('/api/preview', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    }).then(function(r){ return r.json(); }).then(function(res){
+      if(mySeq !== reqSeq) return;
+      renderCard(res);
+      if(jsonBox) jsonBox.textContent = res.raw_json || '';
+      if(metaEl){
+        var parts = ['渠道 ' + (res.channel || '-')];
+        if(res.official_model) parts.push('官方模型名 ' + res.official_model);
+        if(res.host_label) parts.push('宿主 ' + res.host_label + (res.resumable ? '（支持无头续跑）' : '（不可续跑降级）'));
+        metaEl.textContent = parts.join(' · ');
+      }
+      if(ssrWrap) ssrWrap.classList.add('hidden');
+    }).catch(function(err){
+      if(mySeq !== reqSeq) return;
+      stage.innerHTML = '<div class="err">预览请求失败：' + esc(err && err.message || err) + '</div>';
+    });
+  }
+
+  var timer = null;
+  function scheduleRefresh(){
+    clearTimeout(timer);
+    timer = setTimeout(refreshPreview, 200);
+  }
+
+  // 预设切换
+  document.querySelectorAll('.preset-pill[data-preset]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var pid = btn.getAttribute('data-preset');
+      var item = PRESETS.find(function(x){ return x.id === pid; });
+      if(!item) return;
+      document.querySelectorAll('.preset-pill[data-preset]').forEach(function(b){ b.classList.remove('on'); });
+      btn.classList.add('on');
+      ['title','channel','host','status','body','detail','project','model','thinking','tools','context','elapsed','tool_summary'].forEach(function(k){
+        var el = form.elements[k];
+        if(el && k in item) el.value = item[k];
+      });
+      if(modelSel) modelSel.value = item.model || '';
+      refreshPreview();
+      showToast('已切换预设：' + item.label);
+    });
+  });
+
+  if(modelSel){
+    modelSel.addEventListener('change', function(){
+      if(modelSel.value && form.elements['model']){
+        form.elements['model'].value = modelSel.value;
+        refreshPreview();
+      }
+    });
+  }
+
+  form.addEventListener('input', scheduleRefresh);
+  form.addEventListener('change', scheduleRefresh);
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    refreshPreview();
+  });
+
+  // 模拟飞书卡片按钮点击（二次确认弹窗演练）
+  stage.addEventListener('click', function(e){
+    var btn = e.target.closest('button[data-sim-btn]');
+    if(!btn) return;
+    var ct = btn.getAttribute('data-confirm-title');
+    var cb = btn.getAttribute('data-confirm-body');
+    if(ct){
+      if(window.confirm(ct + '\n\n' + cb)){
+        showToast('已模拟触发防误触回调：「' + btn.textContent.trim() + '」');
+      }
+    }else if(btn.textContent.indexOf('追问') !== -1){
+      var inp = stage.querySelector('.fc-input');
+      var txt = inp ? inp.value.trim() : '';
+      showToast(txt ? ('已模拟提交追问：「' + txt + '」') : '请先在卡片输入框中填写追问内容');
+    }else{
+      showToast('已模拟点击：「' + btn.textContent.trim() + '」');
+    }
+  });
+
+  if(window.location.search.indexOf('saved=1') !== -1){
+    showToast('✅ 设置已保存，预览已按最新配置渲染');
+  }
+  refreshPreview();
+})();
+</script>
+"""
 
 
 def page_preview(q: dict) -> bytes:
     def gv(key: str, default: str = "") -> str:
         return (q.get(key) or [default])[0]
 
-    result_html = ""
-    if gv("go"):
-        status = gv("status", "ok")
-        if status not in feige.STATUS_TEMPLATE:
-            status = "ok"
-        stats = {"project": gv("project"), "model": gv("model"),
-                 "thinking": int(gv("thinking") or 0), "tools": int(gv("tools") or 0),
-                 "context": gv("context"), "elapsed": gv("elapsed")}
-        ok, detail = feige.send_report(gv("title", "标题"), gv("body", "正文"),
-                                       stats=stats, status=status,
-                                       channel=gv("channel", ""), dry_run=True)
+    has_go = bool(gv("go"))
+    cur_channel = gv("channel", "")
+    cur_host = gv("host", "claude-code")
+    cur_status = gv("status", "ok")
+    cur_title = gv("title", "任务完成")
+    cur_body = gv("body", "**一句话战报**")
+    cur_detail = gv("detail", "")
+    cur_project = gv("project", "")
+    cur_model = gv("model", "claude-sonnet-4")
+    cur_thinking = gv("thinking", "")
+    cur_tools = gv("tools", "")
+    cur_context = gv("context", "")
+    cur_elapsed = gv("elapsed", "")
+    cur_tool_sum = gv("tool_summary", "")
+
+    ssr_html = ""
+    ssr_json = ""
+    if has_go:
+        pv = build_preview_payload({
+            "title": cur_title, "body": cur_body, "status": cur_status,
+            "channel": cur_channel, "host": cur_host, "detail": cur_detail,
+            "tool_summary": cur_tool_sum, "project": cur_project, "model": cur_model,
+            "thinking": cur_thinking, "tools": cur_tools, "context": cur_context,
+            "elapsed": cur_elapsed,
+        })
+        stats = {
+            "project": cur_project, "model": cur_model,
+            "thinking": _safe_int(cur_thinking), "tools": _safe_int(cur_tools),
+            "context": cur_context, "elapsed": cur_elapsed,
+        }
+        status = pv["status"]
+        ch = cur_channel
+        host = pv["host"]
         footer = feige.stats_footer(stats)
+        logo_url = pv["logo_url"]
+        logo_html = f"<img class='vlogo' src='{esc(logo_url)}' alt=''>" if logo_url else ""
+        panel_title = feige._build_panel_header_text(stats, logo_image_key="preview" if logo_url else "")
+        panel_html = ""
+        if status != "running" and (stats.get("model") or stats.get("project") or cur_detail or cur_tool_sum or host):
+            det_parts = []
+            if cur_detail:
+                det_parts.append(f"<pre style='white-space:pre-wrap;margin:6px 0'>{esc(cur_detail)}</pre>")
+            if cur_tool_sum:
+                det_parts.append(f"<div class='small'>🔧 工具调用：{esc(cur_tool_sum)}</div>")
+            if host:
+                det_parts.append(f"<div class='small'>宿主：{esc(feige_interactive.host_label(host))} · 上下文：<code>#preview</code></div>")
+            panel_open = " open" if feige.panel_expanded_default() else ""
+            panel_html = (
+                f"<details class='pv-panel b-{esc(feige.PANEL_BORDER_COLOR.get(status, 'green'))}'{panel_open}>"
+                f"<summary>{logo_html}<span>{esc(panel_title)}</span></summary>"
+                f"<div style='margin-top:6px'>{''.join(det_parts) or '<span class=small>暂无更多详情</span>'}</div></details>"
+            )
+        interactive_html = ""
+        if ch == "feishu-cardkit" and status != "running" and feige.interactive_enabled() and host:
+            if feige_interactive.is_host_resumable(host):
+                interactive_html = (
+                    "<div class='pv-form'>"
+                    "<input type='text' disabled placeholder='输入追问或继续指令…' style='margin-bottom:6px'>"
+                    "<div class='pv-btns'>"
+                    "<button type='button' class='primary' disabled>📤 发送追问</button>"
+                    "<button type='button' disabled>▶️ 继续执行</button>"
+                    "<button type='button' disabled>🧪 跑测试核验</button>"
+                    "</div></div>"
+                )
+            else:
+                interactive_html = (
+                    f"<div class='pv-form'><button type='button' disabled>ℹ️ 续跑说明</button>"
+                    f"<div class='small' style='margin-top:4px'>💡 {esc(feige_interactive.host_label(host))} 暂不支持远程无头续跑</div></div>"
+                )
         mock = (
-            f"<div class='card' style='padding:0;overflow:hidden;max-width:420px'>"
+            f"<div class='card' style='padding:0;overflow:hidden;max-width:460px'>"
             f"<div class='bar' style='background:{_STATUS_COLOR[status]}'></div>"
-            f"<div style='padding:12px'><b>{feige.STATUS_PREFIX[status]} {esc(gv('title', '标题'))}</b>"
-            f"<pre style='white-space:pre-wrap;border:none;background:none'>{esc(gv('body', '正文'))}</pre>"
+            f"<div style='padding:12px'><b>{feige.STATUS_PREFIX[status]} {esc(cur_title)}</b>"
+            f"<pre style='white-space:pre-wrap;border:none;background:none;padding:6px 0'>{esc(cur_body)}</pre>"
+            f"{panel_html}{interactive_html}"
             + (f"<hr><p class='small'>{esc(footer)}</p>"
-               if status != "running" and footer else "")
+               if status != "running" and footer and feige.footer_enabled() else "")
             + "</div></div>")
-        result_html = (f"<div class='card'><h3>外观示意（非 1:1）</h3>{mock}</div>"
-                       f"<div class='card'><h3>dry-run 载荷 JSON</h3>"
-                       f"{'<pre>' + esc(detail) + '</pre>' if ok else '<div class=err>' + esc(detail) + '</div>'}</div>")
-    opts = "".join(f"<option {'selected' if gv('channel') == c else ''}>{c}</option>"
+        ssr_json = pv["raw_json"]
+        ssr_html = (
+            f"<div id='ssr-preview-wrap'>"
+            f"<div class='card'><h3>外观示意（SSR 基线）</h3>{mock}</div>"
+            f"<div class='card'><h3>dry-run 载荷 JSON</h3>"
+            f"{'<pre>' + esc(ssr_json) + '</pre>' if pv['ok'] else '<div class=err>' + esc(ssr_json) + '</div>'}</div>"
+            f"</div>"
+        )
+
+    opts = "".join(f"<option {'selected' if cur_channel == c else ''}>{c}</option>"
                    for c in feige.CHANNELS)
-    sopts = "".join(f"<option {'selected' if gv('status', 'ok') == s else ''}>{s}</option>"
+    sopts = "".join(f"<option {'selected' if cur_status == s else ''}>{s}</option>"
                     for s in ("ok", "error", "running"))
-    form = (f"<div class='card'><form method='get' action='/preview'>"
-            f"<input type='hidden' name='go' value='1'>"
-            f"<p>标题 <input type='text' name='title' value='{esc(gv('title', '任务完成'))}' style='width:300px'> "
-            f"渠道 <select name='channel'>{opts}</select> "
-            f"状态 <select name='status'>{sopts}</select></p>"
-            f"<p>正文<br><textarea name='body' rows='4'>{esc(gv('body', '**一句话战报**'))}</textarea></p>"
-            f"<p>项目 <input type='text' name='project' value='{esc(gv('project'))}' style='width:160px'> "
-            f"模型 <input type='text' name='model' value='{esc(gv('model'))}' style='width:160px'> "
-            f"💭 <input type='text' name='thinking' value='{esc(gv('thinking'))}' style='width:60px'> "
-            f"🔧 <input type='text' name='tools' value='{esc(gv('tools'))}' style='width:60px'></p>"
-            f"<p>上下文 <input type='text' name='context' value='{esc(gv('context'))}' style='width:160px'> "
-            f"⏱️ <input type='text' name='elapsed' value='{esc(gv('elapsed'))}' style='width:100px'> "
-            f"<button type='submit'>预览</button></p></form></div>")
-    return page("预览", form + result_html, tab="preview")
+    host_choices = [("", "(无/静态)"), ("claude-code", "Claude Code"), ("codex", "Codex"),
+                    ("zcode", "ZCode"), ("kimi-code", "kimi-code"), ("antigravity", "Antigravity")]
+    hopts = "".join(f"<option value='{esc(k)}' {'selected' if cur_host == k else ''}>{esc(v)}</option>"
+                    for k, v in host_choices)
+    mopts = "<option value=''>速选官方示例模型…</option>" + "".join(
+        f"<option value='{esc(mid)}' {'selected' if cur_model == mid else ''}>{esc(mlabel)}</option>"
+        for mid, mlabel in _SAMPLE_MODELS
+    )
+    preset_btns = "".join(
+        f"<button type='button' class='preset-pill' data-preset='{esc(pr['id'])}'>{esc(pr['label'])}</button>"
+        for pr in _PREVIEW_PRESETS
+    )
+
+    left_card = (
+        "<div class='card'><h3>🎛️ 卡片参数 & 场景预设</h3>"
+        f"<div class='preset-pills'>{preset_btns}</div>"
+        "<form method='get' action='/preview' id='pv-form'>"
+        "<input type='hidden' name='go' value='1'>"
+        f"<p>标题 <input type='text' name='title' value='{esc(cur_title)}'></p>"
+        f"<p style='display:flex;gap:8px;flex-wrap:wrap'>"
+        f"<span style='flex:1 1 130px'>渠道<br><select name='channel' style='width:100%'>{opts}</select></span>"
+        f"<span style='flex:1 1 120px'>宿主<br><select name='host' style='width:100%'>{hopts}</select></span>"
+        f"<span style='flex:0 1 90px'>状态<br><select name='status' style='width:100%'>{sopts}</select></span></p>"
+        f"<p>战报摘要正文<br><textarea name='body' rows='3'>{esc(cur_body)}</textarea></p>"
+        f"<p>折叠面板详细正文（可选，支持表格/代码块）<br><textarea name='detail' rows='3' placeholder='展开折叠面板可见的完整内容…'>{esc(cur_detail)}</textarea></p>"
+        f"<p style='display:flex;gap:8px;flex-wrap:wrap'>"
+        f"<span style='flex:1 1 130px'>项目<br><input type='text' name='project' value='{esc(cur_project)}'></span>"
+        f"<span style='flex:1 1 160px'>模型 ID<br><input type='text' name='model' value='{esc(cur_model)}'></span></p>"
+        f"<p>厂商家族官方模型速选（验证 Logo 与官方名映射）<br><select id='pv-model-presets' style='width:100%'>{mopts}</select></p>"
+        f"<p style='display:flex;gap:8px;flex-wrap:wrap'>"
+        f"<span style='flex:0 1 70px'>💭<br><input type='text' name='thinking' value='{esc(cur_thinking)}'></span>"
+        f"<span style='flex:0 1 70px'>🔧<br><input type='text' name='tools' value='{esc(cur_tools)}'></span>"
+        f"<span style='flex:1 1 120px'>上下文<br><input type='text' name='context' value='{esc(cur_context)}'></span>"
+        f"<span style='flex:0 1 85px'>⏱️<br><input type='text' name='elapsed' value='{esc(cur_elapsed)}'></span></p>"
+        f"<p>工具摘要 <input type='text' name='tool_summary' value='{esc(cur_tool_sum)}' placeholder='Read ×2 · Edit'></p>"
+        "<p style='display:flex;gap:8px;align-items:center'>"
+        "<button class='primary' type='submit'>预览</button>"
+        "<span class='small'>改动表单自动实时刷新 CardKit v2.0 仿真效果</span></p>"
+        "</form></div>"
+    )
+    right_col = (
+        "<div style='display:flex;flex-direction:column;gap:14px'>"
+        "<div class='card'><h3>👁️ CardKit v2.0 真实卡片预览</h3>"
+        "<div id='pv-meta' class='small' style='margin-bottom:8px'>正在加载实时渲染…</div>"
+        "<div class='pv-stage-wrap'><div id='pv-stage'><span class='small'>等待渲染…</span></div></div>"
+        "<p class='small' style='margin:8px 0 0'>提示：可直接点击折叠面板展开/收起，或点击交互按钮演练原生二次确认弹窗。</p>"
+        "</div>"
+        "<div class='card'><details class='fold-card'>"
+        "<summary class='fold-summary'><span class='fold-title'>&lt;/&gt; 真实 dry-run 载荷 JSON</span>"
+        "<span class='fold-right'><span class='fold-badge empty'>可折叠</span><span class='fold-caret'></span></span></summary>"
+        f"<div class='fold-body'><pre id='pv-json-out'>{esc(ssr_json)}</pre></div>"
+        "</details></div>"
+        f"{ssr_html}</div>"
+    )
+    presets_json = json.dumps(_PREVIEW_PRESETS, ensure_ascii=False).replace("</", "<\\/")
+    script = _PREVIEW_JS.replace("__PRESETS_JSON__", presets_json)
+    return page("预览", f"<div class='pv-grid'>{left_card}{right_col}</div><div id='pv-toast' class='pv-toast'></div>{script}", tab="preview")
 
 
 # ── POST：测试发送 ────────────────────────────────────────────────────────────
@@ -1131,8 +2082,200 @@ def _read(path: Path) -> str:
         return ""
 
 
-def page_adapters(home: Path | None = None) -> bytes:
-    """四家的接入方式都读各自真实的安装记录（插件优先，手动配置兜底），只读不写。"""
+def _read_feige_version(root: Path) -> str:
+    """从插件目录读取 feige.py 的 __version__；无 feige.py 时返回空串。"""
+    txt = _read(root / "feige.py")
+    if not txt:
+        return ""
+    m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', txt)
+    return m.group(1) if m else "?"
+
+
+def inspect_adapter_caches(home: Path | None = None) -> list[dict]:
+    """检测本机各宿主与代理缓存中 feige 插件的实际路径与版本（只读）。"""
+    home = home or Path.home()
+    cur_ver = feige.__version__
+    repo_norm = str(REPO).replace("\\", "/")
+    findings: list[dict] = []
+
+    # 1. Claude Code ~/.claude/settings.json Stop hook
+    claude_settings = home / ".claude" / "settings.json"
+    if claude_settings.is_file():
+        s_txt = _read(claude_settings)
+        cmds: list[str] = []
+        try:
+            s_doc = json.loads(s_txt)
+            for grp in (s_doc.get("hooks") or {}).get("Stop") or []:
+                for hk in grp.get("hooks") or []:
+                    cmd = str(hk.get("command") or "")
+                    if "feige-fry-cards" in cmd and ("stop.py" in cmd or "stop_notify.py" in cmd):
+                        cmds.append(cmd)
+        except Exception:
+            pass
+        if cmds:
+            repo_stop = str((REPO / "hooks" / "stop.py")).replace("\\", "/").lower()
+            points_repo = all(repo_stop in c.replace("\\", "/").lower() for c in cmds)
+            ver = cur_ver if points_repo else "旧路径"
+            for c in cmds:
+                m = re.search(r'/feige-fry-cards/([0-9]+\.[0-9]+\.[0-9]+)/', c.replace("\\", "/"))
+                if m and not points_repo:
+                    ver = m.group(1)
+            findings.append({
+                "host": "Claude Code Stop Hook",
+                "path": cmds[0],
+                "version": ver,
+                "stale": not points_repo,
+                "note": "直接指向当前源码仓库 hooks/stop.py" if points_repo else "硬编码指向旧插件缓存（需切回当前仓库 hooks/stop.py）",
+            })
+
+    # 2. 常见插件缓存 & 市场副本目录
+    cache_roots = [
+        ("Codex 插件缓存", home / ".codex" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
+        ("Mirasim Codex Relay 缓存", home / ".mirasim" / "agent-homes" / "codex-relay" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
+        ("ZCode 插件缓存", home / ".zcode" / "cli" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
+    ]
+    for label, base in cache_roots:
+        if base.is_dir():
+            for child in sorted(base.iterdir()):
+                if child.is_dir() and (child / "feige.py").is_file():
+                    ver = _read_feige_version(child)
+                    findings.append({
+                        "host": f"{label} ({child.name})",
+                        "path": str(child),
+                        "version": ver,
+                        "stale": ver != cur_ver,
+                        "note": f"已对齐 v{cur_ver}" if ver == cur_ver else f"缓存文件仍为 v{ver}（当前仓库 v{cur_ver}）",
+                    })
+
+    z_mkt = home / ".zcode" / "cli" / "plugins" / "marketplaces" / "feige-fry-cards"
+    if z_mkt.is_dir() and (z_mkt / "feige.py").is_file():
+        ver = _read_feige_version(z_mkt)
+        findings.append({
+            "host": "ZCode 本地市场副本",
+            "path": str(z_mkt),
+            "version": ver,
+            "stale": ver != cur_ver,
+            "note": f"已对齐 v{cur_ver}" if ver == cur_ver else f"市场副本仍为 v{ver}（当前仓库 v{cur_ver}）",
+        })
+
+    # 3. kimi-code shim
+    k_shim = home / ".kimi-code" / "hooks" / "feige_kimi_stop.py"
+    if k_shim.is_file():
+        k_txt = _read(k_shim).replace("\\", "/")
+        ok_k = repo_norm.lower() in k_txt.lower()
+        findings.append({
+            "host": "kimi-code Hook Shim",
+            "path": str(k_shim),
+            "version": cur_ver if ok_k else "未知",
+            "stale": not ok_k,
+            "note": "直接透传至当前源码仓库 hooks/stop.py" if ok_k else "未指向当前仓库路径",
+        })
+    return findings
+
+
+def _copy_repo_to_dir(dest: Path) -> None:
+    """将当前仓库运行时核心文件同步到目标插件目录（不复制 .git/.venv/__pycache__）。"""
+    dest.mkdir(parents=True, exist_ok=True)
+    files = ("feige.py", "feige_interactive.py", "webui.py", "pyproject.toml", "README.md", "CHANGELOG.md")
+    dirs = ("hooks", "adapters", "assets", "skills", ".claude-plugin", ".zcode-plugin")
+    for fname in files:
+        src = REPO / fname
+        if src.is_file():
+            shutil.copy2(src, dest / fname)
+    for dname in dirs:
+        src_d = REPO / dname
+        if src_d.is_dir():
+            dst_d = dest / dname
+            shutil.copytree(src_d, dst_d, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"))
+
+
+def sync_adapters_to_latest(home: Path | None = None) -> tuple[list[str], list[str]]:
+    """将本机已安装的 feige 宿主钩子与插件缓存/市场副本同步对齐到当前仓库版本。"""
+    home = home or Path.home()
+    cur_ver = feige.__version__
+    updated: list[str] = []
+    errors: list[str] = []
+
+    # 1. 更新 Claude Code ~/.claude/settings.json 的 Stop hook 指向当前仓库 hooks/stop.py
+    c_set = home / ".claude" / "settings.json"
+    if c_set.is_file():
+        try:
+            raw = c_set.read_text(encoding="utf-8")
+            doc = json.loads(raw)
+            repo_stop = str((REPO / "hooks" / "stop.py")).replace("\\", "/")
+            changed = False
+            for grp in (doc.get("hooks") or {}).get("Stop") or []:
+                for hk in grp.get("hooks") or []:
+                    cmd = str(hk.get("command") or "")
+                    if "feige-fry-cards" in cmd and ("stop.py" in cmd or "stop_notify.py" in cmd):
+                        new_cmd = f'python "{repo_stop}"'
+                        if cmd != new_cmd:
+                            hk["command"] = new_cmd
+                            changed = True
+            if changed:
+                shutil.copy2(c_set, str(c_set) + ".bak-feige-sync")
+                tmp = str(c_set) + ".tmp"
+                Path(tmp).write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                os.replace(tmp, c_set)
+                updated.append("Claude Code settings.json → 已切换至仓库 hooks/stop.py")
+        except Exception as exc:
+            errors.append(f"Claude Code settings.json 失败：{exc}")
+
+    # 2. 同步各插件缓存与市场副本（同时更新已有旧版目录并生成当前版本目录）
+    cache_roots = [
+        ("Codex 插件缓存", home / ".codex" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
+        ("Mirasim Codex Relay 缓存", home / ".mirasim" / "agent-homes" / "codex-relay" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
+        ("ZCode 插件缓存", home / ".zcode" / "cli" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
+    ]
+    for label, base in cache_roots:
+        if not base.is_dir():
+            continue
+        try:
+            targets = [c for c in base.iterdir() if c.is_dir()]
+            ver_dir = base / cur_ver
+            if ver_dir not in targets:
+                targets.append(ver_dir)
+            for t in targets:
+                _copy_repo_to_dir(t)
+            updated.append(f"{label} → 已同步 v{cur_ver}")
+        except Exception as exc:
+            errors.append(f"{label} 同步失败：{exc}")
+
+    z_mkt = home / ".zcode" / "cli" / "plugins" / "marketplaces" / "feige-fry-cards"
+    if z_mkt.is_dir():
+        try:
+            _copy_repo_to_dir(z_mkt)
+            updated.append(f"ZCode 本地市场副本 → 已同步 v{cur_ver}")
+        except Exception as exc:
+            errors.append(f"ZCode 本地市场副本失败：{exc}")
+
+    z_inst = home / ".zcode" / "cli" / "plugins" / "installed_plugins.json"
+    if z_inst.is_file():
+        try:
+            zdoc = json.loads(z_inst.read_text(encoding="utf-8"))
+            z_changed = False
+            for ent in zdoc.get("plugins") or []:
+                if isinstance(ent, dict) and ent.get("name") == "feige-fry-cards":
+                    new_path = str(home / ".zcode" / "cli" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards" / cur_ver)
+                    if ent.get("version") != cur_ver or ent.get("installPath") != new_path:
+                        ent["version"] = cur_ver
+                        ent["installPath"] = new_path
+                        z_changed = True
+            if z_changed:
+                shutil.copy2(z_inst, str(z_inst) + ".bak-feige-sync")
+                tmp = str(z_inst) + ".tmp"
+                Path(tmp).write_text(json.dumps(zdoc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                os.replace(tmp, z_inst)
+                updated.append(f"ZCode installed_plugins.json → v{cur_ver}")
+        except Exception as exc:
+            errors.append(f"ZCode installed_plugins.json 失败：{exc}")
+
+    return updated, errors
+
+
+def page_adapters(home: Path | None = None, msg: str = "", err: str = "") -> bytes:
+    """五家宿主接入与本机缓存版本排查，支持显式点击对齐至当前仓库版本。"""
     home = home or Path.home()
     rows = []
     plugin = "feige-fry-cards"
@@ -1177,13 +2320,38 @@ def page_adapters(home: Path | None = None) -> bytes:
                  else "未接入（~/.kimi-code/config.toml 手挂，见 README「插件安装 → kimi-code」）",
                  k_ok, "README「插件安装 → kimi-code」"))
 
-    body = ("<div class='card'><table><tr><th>agent</th><th>状态</th><th>说明 / 指引</th></tr>")
+    body = _banner(msg, err)
+    body += "<div class='card'><h3>🔌 宿主接入概览</h3><table><tr><th>agent</th><th>状态</th><th>说明 / 指引</th></tr>"
     for name, note, ok, guide in rows:
         body += (f"<tr><td>{esc(name)}</td>"
-                 f"<td class={'ok' if ok else 'bad'}>{'已接入' if ok else '未接入'}</td>"
+                 f"<td><span class='badge {'ok' if ok else 'bad'}'>{'已接入' if ok else '未接入'}</span></td>"
                  f"<td>{note}<br><span class='small'>→ {esc(guide)}</span></td></tr>")
-    body += ("</table><p class='small'>本页只读检测，绝不写任何用户配置文件。"
-             "hook 跑在 agent 启动时的环境快照里——改过环境变量请重启宿主。</p></div>")
+    body += ("</table><p class='small' style='margin:8px 0 0'>本卡仅做只读检测；"
+             "hook 跑在 agent 启动时的环境快照里——改过环境变量或路径请新开宿主会话。</p></div>")
+
+    findings = inspect_adapter_caches(home)
+    if findings:
+        stale_cnt = sum(1 for f in findings if f["stale"])
+        cache_banner = (
+            f"<div class='mode-banner'>⚠️ 检测到 <b>{stale_cnt}</b> 处旧缓存或过期路径，发卡可能仍在跑老代码！"
+            f"点击下方按钮即可自动备份并对齐至当前仓库 <code>v{esc(VERSION)}</code>。</div>"
+            if stale_cnt else
+            f"<div class='mode-banner ok-mode'>🟢 全部 {len(findings)} 处插件路径与缓存均已同步至 <code>v{esc(VERSION)}</code>。</div>"
+        )
+        crows = "".join(
+            f"<tr><td>{esc(f['host'])}</td>"
+            f"<td><span class='badge {'warn' if f['stale'] else 'ok'}'>"
+            f"{'待同步 (' + esc(f['version']) + ')' if f['stale'] else 'v' + esc(f['version'])}</span></td>"
+            f"<td><code>{esc(f['path'])}</code><br><span class='small'>{esc(f['note'])}</span></td></tr>"
+            for f in findings
+        )
+        body += (
+            f"<div class='card'><h3>📦 本机宿主缓存与 Hook 路径排查</h3>{cache_banner}"
+            f"<form method='post' action='/adapters/sync' style='margin:0 0 10px'>"
+            f"<button class='primary' type='submit'>{ICONS['refresh']} 一键对齐所有宿主与缓存至 v{esc(VERSION)}</button>"
+            f"</form>"
+            f"<table><tr><th>目标位置</th><th>版本</th><th>路径与详情</th></tr>{crows}</table></div>"
+        )
     return page("接入自检", body, tab="adapters")
 
 
@@ -1215,9 +2383,9 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # 静默访问日志（避免路径里的业务参数刷屏）
         pass
 
-    def _send(self, data: bytes, status: int = 200) -> None:
+    def _send(self, data: bytes, status: int = 200, content_type: str = "text/html; charset=utf-8") -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -1226,6 +2394,16 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query or "")
         if self.command == "GET":
+            if u.path.startswith("/assets/vendor-logos/"):
+                fname = u.path.rsplit("/", 1)[-1]
+                if (fname.endswith(".png") and "/" not in fname and "\\" not in fname
+                        and ".." not in fname):
+                    asset_path = (feige._ASSETS_VENDOR_DIR / fname).resolve()
+                    if asset_path.parent == feige._ASSETS_VENDOR_DIR.resolve() and asset_path.is_file():
+                        self._send(asset_path.read_bytes(), content_type="image/png")
+                        return b""
+                self._send(b"not found", status=404, content_type="text/plain; charset=utf-8")
+                return b""
             if u.path in ("/", ""):
                 return page_studio()
             if u.path == "/preview":
@@ -1263,12 +2441,52 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(err_bytes)
                 return b""
+        if u.path == "/api/preview":
+            try:
+                data = json.loads(body.decode("utf-8", "replace")) if body else {}
+                if not isinstance(data, dict):
+                    data = {}
+            except Exception:
+                self._send(json.dumps({"ok": False, "error": "非法 JSON"}, ensure_ascii=False).encode("utf-8"),
+                           status=400, content_type="application/json; charset=utf-8")
+                return b""
+            res = build_preview_payload(data)
+            self._send(json.dumps(res, ensure_ascii=False).encode("utf-8"),
+                       status=200 if res["ok"] else 400,
+                       content_type="application/json; charset=utf-8")
+            return b""
         if u.path == "/routes":
             return handle_routes_post(body)
         if u.path == "/test":
             return handle_test_post(body)
+        if u.path == "/ws/sync":
+            st = feige_interactive.get_ws_manager().sync_with_config()
+            note = f"长连接状态已同步：{st['state']}" + (f"（{st['error']}）" if st.get("error") else "")
+            return page_status(msg=note)
+        if u.path == "/adapters/sync":
+            updated, errors = sync_adapters_to_latest()
+            msg_txt = "；".join(updated) if updated else "所有检测到的宿主与缓存已是最新版本"
+            err_txt = "；".join(errors) if errors else ""
+            return page_adapters(msg=msg_txt, err=err_txt)
         if u.path == "/settings":
-            return handle_settings_post(body)
+            resp = handle_settings_post(body)
+            form = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+            card_name = (form.get("form") or [""])[0]
+            if card_name in ("feishu", "interactive") and b'<div class="err">' not in resp:
+                try:
+                    st = feige_interactive.get_ws_manager().sync_with_config()
+                    if card_name == "interactive" and (form.get("_next") or [""])[0] != "preview":
+                        ws_note = f" · 长连接：{st['state']}" + (f"（{st['error']}）" if st.get("error") else "")
+                        resp = page_studio(msg=f"{_CARD_TITLES[card_name]}已保存{ws_note}")
+                except Exception:
+                    pass
+            if (form.get("_next") or [""])[0] == "preview" and b'<div class="err">' not in resp:
+                self.send_response(303)
+                self.send_header("Location", "/preview?saved=1")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return b""
+            return resp
         return page("404", "<div class='err'>页面不存在</div>")
 
     def _handle(self) -> None:
@@ -1277,6 +2495,12 @@ class Handler(BaseHTTPRequestHandler):
                                  self.headers.get("Referer", ""),
                                  self.server.server_address[1])
         if reason:
+            try:
+                cl = int(self.headers.get("Content-Length") or 0)
+                if 0 < cl <= 65536:
+                    self.rfile.read(cl)
+            except (ValueError, OSError):
+                pass
             self._send(page("拒绝", f"<div class='err'>{esc(reason)}</div>"), status=403)
             return
         try:
@@ -1523,6 +2747,12 @@ def cmd_worker(port: int) -> int:
                 studio_log(f"port {port} busy for 10s, worker giving up (rc 3)")
                 return 3
             time.sleep(0.5)
+    try:
+        ws_st = feige_interactive.get_ws_manager().sync_with_config()
+        if ws_st.get("enabled"):
+            studio_log(f"ws listener state={ws_st.get('state')} err={ws_st.get('error') or '-'}")
+    except Exception as exc:
+        studio_log(f"ws listener init skipped: {feige.redact(exc)}")
     studio_log(f"worker serving http://127.0.0.1:{port} (pid {os.getpid()})")
     print(f"🕊️ feige Studio worker: http://127.0.0.1:{port}")
     try:
@@ -1530,6 +2760,10 @@ def cmd_worker(port: int) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            feige_interactive.get_ws_manager().stop()
+        except Exception:
+            pass
         srv.server_close()
     return 0
 
@@ -1539,6 +2773,10 @@ def cmd_run(port: int) -> int:
         srv = Server(("127.0.0.1", port), Handler)
     except OSError as exc:
         sys.exit(f"🕊️ 端口 {port} 不可用（{exc}），换一个：python webui.py --port <N>")
+    try:
+        feige_interactive.get_ws_manager().sync_with_config()
+    except Exception:
+        pass
     print(f"🕊️ feige Studio: http://127.0.0.1:{port} "
           "（Ctrl+C 退出；关终端也活着：python webui.py start）")
     try:
@@ -1546,6 +2784,10 @@ def cmd_run(port: int) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            feige_interactive.get_ws_manager().stop()
+        except Exception:
+            pass
         srv.server_close()
         print("bye")
     return 0

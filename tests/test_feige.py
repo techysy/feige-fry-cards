@@ -46,6 +46,96 @@ class StatsFooterTest(unittest.TestCase):
         self.assertEqual(len(card["body"]["elements"]), 1)
 
 
+class PanelFooterSplitTest(unittest.TestCase):
+    """面板头 / 脚注独立配置 + 完成卡信息去重（标题已含项目与宿主，统计只出一遍）。"""
+
+    STATS = {"project": "CreditDaddy", "model": "claude-code · qwen4-max",
+             "thinking": 2, "tools": 45, "context": "44.4k/1.0m (4%)",
+             "tokens": 1700, "elapsed": "5m 34s"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = Path(self.tmp.name) / "s.json"
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("FEIGE_", "FEISHU_", "LARK_"))}
+        env["FEIGE_SETTINGS_FILE"] = str(self.settings)
+        self._patch = mock.patch.dict(os.environ, env, clear=True)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def _elements(self, **kw):
+        return feige.build_card("CreditDaddy · Claude Code 任务完成", "摘要",
+                                stats=dict(self.STATS), status="ok", **kw)["body"]["elements"]
+
+    def test_completed_card_has_no_footer_by_default(self):
+        els = self._elements()
+        self.assertFalse(any(e.get("tag") == "hr" for e in els))
+        self.assertEqual([e for e in els if e.get("text_size") == "notation"], [])
+        self.assertTrue(any(e.get("tag") == "collapsible_panel" for e in els))
+
+    def test_panel_header_omits_project_by_default(self):
+        header = feige._build_panel_header_text(self.STATS)
+        self.assertNotIn("CreditDaddy", header)   # 标题已有项目名，面板头不重复
+        self.assertNotIn("📦", header)
+        self.assertIn("💭2", header)
+        self.assertIn("🔧45", header)
+        self.assertIn("⏱️ 5m 34s", header)
+
+    def test_footer_switch_restores_hr_and_notation(self):
+        os.environ["FEIGE_FOOTER_ENABLED"] = "1"
+        els = self._elements()
+        self.assertTrue(any(e.get("tag") == "hr" for e in els))
+        foot = [e for e in els if e.get("text_size") == "notation"]
+        self.assertEqual(len(foot), 1)
+        self.assertIn("📦 CreditDaddy", foot[0]["content"])  # 脚注仍走 footer_fields 全字段
+
+    def test_panel_and_footer_fields_are_independent(self):
+        self.settings.write_text(json.dumps({
+            "panel_fields": ["tools", "elapsed"],
+            "footer_fields": ["project", "model"],
+        }), encoding="utf-8")
+        self.assertEqual(feige._panel_field_order(), ("tools", "elapsed"))
+        self.assertEqual(feige._footer_field_order(), ("project", "model"))
+        header = feige._build_panel_header_text(self.STATS)
+        self.assertEqual(header, "🔧45 · ⏱️ 5m 34s")
+        self.assertEqual(feige.stats_footer(self.STATS), "📦 CreditDaddy · claude-code · qwen4-max")
+
+    def test_legacy_footer_fields_does_not_migrate_to_panel(self):
+        """旧配置只有 footer_fields：面板走新默认（无项目），脚注保持旧口径。"""
+        self.settings.write_text(json.dumps({
+            "footer_fields": ["project", "model", "thinking", "tools",
+                              "context", "tokens", "elapsed"],
+        }), encoding="utf-8")
+        self.assertNotIn("project", feige._panel_field_order())
+        self.assertIn("project", feige._footer_field_order())
+
+    def test_panel_fields_env_overrides_settings(self):
+        self.settings.write_text(json.dumps({"panel_fields": ["tools"]}), encoding="utf-8")
+        os.environ["FEIGE_PANEL_FIELDS"] = "model,elapsed"
+        self.assertEqual(feige._panel_field_order(), ("model", "elapsed"))
+
+    def test_empty_panel_fields_hide_all_stats(self):
+        self.settings.write_text(json.dumps({"panel_fields": []}), encoding="utf-8")
+        self.assertEqual(feige._build_panel_header_text(self.STATS), "会话详情与统计")
+
+    def test_footer_enabled_reads_settings_file(self):
+        self.assertFalse(feige.footer_enabled())
+        self.settings.write_text(json.dumps({"footer_enabled": "1"}), encoding="utf-8")
+        self.assertTrue(feige.footer_enabled())
+        self.settings.write_text(json.dumps({"footer_enabled": "0"}), encoding="utf-8")
+        self.assertFalse(feige.footer_enabled())
+
+    def test_static_channels_keep_footer_regardless(self):
+        """钉钉/Telegram 静态版式没有面板，脚注照旧输出，不受 footer_enabled 影响。"""
+        ding = feige.render_dingtalk("t", "b", stats=dict(self.STATS),
+                                     allow_summarize=False)
+        self.assertIn("📦 CreditDaddy", ding["markdown"]["text"])
+        tg = feige.render_telegram_text("t", "b", stats=dict(self.STATS),
+                                        allow_summarize=False)
+        self.assertIn("📦 CreditDaddy", tg)
+
+
 class RedactTest(unittest.TestCase):
     def test_patterns(self):
         s = feige.redact('tenant_access_token":"t-abcdef123456 bot123456789:AAAAAAAAAAAAAAAA')

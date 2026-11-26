@@ -77,7 +77,12 @@ async function main(raw) {
     "--route",
     // 去抖键：FEIGE_DEBOUNCE_SECONDS>0 时同会话连续收尾只发最后一张
     `--debounce-key=zcode:${input.session_id || basename(file)}`,
+    "--host=zcode",
   ];
+  if (input.session_id) args.push(`--session-id=${input.session_id}`);
+  if (summary.cwd) args.push(`--cwd=${summary.cwd}`);
+  if (summary.detail) args.push(`--detail=${summary.detail}`);
+  if (summary.toolSummary) args.push(`--tool-summary=${summary.toolSummary}`);
   const dryRun = /^(1|true|yes)$/i.test(process.env.FEIGE_DRY_RUN || "");
   if (dryRun) args.push("--dry-run");
 
@@ -258,8 +263,7 @@ function lastMsgRole(entry) {
   return m && typeof m.role === "string" ? m.role : "";
 }
 
-function findProject(entry) {
-  // 权威来源：系统提示里的 `- Primary working directory:`，每个请求都带着
+function findCwd(entry) {
   const req = entry.request || {};
   const sysFields = [req.system, (req.body || {}).system];
   for (const sysField of sysFields) {
@@ -268,10 +272,28 @@ function findProject(entry) {
       const c = typeof part === "object" && part !== null ? part.text : part;
       if (typeof c !== "string") continue;
       const m = c.match(/Primary working directory:\s*([^\r\n]+)/);
-      if (m) return projectFromPath(m[1]);
+      if (m) return m[1].trim();
     }
   }
   return "";
+}
+
+function findProject(entry) {
+  const cwd = findCwd(entry);
+  return cwd ? projectFromPath(cwd) : "";
+}
+
+function fmtToolSummary(names, maxItems = 6) {
+  const counts = new Map();
+  for (const raw of names) {
+    const n = String(raw || "").trim();
+    if (n) counts.set(n, (counts.get(n) || 0) + 1);
+  }
+  if (!counts.size) return "";
+  const entries = [...counts.entries()];
+  const shown = entries.slice(0, maxItems).map(([n, c]) => (c > 1 ? `${n} ×${c}` : n));
+  if (entries.length > maxItems) shown.push(`…+${entries.length - maxItems}`);
+  return shown.join(" · ");
 }
 
 /** 单轮口径统计 + 最后一条 finishReason=="stop" 行的正文摘要。
@@ -284,9 +306,11 @@ function summarizeSession(file) {
   ) || 1_000_000;
 
   let firstAt = "", lastAt = "", model = "";
-  let reasoningTurns = 0, toolsTotal = 0, tokensTotal = 0, ctx = 0, project = "";
+  let reasoningTurns = 0, toolsTotal = 0, tokensTotal = 0, ctx = 0, project = "", cwd = "";
   let turnReasoning = 0, turnTools = 0, turnTokens = 0, turnStartAt = "", sawTurnStart = false;
-  let stopText = "", foundStop = false, sawStopThisTurn = false;
+  let stopText = "", detailText = "", foundStop = false, sawStopThisTurn = false;
+  const allToolNames = [];
+  let turnToolNames = [];
 
   let lines;
   try { lines = readFileSync(file, "utf8").split(/\r?\n/); } catch { return null; }
@@ -300,13 +324,15 @@ function summarizeSession(file) {
     if (stype && stype !== "main") continue; // 子代理/内部会话不进战报
 
     const resp = entry.response || {};
-    if (!project) project = findProject(entry);
+    if (!cwd) cwd = findCwd(entry);
+    if (!project) project = cwd ? projectFromPath(cwd) : findProject(entry);
 
     const at = entry.completedAt || "";
     if (lastMsgRole(entry) === "user") {
       // 新一轮开始：本轮统计清零重置（这行的响应属于新轮，先清后加）
       sawTurnStart = true;
       turnReasoning = 0; turnTools = 0; turnTokens = 0;
+      turnToolNames = [];
       sawStopThisTurn = false; // 正文同样只算当前轮，绝不回落上一轮
       if (at) turnStartAt = at;
     }
@@ -316,7 +342,12 @@ function summarizeSession(file) {
     const out = Number(usage.outputTokens) || 0;
     tokensTotal += out; turnTokens += out;
     if (String(resp.reasoningText || "").trim()) { reasoningTurns += 1; turnReasoning += 1; }
-    const tools = (resp.toolCalls || []).filter((t) => t && t.name).length;
+    const callList = (resp.toolCalls || []).filter((t) => t && t.name);
+    const tools = callList.length;
+    for (const tc of callList) {
+      allToolNames.push(tc.name);
+      turnToolNames.push(tc.name);
+    }
     toolsTotal += tools; turnTools += tools;
     model = (entry.model || {}).modelId || model;
     if (at) { firstAt = firstAt || at; lastAt = at; }
@@ -326,6 +357,7 @@ function summarizeSession(file) {
       sawStopThisTurn = true;
       const text = String(resp.text || "").trim();
       stopText = isJunkText(text) ? "……（本轮无文本输出）" : bodyForCard(text);
+      detailText = isJunkText(text) ? "" : (text.length <= 3000 ? text : text.slice(0, 3000).trimEnd() + " ……");
     }
   }
   if (!foundStop) return null;
@@ -333,7 +365,7 @@ function summarizeSession(file) {
   const perTurn = readStatsScope() === "turn" && sawTurnStart;
   // 单轮口径：正文只取当前轮；当前轮没到收尾（宿主提前触发 Stop / 文本未落盘）
   // 就发占位符，绝不回落上一轮旧文——这是「战报落后一个卡片」的根因。
-  if (perTurn && !sawStopThisTurn) stopText = "";
+  if (perTurn && !sawStopThisTurn) { stopText = ""; detailText = ""; }
 
   let elapsed = "";
   try {
@@ -345,6 +377,9 @@ function summarizeSession(file) {
   return {
     title: `${project ? project + " · " : ""}ZCode 任务完成`,
     body: stopText || "……（本轮无文本输出）",
+    detail: detailText,
+    toolSummary: fmtToolSummary(perTurn ? turnToolNames : allToolNames),
+    cwd,
     project,
     // 约定：CLI/Mirasim 场景模型名前带工具名
     model: model ? `zcode · ${model}` : "zcode",
@@ -358,6 +393,7 @@ function summarizeSession(file) {
 
 // ── 驱动（放文件末尾：函数引用的 const 必须先完成初始化） ─────────────────────
 
+if (process.env.FEIGE_RESUME_CHILD === "1") process.exit(0);
 const enabled = /^(1|true|yes)$/i.test(
   process.env.FEIGE_HOOK_NOTIFY || process.env.ZCODE_USER_CONFIG_HOOK_NOTIFY || "",
 );

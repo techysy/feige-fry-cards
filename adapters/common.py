@@ -26,6 +26,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 import feige  # noqa: E402
 
 TEASER_CHARS = 300  # 摘要是战报不是镜像：正文 ≤300 字
+DETAIL_CHARS = 3000  # 折叠面板详细正文上限（防撑爆 Windows argv 与卡片体量）
 _ON = ("1", "true", "yes")
 
 
@@ -115,6 +116,29 @@ def body_for_card(text: str, empty_note: str = "……（本轮无文本输出�
     return text if len(text) <= FULL_BODY_CHARS else text[:FULL_BODY_CHARS].rstrip() + " ……"
 
 
+def detail_for_card(text: str, limit: int = DETAIL_CHARS) -> str:
+    """折叠面板详细正文：正文超过 teaser 或需要展开细节时提供完整摘录。"""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[:limit].rstrip() + " ……"
+
+
+def fmt_tool_summary(names: list[str], max_items: int = 6) -> str:
+    """工具名列表 → 紧凑摘要（如 'Read ×3 · Edit ×2 · Bash'）。"""
+    counts: dict[str, int] = {}
+    for raw in names:
+        n = str(raw or "").strip()
+        if n:
+            counts[n] = counts.get(n, 0) + 1
+    if not counts:
+        return ""
+    items = [f"{name} ×{cnt}" if cnt > 1 else name for name, cnt in list(counts.items())[:max_items]]
+    if len(counts) > max_items:
+        items.append(f"…+{len(counts) - max_items}")
+    return " · ".join(items)
+
+
 def compact(n: int | float) -> str:
     n = int(n)
     if n >= 1_000_000:
@@ -182,8 +206,19 @@ def has_sink(project: str) -> bool:
     return bool(feige.pick_channel() or feige.resolve_routes(project, feige.load_routes()))
 
 
+_AGENT_TO_HOST = {
+    "claude code": "claude-code",
+    "claude-code": "claude-code",
+    "codex": "codex",
+    "zcode": "zcode",
+    "kimi-code": "kimi-code",
+    "antigravity": "antigravity",
+}
+
+
 def send_argv(title: str, body: str, stats: dict, debounce_key: str,
-              transcript: str = "") -> list[str]:
+              transcript: str = "", *, host: str = "", session_id: str = "",
+              cwd: str = "", detail: str = "", tool_summary: str = "") -> list[str]:
     """拼 `feige.py send` 命令行。一律 --flag=value：值以 "-" 开头时 argparse 会误判。
 
     transcript 非空时带上 --transcript：后台发送进程稍等后重读它取最新收尾正文
@@ -202,6 +237,16 @@ def send_argv(title: str, body: str, stats: dict, debounce_key: str,
         argv.append(f"--debounce-key={debounce_key}")
     if transcript:
         argv.append(f"--transcript={transcript}")
+    if host:
+        argv.append(f"--host={host}")
+    if session_id:
+        argv.append(f"--session-id={session_id}")
+    if cwd:
+        argv.append(f"--cwd={cwd}")
+    if detail:
+        argv.append(f"--detail={detail}")
+    if tool_summary:
+        argv.append(f"--tool-summary={tool_summary}")
     return argv
 
 
@@ -232,7 +277,8 @@ def spawn_detached(argv: list[str]) -> None:
 
 
 def send_card(title: str, body: str, stats: dict, agent: str, session: str = "",
-              transcript: str = "") -> None:
+              transcript: str = "", *, cwd: str = "", detail: str = "",
+              tool_summary: str = "") -> None:
     """统一发送：dry-run 或无处可发时把载荷 JSON 打 stderr，否则后台发送；失败只落日志。
 
     走 --route：有路由文件按项目 fanout，没有则退化为默认单渠道。session 用作
@@ -242,21 +288,29 @@ def send_card(title: str, body: str, stats: dict, agent: str, session: str = "",
     """
     project = str(stats.get("project") or "")
     title = title or f"{project + ' · ' if project else ''}{agent} 任务完成"
+    host = _AGENT_TO_HOST.get((agent or "").strip().lower(), (agent or "").strip().lower())
     preview = dry_run()
     if not preview and not has_sink(project):
         log("no channel configured (webhook/app creds/routes missing), preview only")
         preview = True
     if preview:
-        _, detail = feige.send_routed(title, body, stats=stats, status="ok",
-                                      project=project, dry_run=True)
+        _, detail_out = feige.send_routed(
+            title, body, stats=stats, status="ok",
+            project=project, dry_run=True,
+            host=host, session_id=session, cwd=cwd,
+            detail_body=detail, tool_summary=tool_summary,
+        )
         try:
             # 打 stderr：Stop hook 的 stdout 会被宿主当 hook JSON 输出解析（Claude Code / Codex）
-            print(detail, file=sys.stderr, flush=True)
+            print(detail_out, file=sys.stderr, flush=True)
         except (ValueError, OSError):
             pass
         return
-    spawn_detached(send_argv(title, body, stats, f"{agent}:{session}" if session else "",
-                             transcript=transcript))
+    spawn_detached(send_argv(
+        title, body, stats, f"{agent}:{session}" if session else "",
+        transcript=transcript, host=host, session_id=session,
+        cwd=cwd, detail=detail, tool_summary=tool_summary,
+    ))
 
 
 def run(main, project: str | None = None) -> None:
@@ -267,6 +321,8 @@ def run(main, project: str | None = None) -> None:
     全局关闭（FEIGE_HOOK_NOTIFY=0/插件 hook_notify 关）永远是硬闸，per-project
     只在「没配全局值」时生效——否则用户关不掉。
     """
+    if os.environ.get("FEIGE_RESUME_CHILD") == "1":
+        return
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")

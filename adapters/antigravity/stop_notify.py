@@ -46,8 +46,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import (body_for_card, compact, fmt_elapsed, log, project_label,  # noqa: E402
-                    read_payload, run, send_card, stats_scope)
+from common import (body_for_card, compact, detail_for_card, fmt_elapsed,  # noqa: E402
+                    fmt_tool_summary, log, project_label, read_payload, run,
+                    send_card, stats_scope)
 
 # agy 内置模型上下文窗口（`agy models`）；未收录退化为绝对水位 compact(ctx)。
 # Flash 系列 1.0m / Claude 200k / GPT-OSS 128k，与其他适配器的窗口表同源。
@@ -101,12 +102,13 @@ def summarize_transcript(path: str) -> dict | None:
     thinking_turns = 0
     tools_total = 0
     tokens_total = 0
+    tool_names: list[str] = []
     all_thinking = 0
     all_tools = 0
     all_tokens = 0
+    all_tool_names: list[str] = []
     ctx = 0
     all_last_text = ""
-    ctx = 0
     last_text = ""
     saw_model = False
 
@@ -131,6 +133,7 @@ def summarize_transcript(path: str) -> dict | None:
             if etype == "USER_INPUT":  # 本轮起点：统计清零（GENERIC/SYSTEM_MESSAGE 不是提问）
                 turn_dt = dt or turn_dt
                 thinking_turns = tools_total = tokens_total = 0
+                tool_names = []
                 last_text = ""
                 continue
             if etype != "PLANNER_RESPONSE":
@@ -155,6 +158,11 @@ def summarize_transcript(path: str) -> dict | None:
             for _call in entry.get("tool_calls") or []:
                 tools_total += 1
                 all_tools += 1
+                if isinstance(_call, dict):
+                    tname = str(_call.get("name") or "").strip()
+                    if tname:
+                        tool_names.append(tname)
+                        all_tool_names.append(tname)
             text = str(entry.get("content") or "").strip()
             if text:
                 last_text = text
@@ -165,6 +173,7 @@ def summarize_transcript(path: str) -> dict | None:
 
     if turn_dt is None or stats_scope() == "session":  # 全程口径 / 没有提问行：全文件统计
         thinking_turns, tools_total, tokens_total = all_thinking, all_tools, all_tokens
+        tool_names = all_tool_names
         last_text = all_last_text
         turn_dt = None
 
@@ -179,6 +188,8 @@ def summarize_transcript(path: str) -> dict | None:
 
     return {
         "body": body_for_card(last_text),
+        "detail": detail_for_card(last_text),
+        "tool_summary": fmt_tool_summary(tool_names),
         # 约定：CLI/Mirasim 场景模型名前带工具名
         "model": f"antigravity · {model}" if model else "antigravity",
         "raw_model": model,
@@ -193,7 +204,8 @@ def summarize_transcript(path: str) -> dict | None:
 def main(payload: dict | None = None) -> None:
     """payload 缺省从 stdin 读；hooks/stop.py 分发时直接传入（stdin 已被它读走）。"""
     payload = read_payload() if payload is None else payload
-    project = project_label(str(payload.get("cwd") or ""))
+    cwd = str(payload.get("cwd") or "")
+    project = project_label(cwd)
     transcript = str(payload.get("transcriptPath") or payload.get("transcript_path") or "")
     if not transcript or not Path(transcript).is_file():
         log(f"transcript not found: {transcript or '(missing in payload)'}")
@@ -214,7 +226,10 @@ def main(payload: dict | None = None) -> None:
     send_card("", summary["body"], stats, agent="Antigravity",
               session=str(payload.get("conversationId") or ""),
               # 传转录路径：后台发送进程开卡前重读一次，治宿主落盘滞后
-              transcript=transcript)
+              transcript=transcript,
+              cwd=cwd,
+              detail=summary.get("detail", ""),
+              tool_summary=summary.get("tool_summary", ""))
 
 
 if __name__ == "__main__":

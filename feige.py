@@ -76,18 +76,23 @@ from pathlib import Path
 # 主插件版本号单一来源：面板（webui.VERSION）从这里读，两份插件清单
 # （.claude-plugin / .zcode-plugin 的 plugin.json + marketplace.json）同步一致，
 # 由测试锁住防漂移。
-__version__ = "1.2.0"
+__version__ = "2.0.0"
 
 DEFAULT_BASE_URL = "https://open.feishu.cn"
 STREAMING_ELEMENT_ID = "streaming_content"  # 流式正文元素 id（家族固定口径）
+UNIFIED_PANEL_ELEMENT_ID = "unified_panel"  # 底部统一折叠面板元素 id（家族固定口径）
 # 渠道体量上限（官方口径 + 余量）。按字符截断不够：中文 UTF-8 占 3 字节，24k 字就是 72KB
 BODY_MAX_BYTES = 15_000    # 飞书 webhook 请求体 ≤20KB、钉钉消息 ≤20000 字节，给卡片骨架留余量
+DETAIL_PANEL_MAX_BYTES = 3_500  # 折叠面板详细正文预算，防撑爆 20KB webhook / 30KB CardKit 上限
+CARD_WEBHOOK_SAFE_BYTES = 19_000
+CARD_CARDKIT_SAFE_BYTES = 28_000
 TELEGRAM_MAX_UNITS = 4096  # Telegram sendMessage text ≤4096，按 UTF-16 单元计（emoji 占 2）
 TRUNC_NOTE = "\n\n…（内容过长已截断）"
 
 # 状态 → header 着色（与 hermes-fry-cards 家族一致：流式中蓝、完成绿、中断/错误红）
 STATUS_TEMPLATE = {"running": "blue", "ok": "green", "error": "red"}
 STATUS_PREFIX = {"running": "🛠️", "ok": "✅", "error": "❌"}
+PANEL_BORDER_COLOR = {"running": "blue", "ok": "green", "error": "red", "aborted": "yellow"}
 
 
 # ── 通用小件 ─────────────────────────────────────────────────────────────────
@@ -113,6 +118,16 @@ _SETTINGS_ENV = {
     "FEIGE_DEBOUNCE_SECONDS": "debounce_seconds",
     "FEIGE_ROUTES_FILE": "routes_file",
     "FEIGE_FOOTER_FIELDS": "footer_fields",
+    "FEIGE_PANEL_FIELDS": "panel_fields",
+    "FEIGE_FOOTER_ENABLED": "footer_enabled",
+    "FEIGE_INTERACTIVE": "feishu_interactive",
+    "FEIGE_WS_ENABLED": "feishu_ws_enabled",
+    "FEIGE_ALLOW_USERS": "interactive_allow_users",
+    "FEIGE_VENDOR_LOGO": "vendor_logo_enabled",
+    "FEIGE_PANEL_EXPANDED": "panel_expanded",
+    "FEIGE_RESUME_TIMEOUT": "resume_timeout_seconds",
+    "FEIGE_SESSIONS_FILE": "sessions_file",
+    "FEIGE_CLAUDE_PERMISSION_MODE": "claude_permission_mode",
 }
 
 
@@ -207,7 +222,8 @@ LLM_MAX_CHARS = 400        # 总结目标字数（近似值，最终仍按渠道
 LLM_MIN_CHARS = 300        # 总结触发阈值：启用后正文超过这么多字就先浓缩成摘要，
                            # 而不是原样镜像（0 = 只在超渠道上限时才总结的旧口径）
 LLM_INPUT_MAX_CHARS = 24_000  # 送进总结请求的原文上限，防超长上下文把请求撑炸
-LLM_TIMEOUT = 20           # 秒；只在后台发送进程里等，不碰 hook 前台
+LLM_TIMEOUT = 45           # 秒；只在后台发送进程里等，不碰 hook 前台。免费/慢速池
+                           # 20s 经常不够（实测超时回落原文），45s 换摘要稳定出卡
 
 
 def llm_config() -> dict:
@@ -440,9 +456,279 @@ def fit_body(body: str, limit: int = BODY_MAX_BYTES, unit: str = "bytes",
     return clip(body, limit, unit)
 
 
-# ── 统一卡片模型 ─────────────────────────────────────────────────────────────
+# ── 统一卡片模型（对齐 fry-cards 家族规范）──────────────────────────────────────
 
 DEFAULT_FOOTER_FIELDS = ("project", "model", "thinking", "tools", "context", "tokens", "elapsed")
+# 统一面板头字段：卡片标题已含「项目 · 宿主」，面板头默认不再重复项目名
+DEFAULT_PANEL_FIELDS = ("model", "thinking", "tools", "context", "tokens", "elapsed")
+_LOCALES = ["zh_cn", "en_us"]
+_ASSETS_VENDOR_DIR = Path(__file__).resolve().parent / "assets" / "vendor-logos"
+
+# 厂商 Logo 匹配规则与官方模型名映射（与 hermes-fry-cards / claw-fry-cards 保持一致）
+VENDOR_LOGO_RULES: tuple[tuple[str, str], ...] = (
+    ("deepseek", "deepseek.png"),
+    ("qwen", "qwen.png"),
+    ("zhipu", "zhipu.png"),
+    ("glm", "zhipu.png"),
+    ("zcode", "zhipu.png"),
+    ("chatglm", "zhipu.png"),
+    ("claude", "claude.png"),
+    ("anthropic", "claude.png"),
+    ("gemini", "gemini.png"),
+    ("kimi", "kimi.png"),
+    ("moonshot", "moonshot.png"),
+    ("minimax", "minimax.png"),
+    ("doubao", "doubao.png"),
+    ("hunyuan", "hunyuan.png"),
+    ("gpt", "openai.png"),
+    ("openai", "openai.png"),
+    ("step", "stepfun.png"),
+    ("hy4", "hunyuan.png"),
+    ("codebuddy", "codebuddy.png"),
+    ("grok", "grok.png"),
+    ("longcat", "longcat.png"),
+    ("mimo", "xiaomimimo.png"),
+    ("dots", "dotsstudio.png"),
+    ("muse", "muse.png"),
+    ("ling", "ling.png"),
+    ("upstage", "upstage.png"),
+)
+
+_FAMILY_OFFICIAL: dict[str, str] = {
+    "hy4": "Hy4",
+    "hunyuan": "Hunyuan",
+    "deepseek": "DeepSeek",
+    "qwen": "Qwen",
+    "glm": "GLM",
+    "chatglm": "ChatGLM",
+    "zhipu": "Zhipu",
+    "zcode": "ZCode",
+    "claude": "Claude",
+    "anthropic": "Claude",
+    "gemini": "Gemini",
+    "kimi": "Kimi",
+    "moonshot": "Moonshot",
+    "minimax": "MiniMax",
+    "doubao": "Doubao",
+    "gpt": "GPT",
+    "openai": "OpenAI",
+    "step": "Step",
+    "codebuddy": "CodeBuddy",
+    "grok": "Grok",
+    "longcat": "LongCat",
+    "mimo": "MiMo",
+    "dots": "Dots",
+    "muse": "Muse",
+    "ling": "Ling",
+    "upstage": "Upstage",
+}
+
+_HOST_LABELS = {
+    "claude-code": "Claude Code",
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "zcode": "ZCode",
+    "kimi-code": "kimi-code",
+    "kimi": "kimi-code",
+    "antigravity": "Antigravity",
+    "agy": "Antigravity",
+}
+
+
+def _split_host_model(model: str) -> tuple[str, str]:
+    """拆分 'claude-code · tencent/hy4-flash:free' → ('claude-code', 'tencent/hy4-flash:free')。"""
+    s = (model or "").strip()
+    if " · " in s:
+        prefix, rest = s.split(" · ", 1)
+        return prefix.strip(), rest.strip()
+    return "", s
+
+
+def resolve_vendor_logo_asset(model: str) -> str | None:
+    """模型名 → 本地 vendor-logos 文件名；未命中返回 None。"""
+    _, raw_model = _split_host_model(model)
+    lower = raw_model.lower()
+    for needle, file in VENDOR_LOGO_RULES:
+        if needle in lower:
+            return file
+    return None
+
+
+def resolve_vendor_display_name(model: str) -> str | None:
+    """代理拼接名 → 官方模型展示名（与 hermes/claw-fry-cards 同口径）；未命中返回 None。"""
+    _, raw_model = _split_host_model(model)
+    if not raw_model:
+        return None
+    file = resolve_vendor_logo_asset(raw_model)
+    if not file:
+        return None
+    lower = raw_model.lower()
+    needle = next((n for n, f in VENDOR_LOGO_RULES if f == file and n in lower), None)
+    if needle is None:
+        return None
+    official = _FAMILY_OFFICIAL.get(needle, needle.capitalize())
+    base = raw_model.strip().split("/")[-1].split(":")[0].strip()
+    idx = base.lower().find(needle)
+    if idx < 0:
+        return official
+    tail = base[idx + len(needle):].lstrip("-_").strip()
+    return f"{official} {tail}".strip() or official
+
+
+def format_panel_model(model: str) -> str:
+    """面板标题里的模型展示名：保留宿主前缀（若有），模型名优先取官方名。"""
+    host_prefix, raw_model = _split_host_model(model)
+    if not raw_model:
+        return host_prefix
+    official = resolve_vendor_display_name(raw_model)
+    shown = official or raw_model.split("/")[-1]
+    return f"{host_prefix} · {shown}" if host_prefix else shown
+
+
+def _bool_setting(env_name: str, default: bool = False) -> bool:
+    raw = _env(env_name)
+    if not raw:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def interactive_enabled() -> bool:
+    """feishu-cardkit 交互式卡片（表单/快捷按钮）是否开启（默认开启）。"""
+    return _bool_setting("FEIGE_INTERACTIVE", default=True)
+
+
+def ws_enabled() -> bool:
+    """飞书长连接回调监听开关（默认关，需在 Studio 或环境变量开启）。"""
+    return _bool_setting("FEIGE_WS_ENABLED", default=False)
+
+
+def vendor_logo_enabled() -> bool:
+    """是否展示厂商家族 Logo（默认开启）。"""
+    return _bool_setting("FEIGE_VENDOR_LOGO", default=True)
+
+
+def panel_expanded_default() -> bool:
+    """底部统一折叠面板是否默认展开（默认折叠）。"""
+    return _bool_setting("FEIGE_PANEL_EXPANDED", default=False)
+
+
+def allow_users_list() -> list[str]:
+    """操作人白名单（open_id / user_id），逗号/分号/换行分隔；空列表表示不限。"""
+    raw = _env("FEIGE_ALLOW_USERS")
+    if not raw:
+        return []
+    out: list[str] = []
+    for part in re.split(r"[,;\s]+", raw):
+        uid = part.strip()
+        if uid and uid not in out:
+            out.append(uid)
+    return out
+
+
+def resume_timeout_seconds() -> float:
+    raw = _env("FEIGE_RESUME_TIMEOUT")
+    try:
+        return max(30.0, min(1800.0, float(raw))) if raw else 300.0
+    except ValueError:
+        return 300.0
+
+
+def sessions_file_path(env: dict | None = None) -> str:
+    """本地交互会话映射文件路径：FEIGE_SESSIONS_FILE > 设置文件 > ~/.feige-sessions.json。"""
+    if env is not None:
+        override = str(env.get("FEIGE_SESSIONS_FILE") or "").strip()
+    else:
+        override = _env("FEIGE_SESSIONS_FILE")
+    return override or str(Path.home() / ".feige-sessions.json")
+
+
+def _field_order(env_name: str, settings_key: str,
+                 defaults: tuple[str, ...],
+                 fields: list[str] | tuple[str, ...] | None = None) -> tuple[str, ...]:
+    """字段顺序解析（面板头/脚注共用）：显式传入 > 环境变量 > 设置文件 > 默认。
+
+    空列表是合法配置（全部隐藏），只有键不存在才落默认。
+    """
+    if fields is not None:
+        return tuple(fields)
+    cfg_fields = None
+    env_val = os.environ.get(env_name, "").strip()
+    if env_val:
+        cfg_fields = [x.strip() for x in env_val.split(",") if x.strip()]
+    if cfg_fields is None:
+        saved = load_settings().get(settings_key)
+        if isinstance(saved, list):
+            cfg_fields = [str(x).strip() for x in saved if str(x).strip()]
+        elif isinstance(saved, str) and saved.strip():
+            cfg_fields = [str(x).strip() for x in saved.split(",") if str(x).strip()]
+    return tuple(cfg_fields) if cfg_fields is not None else defaults
+
+
+def _footer_field_order(fields: list[str] | tuple[str, ...] | None = None) -> tuple[str, ...]:
+    """脚注字段：FEIGE_FOOTER_FIELDS > 设置 footer_fields > 全字段默认。"""
+    return _field_order("FEIGE_FOOTER_FIELDS", "footer_fields", DEFAULT_FOOTER_FIELDS, fields)
+
+
+def _panel_field_order(fields: list[str] | tuple[str, ...] | None = None) -> tuple[str, ...]:
+    """统一面板头字段：FEIGE_PANEL_FIELDS > 设置 panel_fields > 默认（无项目名）。
+
+    独立于脚注配置：标题已含「项目 · 宿主」，面板头默认不再重复；
+    旧配置只有 footer_fields 时不迁移——面板走新默认，脚注保持旧口径。
+    """
+    return _field_order("FEIGE_PANEL_FIELDS", "panel_fields", DEFAULT_PANEL_FIELDS, fields)
+
+
+def footer_enabled() -> bool:
+    """完成态卡底部脚注行（hr + 统计行）显隐开关（默认关）。
+
+    面板头已承载同一套统计，脚注默认不再重复；只作用于飞书卡片渠道，
+    webhook/钉钉/Telegram 静态版式与预览 JSON 不受此开关影响。
+    """
+    return _bool_setting("FEIGE_FOOTER_ENABLED", default=False)
+
+
+def _context_progress_bar(pct: float, width: int = 8) -> str:
+    """生成渐变密度条 █▓▒░（对齐 hermes/claw-fry-cards）。"""
+    pct = max(0.0, min(float(pct), 100.0))
+    n = pct / 100.0 * width
+    cells: list[str] = []
+    for i in range(width):
+        pos = i + 0.5
+        if pos <= n:
+            if n - pos >= 0.5:
+                cells.append("█")
+            elif n - pos >= 0.25:
+                cells.append("▓")
+            else:
+                cells.append("▒")
+        elif pos - 1 <= n:
+            frac = n - (pos - 1)
+            if frac > 0.66:
+                cells.append("▓")
+            elif frac > 0.33:
+                cells.append("▒")
+            else:
+                cells.append("░")
+        else:
+            cells.append("░")
+    return "".join(cells)
+
+
+def _format_panel_context(context_str: str) -> str:
+    """将 '153.6k/1.0m (15%)' 或 '42%' 增强为家族进度条格式（如 '153.6k/1.0m [█▓░░░░░░] 15%'）。"""
+    s = (context_str or "").strip()
+    if not s:
+        return ""
+    m = re.match(r"^(.+?)\s*\((\d+(?:\.\d+)?)%\)$", s)
+    if m:
+        ratio, pct = m.group(1).strip(), float(m.group(2))
+        return f"{ratio} [{_context_progress_bar(pct)}] {pct:.0f}%"
+    m_pct = re.match(r"^(\d+(?:\.\d+)?)%$", s)
+    if m_pct:
+        pct = float(m_pct.group(1))
+        return f"[{_context_progress_bar(pct)}] {pct:.0f}%"
+    return s
+
 
 def stats_footer(stats: dict | None, fields: list[str] | tuple[str, ...] | None = None) -> str:
     """拼装统计脚注行：「📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 token · ⏱️耗时」。
@@ -452,21 +738,7 @@ def stats_footer(stats: dict | None, fields: list[str] | tuple[str, ...] | None 
     """
     if not stats:
         return ""
-    if fields is None:
-        cfg_fields = None
-        env_val = os.environ.get("FEIGE_FOOTER_FIELDS", "").strip()
-        if env_val:
-            try:
-                cfg_fields = [x.strip() for x in env_val.split(",") if x.strip()]
-            except Exception:
-                pass
-        if cfg_fields is None:
-            saved = load_settings().get("footer_fields")
-            if isinstance(saved, list):
-                cfg_fields = [str(x).strip() for x in saved if str(x).strip()]
-            elif isinstance(saved, str) and saved.strip():
-                cfg_fields = [str(x).strip() for x in saved.split(",") if str(x).strip()]
-        fields = cfg_fields if cfg_fields is not None else DEFAULT_FOOTER_FIELDS
+    fields = _footer_field_order(fields)
 
     field_map = {}
     project = str(stats.get("project") or "").strip()
@@ -514,16 +786,286 @@ def compact_count(value: int) -> str:
     return str(value)
 
 
+def _build_panel_header_text(stats: dict | None, logo_image_key: str = "",
+                             fields: list[str] | tuple[str, ...] | None = None) -> str:
+    """统一面板标题文本（对齐 fry-cards）：不添加多余 emoji，保持图标干净（未传 custom_icon 时仅展示统计标题）。
+
+    字段与顺序走独立的面板配置（panel_fields / FEIGE_PANEL_FIELDS），默认不含
+    项目名——卡片标题已含「项目 · 宿主」，同一张卡不重复三遍。
+    """
+    parts: list[str] = []
+    if stats:
+        order = _panel_field_order(fields)
+        fmap: dict[str, str] = {}
+        project = str(stats.get("project") or "").strip()
+        if project:
+            fmap["project"] = f"📦 {project}"
+        model = str(stats.get("model") or "").strip()
+        if model:
+            fmap["model"] = format_panel_model(model)
+        thinking = stats.get("thinking")
+        if thinking is not None and str(thinking).strip():
+            try:
+                fmap["thinking"] = f"💭{int(thinking)}"
+            except (TypeError, ValueError):
+                fmap["thinking"] = f"💭{thinking}"
+        tools = stats.get("tools")
+        if tools is not None and str(tools).strip():
+            try:
+                fmap["tools"] = f"🔧{int(tools)}"
+            except (TypeError, ValueError):
+                fmap["tools"] = f"🔧{tools}"
+        ctx = str(stats.get("context") or "").strip()
+        if ctx:
+            fmap["context"] = _format_panel_context(ctx)
+        tokens = stats.get("tokens")
+        if tokens is not None and str(tokens).strip():
+            try:
+                tc = int(tokens)
+                tlabel = compact_count(tc) if tc > 0 else ""
+            except (TypeError, ValueError):
+                tlabel = str(tokens).strip()
+            if tlabel:
+                fmap["tokens"] = f"🎫 {tlabel}"
+        elapsed = str(stats.get("elapsed") or "").strip()
+        if elapsed:
+            fmap["elapsed"] = f"⏱️ {elapsed}"
+        for k in order:
+            if k in fmap and fmap[k]:
+                parts.append(fmap[k])
+    if len(parts) <= (1 if not logo_image_key else 0):
+        parts.append("会话详情与统计")
+    return " · ".join(parts)
+
+
+def _build_unified_panel(
+    *,
+    stats: dict | None = None,
+    status: str = "ok",
+    detail_body: str = "",
+    tool_summary: str = "",
+    host: str = "",
+    ctx_id: str = "",
+    logo_image_key: str = "",
+    expanded: bool = False,
+) -> dict | None:
+    """构建家族底部统一折叠面板（collapsible_panel），承载详细正文、工具摘要与指标。"""
+    panel_children: list[dict] = []
+    detail = (detail_body or "").strip()
+    if detail:
+        clipped_detail = clip(detail, DETAIL_PANEL_MAX_BYTES)
+        panel_children.append({
+            "tag": "markdown",
+            "content": f"**详细摘要 / 原文**\n\n{clipped_detail}",
+            "text_size": "notation",
+        })
+    tsum = (tool_summary or "").strip()
+    if tsum:
+        panel_children.append({
+            "tag": "markdown",
+            "content": f"🔧 **工具调用**：{tsum}",
+            "text_size": "notation",
+        })
+
+    meta_parts: list[str] = []
+    if host:
+        meta_parts.append(f"宿主：{_HOST_LABELS.get(host.lower(), host)}")
+    raw_model = str((stats or {}).get("model") or "").strip()
+    if raw_model:
+        official = resolve_vendor_display_name(raw_model)
+        if official and official not in raw_model:
+            meta_parts.append(f"模型：{official}（`{raw_model}`）")
+        else:
+            meta_parts.append(f"模型：`{raw_model}`")
+    if ctx_id:
+        meta_parts.append(f"上下文：`#{ctx_id[:8]}`")
+    if meta_parts:
+        panel_children.append({
+            "tag": "markdown",
+            "content": " · ".join(meta_parts),
+            "text_size": "notation",
+        })
+
+    if not panel_children and not stats:
+        return None
+    if not panel_children:
+        panel_children.append({
+            "tag": "markdown",
+            "content": "暂无更多展开详情。",
+            "text_size": "notation",
+        })
+
+    header_title = _build_panel_header_text(stats, logo_image_key=logo_image_key)
+    header_obj: dict = {
+        "title": {
+            "tag": "plain_text",
+            "content": header_title,
+            "i18n_content": {"zh_cn": header_title, "en_us": header_title},
+        },
+        "vertical_align": "center",
+        "text_color": "grey",
+        "text_size": "notation",
+    }
+    if logo_image_key:
+        header_obj["icon"] = {
+            "tag": "custom_icon",
+            "img_key": logo_image_key,
+            "size": "16px 16px",
+        }
+        header_obj["icon_position"] = "left"
+        header_obj["icon_expanded_angle"] = 0
+    else:
+        header_obj["icon"] = {
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined",
+            "color": "grey",
+            "size": "16px 16px",
+        }
+        header_obj["icon_position"] = "right"
+        header_obj["icon_expanded_angle"] = -180
+
+    border_color = PANEL_BORDER_COLOR.get(status, "green")
+    return {
+        "tag": "collapsible_panel",
+        "element_id": UNIFIED_PANEL_ELEMENT_ID,
+        "expanded": bool(expanded),
+        "header": header_obj,
+        "border": {"color": border_color, "corner_radius": "5px"},
+        "vertical_spacing": "4px",
+        "padding": "8px 8px 8px 8px",
+        "elements": panel_children,
+    }
+
+
+def _build_interactive_elements(ctx_id: str, host: str = "", resumable: bool = True) -> list[dict]:
+    """构建 CardKit 2.0 交互区：追问表单 + 防误触快捷按钮（不支持续跑的宿主给清晰提示）。"""
+    if not ctx_id:
+        return []
+    host_label = _HOST_LABELS.get((host or "").lower(), host or "当前宿主")
+    if not resumable:
+        return [
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "horizontal_align": "left",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "auto",
+                        "elements": [
+                            {
+                                "tag": "button",
+                                "name": f"feige_unsupported_{ctx_id}",
+                                "text": {"tag": "plain_text", "content": "ℹ️ 续跑说明"},
+                                "type": "default",
+                                "value": {"feige_action": "unsupported", "ctx_id": ctx_id},
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "tag": "markdown",
+                "content": f"<font color='grey'>💡 {host_label} 暂不支持远程无头续跑，请在本地终端 / IDE 中继续会话。</font>",
+                "text_size": "notation",
+            },
+        ]
+
+    return [
+        {
+            "tag": "form",
+            "name": f"feige_form_{ctx_id}",
+            "elements": [
+                {
+                    "tag": "input",
+                    "name": "followup_prompt",
+                    "input_type": "multiline_text",
+                    "rows": 2,
+                    "auto_resize": True,
+                    "max_rows": 5,
+                    "width": "fill",
+                    "placeholder": {
+                        "tag": "plain_text",
+                        "content": "输入追问或继续指令（仅校验通过的操作人可触发续跑）…",
+                    },
+                },
+                {
+                    "tag": "button",
+                    "name": f"feige_submit_{ctx_id}",
+                    "text": {"tag": "plain_text", "content": "📤 发送追问"},
+                    "type": "primary",
+                    "form_action_type": "submit",
+                    "value": {"feige_action": "followup", "ctx_id": ctx_id},
+                },
+            ],
+        },
+        {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_align": "left",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "auto",
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "name": f"feige_continue_{ctx_id}",
+                            "text": {"tag": "plain_text", "content": "▶️ 继续执行"},
+                            "type": "default",
+                            "value": {"feige_action": "continue", "ctx_id": ctx_id},
+                            "confirm": {
+                                "title": {"tag": "plain_text", "content": "确认继续执行？"},
+                                "text": {"tag": "plain_text", "content": f"将调用 {host_label} 基于原会话继续执行未完成的任务。"},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "tag": "column",
+                    "width": "auto",
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "name": f"feige_tests_{ctx_id}",
+                            "text": {"tag": "plain_text", "content": "🧪 跑测试核验"},
+                            "type": "default",
+                            "value": {"feige_action": "run_tests", "ctx_id": ctx_id},
+                            "confirm": {
+                                "title": {"tag": "plain_text", "content": "确认运行测试？"},
+                                "text": {"tag": "plain_text", "content": f"将调用 {host_label} 运行项目测试并回传结果。"},
+                            },
+                        }
+                    ],
+                },
+            ],
+        },
+    ]
+
+
 def build_card(title: str, body: str, stats: dict | None = None,
                status: str = "ok", streaming: bool = False,
-               allow_summarize: bool = True) -> dict:
-    """统一卡片模型 → 飞书 Card 2.0 JSON。
+               allow_summarize: bool = True,
+               *,
+               detail_body: str = "",
+               tool_summary: str = "",
+               host: str = "",
+               ctx_id: str = "",
+               interactive: bool = False,
+               resumable: bool = True,
+               logo_image_key: str = "",
+               panel_expanded: bool | None = None,
+               safe_bytes: int | None = None) -> dict:
+    """统一卡片模型 → 飞书 Card 2.0 JSON（对齐 fry-cards 家族规范）。
 
     - 标题按状态加前缀（🛠️/✅/❌），header 按状态着色（蓝/绿/红）；
-    - 正文 markdown，超长时按 fit_body 处理（LLM 总结 → 硬截断兜底）；
-      streaming=True 时正文元素带 STREAMING_ELEMENT_ID 并开流式配置，
-      供后续 CardKit update_content 打字机更新；
-    - 统计面板只在完成态（ok/error）做 notation 脚注单次呈现，running 态不出现。
+    - 顶层正文保持精简战报（fit_body 处理）；streaming=True 时仅保留流式元素；
+    - 完成态（ok/error）附带底部统一折叠面板（collapsible_panel）承载详细正文、
+      工具摘要与厂商家族 Logo + 官方模型名；
+    - interactive=True（feishu-cardkit）且有 ctx_id 时附加追问表单与防误触快捷按钮；
+    - 统计脚注（notation）默认不再追加——面板头已承载同一套统计，同一张卡不出
+      三遍；footer_enabled()（FEIGE_FOOTER_ENABLED / 设置 footer_enabled）显式
+      打开才恢复 hr + 脚注行。静态渠道（钉钉/Telegram）不受此开关影响。
     """
     if status not in STATUS_TEMPLATE:
         raise ValueError(f"unknown status: {status!r} (expect running/ok/error)")
@@ -532,6 +1074,7 @@ def build_card(title: str, body: str, stats: dict | None = None,
     config: dict = {
         "width_mode": "default",
         "update_multi": True,
+        "locales": _LOCALES,
         "summary": {"content": full_title},
     }
     if streaming:
@@ -542,24 +1085,47 @@ def build_card(title: str, body: str, stats: dict | None = None,
             "print_strategy": "fast",
         }
 
+    raw_body = (body or "").strip()
+    summary_body = fit_body(raw_body, allow_summarize=allow_summarize) or "（空内容）"
     element: dict = {
         "tag": "markdown",
-        "content": fit_body(body.strip(), allow_summarize=allow_summarize) or "（空内容）",
+        "content": summary_body,
         "text_align": "left",
         "text_size": "normal_v2",
         "margin": "0px 0px 0px 0px",
     }
     if streaming:
         element["element_id"] = STREAMING_ELEMENT_ID
-    elements = [element]
+    elements: list[dict] = [element]
 
-    footer = stats_footer(stats)
-    if status != "running" and footer:
-        # Card 2.0 没有 note 组件：脚注用 markdown + text_size:notation
-        elements.append({"tag": "hr"})
-        elements.append({"tag": "markdown", "content": footer, "text_size": "notation"})
+    footer = (stats_footer(stats)
+              if status != "running" and footer_enabled() else "")
+    if status != "running":
+        eff_detail = (detail_body or "").strip()
+        # 若顶层正文已被 LLM 总结或截断，且未显式传入 detail_body，则保留原文前缀供折叠面板展开阅读
+        if not eff_detail and raw_body and raw_body != summary_body and len(raw_body) <= 8000:
+            eff_detail = raw_body
+        eff_expanded = panel_expanded_default() if panel_expanded is None else bool(panel_expanded)
+        panel = _build_unified_panel(
+            stats=stats,
+            status=status,
+            detail_body=eff_detail,
+            tool_summary=tool_summary,
+            host=host,
+            ctx_id=ctx_id,
+            logo_image_key=logo_image_key if vendor_logo_enabled() else "",
+            expanded=eff_expanded,
+        )
+        if panel is not None:
+            elements.append(panel)
+        if interactive and ctx_id:
+            elements.extend(_build_interactive_elements(ctx_id, host=host, resumable=resumable))
+        if footer:
+            # Card 2.0 没有 note 组件：脚注用 markdown + text_size:notation
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "markdown", "content": footer, "text_size": "notation"})
 
-    return {
+    card = {
         "schema": "2.0",
         "config": config,
         "header": {
@@ -568,6 +1134,23 @@ def build_card(title: str, body: str, stats: dict | None = None,
         },
         "body": {"elements": elements},
     }
+
+    # 整卡体积安全钳制（防 webhook 20KB / CardKit 30KB 超限）
+    budget = safe_bytes or (CARD_CARDKIT_SAFE_BYTES if interactive else CARD_WEBHOOK_SAFE_BYTES)
+    if status != "running" and len(json.dumps(card, ensure_ascii=False).encode("utf-8")) > budget:
+        for el in elements:
+            if isinstance(el, dict) and el.get("element_id") == UNIFIED_PANEL_ELEMENT_ID:
+                sub = el.get("elements") or []
+                el["elements"] = [c for c in sub if "**详细摘要 / 原文**" not in str(c.get("content", ""))]
+                if not el["elements"]:
+                    el["elements"] = [{"tag": "markdown", "content": "（详情因卡片体积限制已省略）", "text_size": "notation"}]
+                break
+        if len(json.dumps(card, ensure_ascii=False).encode("utf-8")) > budget:
+            card["body"]["elements"] = [
+                el for el in elements
+                if not (isinstance(el, dict) and el.get("element_id") == UNIFIED_PANEL_ELEMENT_ID)
+            ]
+    return card
 
 
 # ── 底层 HTTP ────────────────────────────────────────────────────────────────
@@ -733,6 +1316,94 @@ def call_app_api(method: str, path: str, body: dict | None = None) -> dict:
         return {"code": -1, "msg": redact(f"network error: {e.reason}")}
 
 
+_LOGO_CACHE: dict[str, str | None] = {}
+
+
+def _logo_cache_path() -> Path:
+    return Path(os.environ.get("FEIGE_LOGO_CACHE_FILE") or (Path.home() / ".feige-logo-cache.json"))
+
+
+def upload_image_bytes(data: bytes, filename: str = "logo.png") -> str:
+    """上传本地 PNG 图片到飞书换取 image_key（纯标准库 multipart/form-data）。"""
+    boundary = f"----feige{int(time.time() * 1000)}{os.getpid()}"
+    crlf = b"\r\n"
+    parts = [
+        b"--" + boundary.encode("ascii"),
+        b'Content-Disposition: form-data; name="image_type"',
+        b"",
+        b"message",
+        b"--" + boundary.encode("ascii"),
+        f'Content-Disposition: form-data; name="image"; filename="{filename}"'.encode("utf-8"),
+        b"Content-Type: image/png",
+        b"",
+        data,
+        b"--" + boundary.encode("ascii") + b"--",
+        b"",
+    ]
+    payload = crlf.join(parts)
+    req = urllib.request.Request(
+        app_api() + "/im/v1/images",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {get_tenant_token()}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        res = json.loads(resp.read())
+    key = str((res.get("data") or {}).get("image_key") or "").strip()
+    if res.get("code") != 0 or not key:
+        raise RuntimeError(f"upload image failed: code={res.get('code')} msg={redact(res.get('msg', ''))}")
+    return key
+
+
+def resolve_vendor_logo_image_key(model: str) -> str:
+    """解析并缓存厂商 Logo 的飞书 image_key（仅 feishu-cardkit 使用，失败静默降级空串）。"""
+    if not vendor_logo_enabled():
+        return ""
+    asset = resolve_vendor_logo_asset(model)
+    if not asset:
+        return ""
+    app_id = _env("FEISHU_APP_ID", "LARK_APP_ID")
+    app_secret = _env("FEISHU_APP_SECRET", "LARK_APP_SECRET")
+    if not app_id or not app_secret:
+        return ""
+    cache_key = f"{app_base()}|{app_id}|{asset}"
+    if cache_key in _LOGO_CACHE:
+        return _LOGO_CACHE[cache_key] or ""
+    cpath = _logo_cache_path()
+    try:
+        disk = json.loads(cpath.read_text(encoding="utf-8")) if cpath.is_file() else {}
+    except (OSError, ValueError):
+        disk = {}
+    if isinstance(disk, dict) and isinstance(disk.get(cache_key), str) and disk[cache_key]:
+        _LOGO_CACHE[cache_key] = disk[cache_key]
+        return disk[cache_key]
+    img_path = _ASSETS_VENDOR_DIR / asset
+    if not img_path.is_file():
+        _LOGO_CACHE[cache_key] = None
+        return ""
+    try:
+        key = upload_image_bytes(img_path.read_bytes(), filename=asset)
+        _LOGO_CACHE[cache_key] = key
+        try:
+            if not isinstance(disk, dict):
+                disk = {}
+            disk[cache_key] = key
+            cpath.parent.mkdir(parents=True, exist_ok=True)
+            tmp = str(cpath) + ".tmp"
+            Path(tmp).write_text(json.dumps(disk, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, cpath)
+        except OSError:
+            pass
+        return key
+    except Exception as exc:
+        log(f"vendor logo upload skipped ({asset}): {redact(exc)}")
+        _LOGO_CACHE[cache_key] = None
+        return ""
+
+
 def create_card(card: dict) -> str:
     """建卡。body 必须是信封 {"type": "card_json", "data": "<卡片JSON字符串>"}，
     传裸卡片对象会报 99992402（家族硬坑）。返回 card_id。"""
@@ -752,18 +1423,23 @@ def update_content(card_id: str, content: str, sequence: int) -> None:
         raise RuntimeError(f"update content failed: code={r.get('code')} msg={redact(r.get('msg', ''))}")
 
 
-def seal_card(card_id: str, card: dict, sequence: int) -> int:
-    """封卡：PUT 整卡（完成态卡片 JSON）→ PATCH settings 关流式（用 PUT 会 404）。
-
-    返回下一个可用 sequence；关流式失败不致命，只落日志。
-    """
+def update_card(card_id: str, card: dict, sequence: int) -> int:
+    """全量更新已发送的 CardKit 卡片：PUT /cardkit/v1/cards/:card_id，返回下一个 sequence。"""
     r = call_app_api("PUT", f"/cardkit/v1/cards/{card_id}",
                      {"card": {"type": "card_json",
                                "data": json.dumps(card, ensure_ascii=False)},
                       "sequence": sequence})
     if r.get("code") != 0:
-        raise RuntimeError(f"seal card failed: code={r.get('code')} msg={redact(r.get('msg', ''))}")
-    sequence += 1
+        raise RuntimeError(f"update card failed: code={r.get('code')} msg={redact(r.get('msg', ''))}")
+    return sequence + 1
+
+
+def seal_card(card_id: str, card: dict, sequence: int) -> int:
+    """封卡：PUT 整卡（完成态卡片 JSON）→ PATCH settings 关流式（用 PUT 会 404）。
+
+    返回下一个可用 sequence；关流式失败不致命，只落日志。
+    """
+    sequence = update_card(card_id, card, sequence)
     r = call_app_api("PATCH", f"/cardkit/v1/cards/{card_id}/settings",
                      {"settings": json.dumps({"streaming_mode": False}),
                       "sequence": sequence})
@@ -772,19 +1448,38 @@ def seal_card(card_id: str, card: dict, sequence: int) -> int:
     return sequence + 1
 
 
-def send_card(card_id: str, chat_id: str = "") -> str:
-    """按引用把卡片发到群：content = {"type": "card", "data": {"card_id": ...}}。"""
-    chat = chat_id or default_chat_id()
-    if not chat:
-        raise RuntimeError("no chat_id: pass --chat-id or set FEISHU_NOTIFY_CHAT_ID (oc_xxx)")
+def send_card(card_id: str, chat_id: str = "", reply_to_message_id: str = "") -> str:
+    """按引用把卡片发到群（或回复原消息）：content = {"type": "card", "data": {"card_id": ...}}。"""
     content = {"type": "card", "data": {"card_id": card_id}}
-    r = call_app_api("POST", "/im/v1/messages?receive_id_type=chat_id",
-                     {"receive_id": chat, "msg_type": "interactive",
-                      "content": json.dumps(content, ensure_ascii=False)})
+    if reply_to_message_id:
+        r = call_app_api("POST", f"/im/v1/messages/{reply_to_message_id}/reply",
+                         {"msg_type": "interactive",
+                          "content": json.dumps(content, ensure_ascii=False)})
+    else:
+        chat = chat_id or default_chat_id()
+        if not chat:
+            raise RuntimeError("no chat_id: pass --chat-id or set FEISHU_NOTIFY_CHAT_ID (oc_xxx)")
+        r = call_app_api("POST", "/im/v1/messages?receive_id_type=chat_id",
+                         {"receive_id": chat, "msg_type": "interactive",
+                          "content": json.dumps(content, ensure_ascii=False)})
     if r.get("code") != 0:
         raise RuntimeError(f"send card failed: code={r.get('code')} msg={redact(r.get('msg', ''))}")
     mid = (r.get("data") or {}).get("message_id", "")
     return f"sent (message_id: {mid})" if mid else "sent"
+
+
+def send_feishu_cardkit_detail(title: str, body: str, stats: dict | None = None,
+                               status: str = "ok", chat_id: str = "",
+                               card: dict | None = None,
+                               reply_to_message_id: str = "") -> dict:
+    """建终态卡 → 按引用发群，返回 {"card_id", "message_id", "detail"}。"""
+    card_id = create_card(card or build_card(title, body, stats=stats, status=status))
+    detail = send_card(card_id, chat_id, reply_to_message_id=reply_to_message_id)
+    mid = ""
+    m = re.search(r"message_id:\s*([^\s\)]+)", detail)
+    if m:
+        mid = m.group(1)
+    return {"card_id": card_id, "message_id": mid, "detail": detail}
 
 
 def send_feishu_cardkit(title: str, body: str, stats: dict | None = None,
@@ -798,8 +1493,8 @@ def send_feishu_cardkit(title: str, body: str, stats: dict | None = None,
     update_content / seal_card）保留给 tail 模式：先 send_card 再持续更新才有意义。
     card 参数可注入预建好的卡片，原样建卡发送。
     """
-    card_id = create_card(card or build_card(title, body, stats=stats, status=status))
-    return send_card(card_id, chat_id)
+    return send_feishu_cardkit_detail(title, body, stats=stats, status=status,
+                                      chat_id=chat_id, card=card)["detail"]
 
 
 # ── 渠道三：dingtalk-webhook（钉钉自定义机器人，markdown 消息）────────────────
@@ -910,7 +1605,10 @@ def pick_channel() -> str:
 
 def send_report(title: str, body: str, stats: dict | None = None, status: str = "ok",
                 channel: str = "", chat_id: str = "", webhook: str = "",
-                token: str = "", dry_run: bool = False, secret: str = "") -> tuple[bool, str]:
+                token: str = "", dry_run: bool = False, secret: str = "",
+                *,
+                host: str = "", session_id: str = "", cwd: str = "",
+                detail_body: str = "", tool_summary: str = "") -> tuple[bool, str]:
     """统一发送入口，fail-open：任何异常只落日志，返回 (是否成功, 打码后的说明)。
 
     dry_run=True 只返回将发送的载荷 JSON 字符串，不发网络请求。
@@ -950,9 +1648,55 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
                                          "payload": payload}, ensure_ascii=False, indent=2)
             return True, send_telegram(title, body, stats=stats, status=status,
                                        chat_id=chat_id, token=token)
+
         # feishu 两渠道（含 "-" 无渠道 dry-run 预览）：Card 2.0 终态卡
-        card = build_card(title, body, stats=eff_stats, status=status,
-                          allow_summarize=allow_sum)
+        logo_key = ""
+        if channel == "feishu-cardkit" and not dry_run and eff_stats:
+            logo_key = resolve_vendor_logo_image_key(str(eff_stats.get("model") or ""))
+
+        use_interactive = (channel == "feishu-cardkit" and status != "running"
+                           and interactive_enabled() and bool(host or session_id))
+        ctx_id = ""
+        resumable = False
+        sess_mod = None
+        if use_interactive:
+            try:
+                import feige_interactive as sess_mod  # noqa: E402
+                if dry_run:
+                    ctx_id = "preview"
+                    resumable = sess_mod.is_host_resumable(host)
+                else:
+                    resumable = sess_mod.is_host_resumable(host, session_id=session_id)
+                    eff_chat = chat_id or (project_chat_id(str((eff_stats or {}).get("project") or ""))
+                                           if (eff_stats or {}).get("project") else default_chat_id())
+                    ctx_id = sess_mod.register_session(
+                        host=host,
+                        session_id=session_id,
+                        cwd=cwd,
+                        project=str((eff_stats or {}).get("project") or ""),
+                        model=str((eff_stats or {}).get("model") or ""),
+                        title=title,
+                        chat_id=eff_chat,
+                        last_body=body,
+                        detail_body=detail_body,
+                        tool_summary=tool_summary,
+                    )
+            except Exception as exc:
+                log(f"interactive context skipped (fail-open): {redact(exc)}")
+                ctx_id = ""
+                use_interactive = False
+
+        card = build_card(
+            title, body, stats=eff_stats, status=status,
+            allow_summarize=allow_sum,
+            detail_body=detail_body,
+            tool_summary=tool_summary,
+            host=host,
+            ctx_id=ctx_id,
+            interactive=use_interactive,
+            resumable=resumable,
+            logo_image_key=logo_key,
+        )
         if dry_run:
             if channel == "feishu-webhook":
                 out = {"msg_type": "interactive", "card": card}
@@ -963,7 +1707,18 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
             return True, json.dumps(out, ensure_ascii=False, indent=2)
         if channel == "feishu-webhook":
             return True, send_feishu_webhook(card, webhook, secret)
-        return True, send_feishu_cardkit(title, body, chat_id=chat_id, card=card)
+        sent = send_feishu_cardkit_detail(title, body, chat_id=chat_id, card=card)
+        if use_interactive and ctx_id and sess_mod is not None:
+            try:
+                sess_mod.update_session(
+                    ctx_id,
+                    card_id=sent.get("card_id", ""),
+                    message_id=sent.get("message_id", ""),
+                    chat_id=chat_id or default_chat_id(),
+                )
+            except Exception:
+                pass
+        return True, sent["detail"]
     except Exception as exc:  # fail-open：发卡失败只落日志，绝不抛炸调用方
         detail = redact(exc)
         log(f"send failed ({channel}): {detail}")
@@ -1078,7 +1833,10 @@ def resolve_routes(project: str, doc: dict | None, env: dict | None = None) -> l
 
 def send_routed(title: str, body: str, stats: dict | None = None, status: str = "ok",
                 project: str = "", dry_run: bool = False,
-                doc: dict | None = None) -> tuple[bool, str]:
+                doc: dict | None = None,
+                *,
+                host: str = "", session_id: str = "", cwd: str = "",
+                detail_body: str = "", tool_summary: str = "") -> tuple[bool, str]:
     """按路由 fanout：每个目标独立发送（单目标失败不影响其余），返回聚合结果。
 
     无路由文件 / 文件损坏 / 项目无匹配且无 "*" 兜底：退化为现有单渠道行为，
@@ -1087,11 +1845,15 @@ def send_routed(title: str, body: str, stats: dict | None = None, status: str = 
     """
     doc = load_routes() if doc is None else doc
     targets = resolve_routes(project, doc) if doc else []
+    extra = {k: v for k, v in (
+        ("host", host), ("session_id", session_id), ("cwd", cwd),
+        ("detail_body", detail_body), ("tool_summary", tool_summary),
+    ) if v}
     if not targets:
         if doc is not None:
             log(f"no route for project {project or '(none)'!r} (no \"*\" fallback), single-channel")
         return send_report(title, body, stats=stats, status=status, dry_run=dry_run,
-                           chat_id=project_chat_id(project) if project else "")
+                           chat_id=project_chat_id(project) if project else "", **extra)
     results: list[tuple[bool, str]] = []
     for t in targets:
         channel = str(t.get("channel") or "").strip()
@@ -1114,7 +1876,7 @@ def send_routed(title: str, body: str, stats: dict | None = None, status: str = 
             chat_id=str(t.get("chat_id") or "") or (project_chat_id(project) if project else ""),
             webhook=str(t.get("webhook") or ""),
             token=str(t.get("token") or ""), secret=str(t.get("secret") or ""),
-            dry_run=dry_run)
+            dry_run=dry_run, **extra)
         results.append((ok, f"[{channel}] {detail}"))
     return all(ok for ok, _ in results), "\n".join(d for _, d in results)
 
@@ -1180,14 +1942,21 @@ def run_send(args: argparse.Namespace) -> int:
         "thinking": args.thinking, "tools": args.tools,
         "context": args.context, "tokens": args.tokens, "elapsed": args.elapsed,
     }
+    extra = {
+        "host": getattr(args, "host", "") or "",
+        "session_id": getattr(args, "session_id", "") or "",
+        "cwd": getattr(args, "cwd", "") or "",
+        "detail_body": getattr(args, "detail", "") or "",
+        "tool_summary": getattr(args, "tool_summary", "") or "",
+    }
     if args.route:
         ok, detail = send_routed(args.title, args.body, stats=stats,
                                  status=args.status, project=args.project,
-                                 dry_run=args.dry_run)
+                                 dry_run=args.dry_run, **extra)
     else:
         ok, detail = send_report(args.title, args.body, stats=stats, status=args.status,
                                  channel=args.channel, chat_id=args.chat_id,
-                                 webhook=args.webhook, dry_run=args.dry_run)
+                                 webhook=args.webhook, dry_run=args.dry_run, **extra)
     print(detail if args.dry_run else (f"✅ {detail}" if ok else f"❌ {detail}"))
     return 0 if ok else 1
 
@@ -1236,7 +2005,7 @@ def refresh_body_from_transcript(args: argparse.Namespace) -> int:
         new_body = str(summary.get("body") or "").strip()
         if new_body and new_body != _EMPTY_NOTE and new_body != args.body:
             args.body = new_body
-            for key in ("model", "thinking", "tools", "context", "tokens", "elapsed"):
+            for key in ("model", "thinking", "tools", "context", "tokens", "elapsed", "detail", "tool_summary"):
                 if summary.get(key) is not None:
                     setattr(args, key, summary[key])
             return len(new_body)
@@ -1305,6 +2074,13 @@ def _build_parser() -> argparse.ArgumentParser:
     send.add_argument("--transcript", default="",
                       help="宿主转录 jsonl 路径；传了则后台进程稍等后重读它取最新收尾正文"
                            "（治宿主落盘滞后导致的战报落后一轮），重读失败保持 --body")
+    send.add_argument("--host", default="", help="宿主标识（claude-code / codex / zcode / kimi-code / antigravity）")
+    send.add_argument("--session-id", default="", help="宿主原生会话 ID（仅存本地安全映射，不上卡）")
+    send.add_argument("--cwd", default="", help="会话工作目录（仅存本地安全映射，不上卡）")
+    send.add_argument("--detail", default="", help="折叠面板承载的详细正文/原文摘录")
+    send.add_argument("--tool-summary", default="", help="折叠面板承载的工具调用摘要")
+
+    sub.add_parser("listen", help="前台运行飞书长连接（WebSocket）交互回调监听")
     return parser
 
 
@@ -1317,6 +2093,9 @@ def main(argv: list[str] | None = None) -> int:
         pass
     if args.command == "send":
         return run_send(args)
+    if args.command == "listen":
+        import feige_interactive
+        return feige_interactive.run_ws_listener_forever()
     return 2
 
 

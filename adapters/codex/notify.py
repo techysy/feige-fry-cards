@@ -35,7 +35,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import body_for_card, log, project_label, read_payload, run, send_card  # noqa: E402
+from common import (body_for_card, detail_for_card, log, project_label,  # noqa: E402
+                    read_payload, run, send_card)
 
 
 def codex_model() -> str:
@@ -59,7 +60,8 @@ def _send(text: str, cwd: str, model: str, session: str) -> None:
         "model": model or codex_model(),
         # token/工具/耗时统计 Codex 不给——按约定省略，不硬编
     }
-    send_card("", body_for_card(text), stats, agent="Codex", session=session)
+    send_card("", body_for_card(text), stats, agent="Codex", session=session,
+              cwd=cwd, detail=detail_for_card(text))
 
 
 def main_hook(payload: dict) -> None:

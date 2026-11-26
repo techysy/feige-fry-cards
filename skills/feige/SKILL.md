@@ -5,8 +5,9 @@ description: 用飞鸽（feige-fry-cards）把任务结果以摘要战报卡直�
 
 # feige — 摘要战报卡直发飞书群
 
-`feige.py`（本插件根目录，纯 Python 标准库）是 agent 无关的结果汇报核心：
-**标题 + ≤300 字摘要正文 + 统计脚注 + 状态着色**，一张卡片直发飞书群。
+`feige.py`（本插件根目录，纯 Python 标准库核心）是 agent 无关的结果汇报核心：
+**标题 + 精简战报正文 + 底部统一折叠面板（详细正文/工具/厂商 Logo 与官方模型名）+ 状态着色**，
+配合 `feishu-cardkit` 可附加交互追问表单与长连接无头续跑（`feige_interactive.py`），并内置 **feige Studio v2.0** 提供配置管理、真实 CardKit 2.0 预览器与长连接状态监控。
 
 ## 发送命令
 
@@ -17,7 +18,13 @@ python <plugin root>/feige.py send \
     --status ok \
     [--project 项目名] [--model 模型] [--thinking N] [--tools N] \
     [--context "42%"] [--tokens N] [--elapsed "2m38s"] \
+    [--host claude-code] [--session-id <id>] [--detail "详细正文"] \
     [--channel feishu-webhook|feishu-cardkit] [--chat-id oc_xxx] [--dry-run]
+```
+
+独立启动飞书长连接交互监听（或通过 `python webui.py start` 自动随守护进程保活）：
+```bash
+python <plugin root>/feige.py listen
 ```
 
 机器上 `python` 不在 PATH 时用 `py -3` 代替。Windows 终端中文乱码时前缀
@@ -29,9 +36,10 @@ python <plugin root>/feige.py send \
   不是把完整回复/长日志贴进去；超过 300 字级的内容先自己提炼再发。
 - **统计字段**能带就带：`--project`（📦）、`--model`、`--thinking`（💭 思考轮数）、
   `--tools`（🔧 工具调用数）、`--context`（上下文水位，形如 `42%` 或 `86.5k/200.0k (43%)`）、
-  `--tokens`（🎫 输出 token 数，按单轮计）、`--elapsed`（⏱️ 耗时，单轮用时）。它们按
-  `📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫 token · ⏱️耗时` 顺序拼成一行 notation 脚注，
-  只在 ok/error 态出现；未知值省略，不能虚构。
+  `--tokens`（🎫 输出 token 数，按单轮计）、`--elapsed`（⏱️ 耗时，单轮用时）。飞书卡上
+  它们进统一折叠面板头（默认 `模型 · 💭思考 · 🔧工具 · 上下文 · 🎫 token · ⏱️耗时`，
+  标题已含项目与宿主不重复；`FEIGE_PANEL_FIELDS` 独立配置）；钉钉/Telegram 静态版式
+  仍拼成一行脚注。只在 ok/error 态出现；未知值省略，不能虚构。
 - **CLI/Mirasim 场景 `--model` 带工具名前缀**：`kimi-code · kimi-k3`、`claude-code · opus-4`，
   群里一眼看出是哪个 agent 跑的；上下文知道窗口就报 `153.6k/1.0m (15%)` 带分母百分比。
 - **状态着色**：成功 `--status ok`（绿）、失败/中断 `--status error`（红，正文写清错误

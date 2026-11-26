@@ -2,7 +2,7 @@
 
 # 🕊️ feige-fry-cards — 飞鸽卡片
 
-**跨 Agent 会话战报直发插件：收尾自动汇总 · 飞书 CardKit v2.0 / Webhook · 钉钉 · Telegram 多渠道路由 · 纯标准库实现**
+**跨 Agent 会话战报直发插件：收尾自动汇总 · 飞书 CardKit v2.0 交互式卡片与长连接续跑 · Webhook / 钉钉 / Telegram 多渠道路由**
 
 [![Release](https://img.shields.io/github/v/release/techysy/feige-fry-cards?label=%E7%89%88%E6%9C%AC&color=2563eb)](https://github.com/techysy/feige-fry-cards/releases/latest)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A5%203.9-3776ab?logo=python&logoColor=white)](https://www.python.org/)
@@ -42,10 +42,10 @@
 
 ### 核心设计原则
 - 🎯 **摘要是战报，不是镜像**：卡片正文控制在 300 字级核心提炼，完整交互留在终端，杜绝冗长刷屏。
-- 📊 **统计面板规范呈现**：遵循家族统一口径，在终态卡片底部附带紧凑脚注：`📦 项目 · 模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 · ⏱️耗时`。
+- 📊 **统计只出一遍**：遵循家族统一口径，终态卡的统一折叠面板头承载紧凑统计：`模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 · ⏱️耗时`（标题已含项目与宿主，面板头不重复；底部脚注行默认关，`FEIGE_FOOTER_ENABLED=1` 可恢复；面板/脚注字段各自独立配置）。
 - 🛡️ **Fail-Open 稳态容错**：卡片生成或网络发信异常仅记录本地日志，**绝不反向阻断或拖垮 Agent 本身的执行进程**。
-- 🔒 **密钥零泄露保障**：凭据走环境变量、插件设置或本地设置文件 `~/.feige-settings.json`（仅存本机），日志与 WebUI 严格脱敏，绝不入库。
-- 📦 **纯标准库零依赖**：基于 Python 标准库（`http.server`、`urllib` 等），无 `pip install` 外部三方包依赖负担。
+- 🔒 **密钥零泄露保障**：凭据走环境变量、插件设置或本地设置文件 `~/.feige-settings.json`（仅存本机），日志与 WebUI 严格脱敏，绝不入库；会话路径与 `session_id` 仅映射在 `~/.feige-sessions.json`，不上卡片公开字段。
+- 📦 **核心零依赖 + 可选长连接增强**：发卡引擎（Webhook / CardKit / 钉钉 / Telegram）与 Studio 设置页仍基于纯 Python 标准库零依赖运行；仅开启飞书长连接交互回调（`WSClient`）时按需使用可选依赖 `lark-oapi>=1.4.0`，未安装时自动优雅降级。
 
 ---
 
@@ -54,8 +54,10 @@
 - 🤖 **一插件统驭六宿主**：无缝适配 Claude Code、Codex CLI、ZCode、kimi-code、Antigravity CLI（agy）及 Mirasim 托管会话。
 - 🌐 **多渠道智能 Fanout**：支持按项目名称将战报广播（Fanout）到不同群组，单渠道故障互不连带。
 - 🧠 **正文 LLM 总结**：正文超长不再硬截断——配置 OpenAI 兼容 API 后，后台发送进程先把冗长收尾汇报浓缩成战报摘要，未配置/失败自动退化为截断；宿主 hook 前台零网络阻塞。
+- 🃏 **家族卡片规范 + 折叠面板 + 厂商 Logo**：对齐 `hermes-fry-cards` / `claw-fry-cards` 统一底部折叠面板（`collapsible_panel`）承载详细正文与工具摘要，内建 20 套厂商 Logo 资产与官方模型名映射（CardKit 自动上传缓存，Webhook 或未命中时保持干净无多余图标）。
+- 🔁 **交互式追问与长连接续跑**：`feishu-cardkit` 渠道支持追问表单与防误触快捷按钮，配合飞书长连接（`WSClient` 接收 `card.action.trigger`，可随 `webui.py start` 保活）校验操作人白名单后，对 Claude Code / Codex CLI / ZCode / kimi-code 触发无头续跑并回写原卡。
 - ⏱️ **精准口径与收尾去抖**：支持仅统计单轮用时与消耗（或全会话累计），内置 Debounce 机制防止频繁短交互刷屏。
-- 🎛️ **feige Studio 设置页**：配置/预览/状态/群路由/接入自检五页签，渠道凭据、总结 LLM、行为开关全部表单化，写 `~/.feige-settings.json` 保存即生效，不用再碰环境变量。
+- 🎛️ **feige Studio 设置页**：配置/预览/状态/群路由/接入自检五页签，渠道凭据、长连接与白名单、总结 LLM、行为开关全部表单化，写 `~/.feige-settings.json` 保存即生效，不用再碰环境变量。
 
 ---
 
@@ -99,8 +101,8 @@ python webui.py    # 默认绑定 127.0.0.1:8787，安全无外网暴露
 
 | 渠道标识 | 所需环境变量 | 展现形式 | 特性说明 |
 | --- | --- | --- | --- |
-| `feishu-webhook` | `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL`<br/>可选 `FEISHU_WEBHOOK_SECRET`（签名） | 飞书 CardKit 2.0 交互卡 | 配置最便捷，一次性交互卡片，开箱即用 |
-| `feishu-cardkit` | `FEISHU_APP_ID` + `FEISHU_APP_SECRET`<br/>`FEISHU_NOTIFY_CHAT_ID`（目标群号） | 飞书原生卡片消息 | 走开放平台标准 App 凭据，直接向指定群分发终态卡片 |
+| `feishu-webhook` | `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL`<br/>可选 `FEISHU_WEBHOOK_SECRET`（签名） | 飞书 CardKit 2.0 卡片（含折叠面板） | 配置最便捷，支持底部折叠面板与状态着色，开箱即用 |
+| `feishu-cardkit` | `FEISHU_APP_ID` + `FEISHU_APP_SECRET`<br/>`FEISHU_NOTIFY_CHAT_ID`（目标群号） | 飞书原生交互式 CardKit 2.0 卡片 | 支持厂商 Logo + 折叠面板 + 追问表单/快捷按钮，配合长连接可远程无头续跑（Claude Code / Codex / ZCode / kimi-code） |
 | `dingtalk-webhook` | `DINGTALK_WEBHOOK`<br/>可选 `DINGTALK_SECRET`（加签） | 钉钉 Markdown 消息 | 标题行 + 结构化正文 + 状态脚注，自动处理加签鉴权 |
 | `telegram` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Telegram 纯文本 | 严防 MarkdownV2 转义破坏，超长文本自动根据 UTF-16 截断 |
 
@@ -223,9 +225,9 @@ python webui.py status          # 探活：守护进程 / 端口 / 日志位置
 
 | 页面 | 功能 |
 | --- | --- |
-| **⚙️ 配置** | 分卡片表单：飞书（webhook / 签名密钥 / App ID / Secret / 域名 / 接收群）、钉钉、Telegram、**正文总结 LLM**、行为开关（统计口径 / 去抖 / 路由文件）。每键带「已配置 · 来源」徽章，每卡片独立保存 |
-| **👁️ 预览** | 填参数出两部分：dry-run 载荷 JSON + 朴素 HTML 外观示意 |
-| **📊 状态** | 渠道凭据状态（含来源）、总结 LLM 概况、路由统计、行为参数；附各渠道一键测试发卡 |
+| **⚙️ 配置** | 分卡片表单：飞书（webhook / App ID / Secret / 接收群 + 交互开关 / 长连接 / 厂商 Logo / 操作人白名单 / 联调折叠指引）、**正文总结 LLM**、行为开关；钉钉与 Telegram 次要渠道采用可折叠 `fold-card` + 状态徽章，支持一键「保存并预览」 |
+| **👁️ 预览** | 对标 `fry-cards Studio` 真实 CardKit v2.0 渲染器（`POST /api/preview`）：内置 6 种场景预设与厂商官方模型速选，仿真白底飞书卡片（色头、表格/代码 Markdown、底部 `collapsible_panel` + 厂商 Logo、追问表单与二次确认防误触弹窗模拟），附可折叠真实 dry-run JSON |
+| **📊 状态** | 渠道凭据胶囊徽章、飞书长连接运行态与宿主 CLI 续跑能力探测、一键同步长连接与各渠道测试发卡 |
 | **🧭 群路由** | 表单化编辑：缺 channel 拒绝、保存前 `.bak` 备份 + 原子写、`$ENV` 引用原样保留、保存后按路由语义冒烟 |
 | **🔌 接入自检** | 只读检测 ZCode / Claude Code / Codex 插件注册与手动配置、kimi-code 手挂状态，未接入项给指引 |
 
@@ -277,14 +279,15 @@ export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
 
 1. **设置端点与凭据**：
    - `FEIGE_LLM_BASE_URL`: `http://192.168.31.101:20127/v1`
-   - `FEIGE_LLM_API_KEY`: `sk-97a8d457f79f700d-ufajv8-ec3ef154`
+   - `FEIGE_LLM_API_KEY`: `sk-…`（你的网关密钥，勿把真实 key 写进公开文档）
    - `FEIGE_LLM_MODEL`: `longcat/LongCat-2.5-Preview`
 2. **战报效果**：
-   - 助手冗长的会话收尾汇报会被模型浓缩为清晰明了的要点战报。
-   - 战报卡片底部自动附带规范的运行统计脚注：
+   - 助手冗长的会话收尾汇报会被模型浓缩为清晰明了的要点战报，顶层只留摘要，原文在折叠面板里展开阅读。
+   - 统一面板头承载规范的运行统计（标题已含项目与宿主，不重复）：
      ```text
-     📦 10router · claude-code · gemini-3.8-flash-n · 💭2 · 🔧22 · 1.0m/1.0m (97%) · 🎫 2.9k · ⏱️ 8m 40s
+     claude-code · Gemini 3.8-flash-n · 💭2 · 🔧22 · 1.0m/1.0m [███████▓] 97% · 🎫 2.9k · ⏱️ 8m 40s
      ```
+   - 总结请求超时默认 45 秒（只在后台发送进程里等）；免费/慢速池偶尔超时仍 fail-open 回落截断原文，日志可辨（`llm summarize failed (falling back to clip)`）。
 
 - **优雅退化**：未配 key、总结失败、或 dry-run/预览路径 → 自动退回硬截断，绝不卡发卡；
 - **战报不是镜像**：启用总结后正文超过触发字数（默认 300 字，`llm_min_chars`，0 =
@@ -318,8 +321,34 @@ export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
 | `FEIGE_READ_BODY_DELAY` | 后台发送进程开卡前重读转录的等待秒数（默认 1.5，`0` 关闭） |
 | `FEIGE_SUMMARIZE` | `0`/`false` 显式关闭总结（即使已配 key） |
 | `FEIGE_SETTINGS_FILE` | 设置文件路径（默认 `~/.feige-settings.json`） |
+| `FEIGE_INTERACTIVE` | `feishu-cardkit` 交互式表单与快捷按钮开关（默认 `1`，`0` 关闭） |
+| `FEIGE_WS_ENABLED` | 飞书长连接（WSClient）监听开关（`1` 开启，默认 `0`；可随 `webui.py start` 保活） |
+| `FEIGE_ALLOW_USERS` | 交互操作人白名单（飞书 `open_id` / `user_id`，逗号或换行分隔；留空不限） |
+| `FEIGE_VENDOR_LOGO` | 厂商家族 Logo 展示开关（默认 `1`，`0` 关闭自定义图标） |
+| `FEIGE_PANEL_EXPANDED` | 底部统一折叠面板默认展开开关（默认 `0` 折叠） |
+| `FEIGE_PANEL_FIELDS` | 统一面板头字段与顺序（逗号分隔；默认 `model,thinking,tools,context,tokens,elapsed`，不含项目名） |
+| `FEIGE_FOOTER_FIELDS` | 底部脚注字段与顺序（逗号分隔；默认全字段含 `project`；仅脚注开启时可见） |
+| `FEIGE_FOOTER_ENABLED` | 完成卡底部 hr+统计脚注行开关（默认 `0` 关——面板头已承载统计；钉钉/Telegram 静态版式不受影响） |
+| `FEIGE_RESUME_TIMEOUT` | 无头续跑子进程超时秒数（`30~1800`，默认 `300`） |
+| `FEIGE_SESSIONS_FILE` | 本地会话上下文映射文件（默认 `~/.feige-sessions.json`） |
 | `FEIGE_HOOK_NOTIFY` | Stop hook 战报总开关（`1` 启用，默认关；kimi-code 注册即开启） |
 | `FEIGE_DRY_RUN` | `1` 时 hook 只把卡片 JSON 打到 stderr，不发网络 |
+
+---
+
+## 🔁 交互式卡片与飞书长连接联调
+
+1. **安装可选依赖**（仅开启飞书长连接监听时需要；未安装时发卡核心与其余渠道仍正常可用）：
+   ```bash
+   pip install ".[interactive]"   # 或 pip install lark-oapi>=1.4.0
+   ```
+2. **飞书开放平台配置**：
+   - 应用凭证配置 `App ID` + `App Secret`，并在机器人「事件与回调 → 事件订阅方式」选择 **使用长连接接收事件**（无需公网回调域名）；
+   - 添加卡片回传交互回调：`card.action.trigger`；
+   - 确认应用权限包含发送消息（`im:message:send_as_bot`）、上传图片（`im:resource`）、CardKit 卡片管理，并已将应用机器人拉入目标群；发布应用版本使配置生效。
+3. **启动保活守护监听**：
+   - 在 Studio（`python webui.py start`）「配置 → 飞书渠道」填入 `App ID`、`App Secret`、`接收群 chat_id`，勾选 **启用 CardKit 交互式卡片** 与 **启用飞书长连接监听**，按需配置 **操作人白名单（`open_id`）** 后保存；
+   - 或直接前台运行 `python feige.py listen`。
 
 ---
 
@@ -328,11 +357,14 @@ export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
 ```
 feige-fry-cards/
 ├── adapters/                    # 各宿主 Agent 转录与用量提取器
+├── assets/vendor-logos/         # 厂商家族 PNG Logo 静态资产（与 hermes-fry-cards 同源）
 ├── hooks/                       # 宿主生命周期 Hook 触发脚本
 ├── skills/                      # Agent 交互 Skill 提示词模板
-├── tests/                       # 自动化单元测试套件
-├── feige.py                     # 核心发卡引擎与 CLI 逻辑
-├── webui.py                     # feige Studio 本地设置页服务
+├── tests/                       # 自动化单元测试套件（全离线模拟，不发外网）
+├── feige.py                     # 发卡核心引擎、家族卡片模型与 CLI
+├── feige_interactive.py         # 本地安全会话映射、WSClient 长连接与无头续跑引擎
+├── webui.py                     # feige Studio 本地设置页与长连接保活守护
+├── pyproject.toml               # 包元数据与可选 [interactive] 依赖声明
 ├── CHANGELOG.md                 # 更新日志（Keep a Changelog 格式）
 └── README.md                    # 项目文档
 ```
