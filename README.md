@@ -54,7 +54,7 @@
 - 🤖 **一插件统驭六宿主**：无缝适配 Claude Code、Codex CLI、ZCode、kimi-code、Antigravity CLI（agy）及 Mirasim 托管会话。
 - 🌐 **多渠道智能 Fanout**：支持按项目名称将战报广播（Fanout）到不同群组，单渠道故障互不连带。
 - 🧠 **正文 LLM 总结**：正文超长不再硬截断——配置 OpenAI 兼容 API 后，后台发送进程先把冗长收尾汇报浓缩成战报摘要，未配置/失败自动退化为截断；宿主 hook 前台零网络阻塞。
-- 🃏 **家族卡片规范 + 折叠面板 + 厂商 Logo**：对齐 `hermes-fry-cards` / `claw-fry-cards` 统一底部折叠面板（`collapsible_panel`）承载详细正文与工具摘要，内建 20 套厂商 Logo 资产与官方模型名映射（CardKit 自动上传缓存，Webhook 或未命中时保持干净无多余图标）。
+- 🃏 **家族卡片规范 + 折叠面板 + 厂商 Logo**：对齐 `hermes-fry-cards` / `claw-fry-cards` 统一底部折叠面板（`collapsible_panel`）承载详细正文与工具摘要，内建 20 套厂商 Logo 资产与官方模型名映射，厂商未命中时用宿主/智能体图标兜底（`assets/agent-logos/`，CardKit 自动上传缓存；Webhook 或宿主也认不出时保持干净无多余图标）。
 - 🔁 **交互式追问与长连接续跑**：`feishu-cardkit` 渠道支持追问表单与防误触快捷按钮，配合飞书长连接（`WSClient` 接收 `card.action.trigger`，可随 `webui.py start` 保活）校验操作人白名单后，对 Claude Code / Codex CLI / ZCode / kimi-code 触发无头续跑并回写原卡。
 - ⏱️ **精准口径与收尾去抖**：支持仅统计单轮用时与消耗（或全会话累计），内置 Debounce 机制防止频繁短交互刷屏。
 - 🎛️ **feige Studio 设置页**：配置/预览/状态/群路由/接入自检五页签，渠道凭据、长连接与白名单、总结 LLM、行为开关全部表单化，写 `~/.feige-settings.json` 保存即生效，不用再碰环境变量。
@@ -102,7 +102,7 @@ python webui.py    # 默认绑定 127.0.0.1:8787，安全无外网暴露
 | 渠道标识 | 所需环境变量 | 展现形式 | 特性说明 |
 | --- | --- | --- | --- |
 | `feishu-webhook` | `FEISHU_CARD_WEBHOOK` / `FEISHU_WEBHOOK_URL`<br/>可选 `FEISHU_WEBHOOK_SECRET`（签名） | 飞书 CardKit 2.0 卡片（含折叠面板） | 配置最便捷，支持底部折叠面板与状态着色，开箱即用 |
-| `feishu-cardkit` | `FEISHU_APP_ID` + `FEISHU_APP_SECRET`<br/>`FEISHU_NOTIFY_CHAT_ID`（目标群号） | 飞书原生交互式 CardKit 2.0 卡片 | 支持厂商 Logo + 折叠面板 + 追问表单/快捷按钮，配合长连接可远程无头续跑（Claude Code / Codex / ZCode / kimi-code） |
+| `feishu-cardkit` | `FEISHU_APP_ID` + `FEISHU_APP_SECRET`<br/>`FEISHU_NOTIFY_CHAT_ID`（目标群号） | 飞书原生交互式 CardKit 2.0 卡片 | 支持厂商 Logo（未识别模型兜底宿主图标）+ 折叠面板 + 追问表单/快捷按钮，配合长连接可远程无头续跑（Claude Code / Codex / ZCode / kimi-code） |
 | `dingtalk-webhook` | `DINGTALK_WEBHOOK`<br/>可选 `DINGTALK_SECRET`（加签） | 钉钉 Markdown 消息 | 标题行 + 结构化正文 + 状态脚注，自动处理加签鉴权 |
 | `telegram` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Telegram 纯文本 | 严防 MarkdownV2 转义破坏，超长文本自动根据 UTF-16 截断 |
 
@@ -324,7 +324,7 @@ export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
 | `FEIGE_INTERACTIVE` | `feishu-cardkit` 交互式表单与快捷按钮开关（默认 `1`，`0` 关闭） |
 | `FEIGE_WS_ENABLED` | 飞书长连接（WSClient）监听开关（`1` 开启，默认 `0`；可随 `webui.py start` 保活） |
 | `FEIGE_ALLOW_USERS` | 交互操作人白名单（飞书 `open_id` / `user_id`，逗号或换行分隔；留空不限） |
-| `FEIGE_VENDOR_LOGO` | 厂商家族 Logo 展示开关（默认 `1`，`0` 关闭自定义图标） |
+| `FEIGE_VENDOR_LOGO` | Logo 展示开关（默认 `1`；`0` 时厂商图与智能体兜底图都不出） |
 | `FEIGE_PANEL_EXPANDED` | 底部统一折叠面板默认展开开关（默认 `0` 折叠） |
 | `FEIGE_PANEL_FIELDS` | 统一面板头字段与顺序（逗号分隔；默认 `model,thinking,tools,context,tokens,elapsed`，不含项目名） |
 | `FEIGE_CONTEXT_STYLE` | 面板头上下文水位样式：`text_bar`（默认，文本+进度条 `165.4k/1.0m [█▓▒░] 17%`）/ `text`（纯文本 `165.4k/1.0m (17%)`）/ `bar`（纯进度条 `[█▓▒░] 17%`），口径对齐 claw / hermes-fry-cards；旧值 `plain` 等价 `text` |
@@ -360,6 +360,7 @@ export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
 feige-fry-cards/
 ├── adapters/                    # 各宿主 Agent 转录与用量提取器
 ├── assets/vendor-logos/         # 厂商家族 PNG Logo 静态资产（与 hermes-fry-cards 同源）
+├── assets/agent-logos/          # 宿主/智能体 PNG Logo（厂商未命中时的兜底图标）
 ├── hooks/                       # 宿主生命周期 Hook 触发脚本
 ├── skills/                      # Agent 交互 Skill 提示词模板
 ├── tests/                       # 自动化单元测试套件（全离线模拟，不发外网）

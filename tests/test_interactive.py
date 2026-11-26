@@ -9,12 +9,14 @@ import http.client
 import importlib.util
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 import urllib.parse
+import zlib
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +26,65 @@ sys.path.insert(0, str(REPO))
 import feige  # noqa: E402
 import feige_interactive  # noqa: E402
 import webui  # noqa: E402
+
+
+def logo_luminance(path: Path) -> tuple[float, float]:
+    """Logo PNG 可见像素的 (最暗亮度, 深色像素占比)——只用标准库，本仓不许拉 Pillow。
+
+    亮度 0~255，深色阈值 200：飞书卡片面板头是浅底，整片接近白色的图标（此前 7 张
+    厂商图正是 lobehub 的 dark 变体＝纯白）画上去等于没画，也就是用户看到的
+    「模型那头空着」。只支持资产实际的形态（8 位调色板 + 无过滤/Sub/Up），
+    换了编码方式会明确报错而不是静默放行。
+    """
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise AssertionError(f"{path.name} 不是 PNG")
+    pos, idat, ihdr, plte, trns = 8, bytearray(), b"", b"", b""
+    while pos + 8 <= len(data):
+        (length,) = struct.unpack(">I", data[pos:pos + 4])
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + length]
+        if kind == b"IHDR":
+            ihdr = body
+        elif kind == b"PLTE":
+            plte = body
+        elif kind == b"tRNS":
+            trns = body
+        elif kind == b"IDAT":
+            idat += body
+        elif kind == b"IEND":
+            break
+        pos += 12 + length
+    width, height, depth, color = struct.unpack(">IIBB", ihdr[:10])
+    if depth != 8 or color != 3:
+        raise AssertionError(f"{path.name} 需为 8 位调色板 PNG（depth={depth} color={color}）")
+    raw = zlib.decompress(bytes(idat))
+    stride = width
+    lums: list[float] = []
+    at = 0
+    prev = bytearray(stride)
+    for _ in range(height):
+        ft = raw[at]
+        at += 1
+        row = bytearray(raw[at:at + stride])
+        at += stride
+        if ft == 1:
+            for x in range(1, stride):
+                row[x] = (row[x] + row[x - 1]) & 0xFF
+        elif ft == 2:
+            for x in range(stride):
+                row[x] = (row[x] + prev[x]) & 0xFF
+        elif ft != 0:
+            raise AssertionError(f"{path.name} 用了未支持的行过滤类型 {ft}")
+        prev = row
+        for idx in row:
+            alpha = trns[idx] if idx < len(trns) else 255
+            if alpha <= 40:
+                continue
+            r, g, b = plte[3 * idx:3 * idx + 3]
+            lums.append(0.2126 * r + 0.7152 * g + 0.0722 * b)
+    if not lums:
+        return (255.0, 0.0)
+    return (min(lums), sum(1 for v in lums if v < 200) / len(lums))
 
 
 class VendorLogoAndFamilyCardTest(unittest.TestCase):
@@ -54,6 +115,72 @@ class VendorLogoAndFamilyCardTest(unittest.TestCase):
                 self.assertEqual(feige.resolve_vendor_display_name(model), exp_name)
                 if exp_file:
                     self.assertTrue((feige._ASSETS_VENDOR_DIR / exp_file).is_file())
+
+    def test_unrecognized_model_falls_back_to_agent_logo(self):
+        """认不出的模型（如代理池名）→ 厂商未命中时用宿主/智能体图标兜底。
+
+        截图里的 `OpenAI chat-mode-pool` 走的是厂商命中口径，但同一类代理池模型
+        （`chat-mode-pool`、`custom-model`）此前左侧一无所有；兜底后必须有图。
+        """
+        agent_cases = [
+            # (model, host, 期望兜底资产)
+            ("chat-mode-pool", "claude-code", "claude-code.png"),
+            ("claude-code · chat-mode-pool", "", "claude-code.png"),
+            ("codex · chat-mode-pool", "", "codex.png"),
+            ("zcode · chat-mode-pool", "", "zcode.png"),
+            ("kimi-code · 10r-free", "", "kimi-code.png"),
+            ("antigravity · agy-1", "", "antigravity.png"),
+            ("unknown/custom-model", "codex", "codex.png"),
+            ("claude-code · proxy/pool-a", "", "claude-code.png"),
+        ]
+        for model, host, exp in agent_cases:
+            with self.subTest(model=model, host=host):
+                self.assertIsNone(feige.resolve_vendor_logo_asset(model))
+                self.assertEqual(feige.resolve_agent_logo_asset(model, host), exp)
+                self.assertEqual(feige.resolve_logo_asset(model, host), exp)
+                self.assertTrue((feige._ASSETS_AGENT_DIR / exp).is_file())
+
+        # 命中厂商时仍按原口径出厂商图（不被宿主兜底抢走）
+        self.assertEqual(feige.resolve_logo_asset("claude-code · claude-sonnet-4"), "claude.png")
+        self.assertEqual(feige.resolve_logo_asset("codex · gpt-5.1-codex"), "openai.png")
+
+        # 宿主也认不出 → 仍为空，保持「干净无图标」的旧行为
+        self.assertIsNone(feige.resolve_agent_logo_asset("unknown/custom-model"))
+        self.assertIsNone(feige.resolve_logo_asset("unknown/custom-model"))
+        self.assertIsNone(feige.resolve_logo_asset(""))
+        # 裸宿主名（没有 ' · 模型'）只认显式 host，不把 'claude-code' 当模型名猜
+        self.assertIsNone(feige.resolve_agent_logo_asset("claude-code"))
+        self.assertEqual(feige.resolve_agent_logo_asset("claude-code", "claude-code"), "claude-code.png")
+
+        # 目录只能落在两个已知资产目录里，绝不越界拼路径
+        for asset in ("claude.png", "claude-code.png"):
+            path = feige.logo_asset_path(asset)
+            self.assertIsNotNone(path)
+            self.assertIn(path.parent, (feige._ASSETS_VENDOR_DIR, feige._ASSETS_AGENT_DIR))
+        self.assertIsNone(feige.logo_asset_path("../../feige.py"))
+
+    def test_agent_logo_assets_are_visible_on_white_card(self):
+        """兜底资产必须是「白卡上也看得见」的深色图形。
+
+        20 张厂商图里有 7 张原本是纯白（dark 变体），白底面板上等于没有图标——
+        这正是用户反馈「模型那头空着」的另一半原因。这里守住两条：
+        智能体图标齐全；所有图标都有足够的深色像素。
+        """
+        expected = {"claude-code.png", "codex.png", "kimi-code.png", "antigravity.png", "zcode.png"}
+        present = {p.name for p in feige._ASSETS_AGENT_DIR.glob("*.png")}
+        self.assertTrue(expected <= present, f"missing agent logos: {expected - present}")
+
+        for p in sorted(feige._ASSETS_AGENT_DIR.glob("*.png")):
+            with self.subTest(asset=p.name):
+                self.assertGreater(logo_luminance(p)[1], 0.5)
+
+        for p in sorted(feige._ASSETS_VENDOR_DIR.glob("*.png")):
+            with self.subTest(vendor=p.name):
+                self.assertGreater(logo_luminance(p)[1], 0.2,
+                                   f"{p.name} 整片接近白色，在白底卡片上等于没有图标")
+
+        # 兜底目录与厂商目录不得重名，否则上传缓存键（只用文件名）会串图
+        self.assertEqual(present & {p.name for p in feige._ASSETS_VENDOR_DIR.glob("*.png")}, set())
 
     def test_collapsible_panel_and_logo_in_card(self):
         card = feige.build_card(
@@ -153,6 +280,80 @@ class SessionIsolationAndLogoUploadTest(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
         feige._LOGO_CACHE.clear()
+
+    def test_cardkit_uploads_agent_logo_and_caches_it(self):
+        """未识别模型也要真的把兜底图标上传到飞书，并且只上传一次。"""
+        os.environ["FEISHU_APP_ID"] = "cli_test"
+        os.environ["FEISHU_APP_SECRET"] = "sec_test"
+        os.environ["FEISHU_NOTIFY_CHAT_ID"] = "oc_chat1"
+        captured: list[dict] = []
+
+        def fake_api(method, path, body=None):
+            if path == "/cardkit/v1/cards":
+                captured.append(json.loads(body["data"]))
+                return {"code": 0, "data": {"card_id": "card_abc"}}
+            if path.startswith("/im/v1/messages"):
+                return {"code": 0, "data": {"message_id": "om_msg1"}}
+            return {"code": 0, "data": {}}
+
+        def send(model: str, host: str) -> None:
+            ok, detail = feige.send_report(
+                "完成", "摘要",
+                stats={"project": "demo", "model": model, "tools": 1},
+                channel="feishu-cardkit", host=host,
+                detail_body="详细正文",
+            )
+            self.assertTrue(ok, detail)
+
+        def panel_header(idx: int) -> dict:
+            card = captured[idx]
+            panels = [e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel"]
+            self.assertEqual(len(panels), 1)
+            return panels[0]["header"]
+
+        with mock.patch.object(feige, "upload_image_bytes", return_value="img_agent_k") as up, \
+                mock.patch.object(feige, "call_app_api", side_effect=fake_api):
+            send("chat-mode-pool", "codex")
+            self.assertEqual(up.call_args[1].get("filename") or up.call_args[0][1], "codex.png")
+            hdr = panel_header(0)
+            self.assertEqual(hdr["icon"]["img_key"], "img_agent_k")
+            self.assertEqual(hdr["icon_position"], "left")
+            # 同宿主再发一次：命中本地缓存，不重复上传
+            send("另一个认不出的模型", "codex")
+        self.assertEqual(up.call_count, 1)
+        self.assertEqual(panel_header(1)["icon"]["img_key"], "img_agent_k")
+
+        # 开关关掉时依旧一个 logo 都不显示（连标准箭头图标都不带 custom_icon）
+        os.environ["FEIGE_VENDOR_LOGO"] = "0"
+        feige._LOGO_CACHE.clear()
+        with mock.patch.object(feige, "upload_image_bytes") as up2, \
+                mock.patch.object(feige, "call_app_api", side_effect=fake_api):
+            send("chat-mode-pool", "codex")
+        up2.assert_not_called()
+        self.assertEqual(panel_header(-1)["icon"]["tag"], "standard_icon")
+
+    def test_logo_reuploads_when_asset_bytes_change(self):
+        """资产像素换过必须重新上传——旧 image_key 不能一直命中。
+
+        本轮把 7 张纯白厂商图改成了白底可见版；若缓存键仍只按文件名，线上会
+        继续拿旧图（白卡上看不见），修复永远显不出来。
+        """
+        os.environ["FEISHU_APP_ID"] = "cli_test"
+        os.environ["FEISHU_APP_SECRET"] = "sec_test"
+        fake = Path(self.tmp.name, "asset.png")
+        fake.write_bytes(b"\x89PNG-old-bytes")
+        with mock.patch.object(feige, "logo_asset_path", return_value=fake), \
+                mock.patch.object(feige, "upload_image_bytes",
+                                  side_effect=["img_old", "img_new"]) as up:
+            self.assertEqual(feige.resolve_vendor_logo_image_key("chat-mode-pool", host="codex"),
+                             "img_old")
+            self.assertEqual(feige.resolve_vendor_logo_image_key("chat-mode-pool", host="codex"),
+                             "img_old")  # 同内容命中缓存，不重复上传
+            self.assertEqual(up.call_count, 1)
+            fake.write_bytes(b"\x89PNG-new-bytes")
+            self.assertEqual(feige.resolve_vendor_logo_image_key("chat-mode-pool", host="codex"),
+                             "img_new")
+        self.assertEqual(up.call_count, 2)
 
     def test_cardkit_send_never_exposes_cwd_or_session_id_on_card(self):
         os.environ["FEISHU_APP_ID"] = "cli_test"
@@ -478,6 +679,55 @@ class WSDegradationAndStudioIntegrationTest(unittest.TestCase):
         self.assertIn("详细展开内容", html_out)
         self.assertIn("发送追问", html_out)
         self.assertIn("collapsible_panel", html_out)
+
+    def test_preview_falls_back_to_agent_logo_for_unknown_model(self):
+        """Studio 预览与线上同口径：未识别模型也要预览到兜底的智能体图标。"""
+        q = urllib.parse.parse_qs(urllib.parse.urlencode({
+            "go": "1",
+            "channel": "feishu-cardkit",
+            "host": "codex",
+            "model": "chat-mode-pool",
+            "body": "摘要",
+        }))
+        html_out = webui.page_preview(q).decode("utf-8")
+        self.assertIn("/assets/agent-logos/codex.png", html_out)
+        self.assertNotIn("/assets/vendor-logos/", html_out)
+        # 厂商命中时仍走厂商目录，不被兜底抢位
+        q2 = urllib.parse.parse_qs(urllib.parse.urlencode({
+            "go": "1", "channel": "feishu-cardkit", "host": "codex",
+            "model": "gpt-5.1-codex", "body": "摘要",
+        }))
+        self.assertIn("/assets/vendor-logos/openai.png", webui.page_preview(q2).decode("utf-8"))
+        # 开关关掉：两个目录都不该出现
+        with mock.patch.object(feige, "vendor_logo_enabled", return_value=False):
+            off = webui.page_preview(q).decode("utf-8")
+        self.assertNotIn("-logos/", off)
+
+    def test_studio_serves_agent_logos_and_blocks_traversal(self):
+        server = webui.Server(("127.0.0.1", 0), webui.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(timeout=3)))
+        port = server.server_address[1]
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/assets/agent-logos/claude-code.png")
+        r1 = conn.getresponse()
+        b1 = r1.read()
+        self.assertEqual(r1.status, 200)
+        self.assertEqual(r1.getheader("Content-Type"), "image/png")
+        self.assertTrue(b1.startswith(b"\x89PNG"))
+        conn.close()
+
+        for bad in ("/assets/agent-logos/../../feige.py", "/assets/agent-logos/claude.png",
+                    "/assets/vendor-logos/claude-code.png"):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", bad)
+            r = conn.getresponse()
+            r.read()
+            # 越界一律 404；跨目录借名同样拒绝（两目录各自独立服务）
+            self.assertEqual(r.status, 404, bad)
+            conn.close()
 
     def test_studio_fold_cards_and_status_badges_and_version_2_0(self):
         self.assertEqual(feige.__version__, "2.2.0")

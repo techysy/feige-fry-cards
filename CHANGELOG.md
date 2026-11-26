@@ -5,6 +5,29 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+
+- **未识别模型兜底智能体图标**：面板头左侧原来只在命中厂商家族时才有图标，代理池 /
+  自建网关的模型名（如 `chat-mode-pool`）一律空着。现在厂商未命中时改用**宿主/智能体
+  图标**兜底——按模型串 `宿主 · 模型` 的前缀或显式 host 判定 Claude Code / Codex /
+  ZCode / kimi-code / Antigravity，新增 `assets/agent-logos/` 5 张资产。命中厂商时
+  口径不变（厂商图 + 官方名）；`vendor_logo_enabled` / `FEIGE_VENDOR_LOGO` 关掉时
+  依旧一个图标都不出。Studio 预览页同步（模型速选新增 `chat-mode-pool` 一档可直接
+  预览兜底效果），`/assets/agent-logos/` 与厂商目录同等做路径越界校验。
+
+### Fixed
+
+- **7 张厂商 Logo 白底卡片上看不见**：`openai` / `moonshot` / `grok` / `dotsstudio` /
+  `upstage` / `xiaomimimo` / `kimi` 原本取的是 lobehub 的 dark 变体（纯白或近纯白），画在
+  浅色面板头上等于没有图标——用户看到的「模型那头空着」有一半是这个原因。全部换成
+  白底可见的版本，并加测试锁住「每张资产都必须有足够深色像素」。
+- **Logo 上传缓存改按内容失效**：`~/.feige-logo-cache.json` 的键原来只有
+  `base|app|文件名`，资产像素换过仍会命中旧 `image_key`，上面那条修复在已发过卡的
+  机器上永远显不出来。键里加进文件内容摘要，换图即重传。
+- `logo_asset_path` 只接受纯文件名，带路径分隔符或 `..` 的外部片段一律拒绝。
+
 ## [2.2.0] - 2026-11-26 — 🕊️ 配置页真瀑布流 + 下拉不被裁 + 面板头去重复宿主前缀
 
 ### Changed

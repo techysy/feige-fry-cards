@@ -464,7 +464,9 @@ DEFAULT_FOOTER_FIELDS = ("project", "model", "thinking", "tools", "context", "to
 # 统一面板头字段：卡片标题已含「项目 · 宿主」，面板头默认不再重复项目名
 DEFAULT_PANEL_FIELDS = ("model", "thinking", "tools", "context", "tokens", "elapsed")
 _LOCALES = ["zh_cn", "en_us"]
-_ASSETS_VENDOR_DIR = Path(__file__).resolve().parent / "assets" / "vendor-logos"
+_ASSETS_ROOT = Path(__file__).resolve().parent / "assets"
+_ASSETS_VENDOR_DIR = _ASSETS_ROOT / "vendor-logos"
+_ASSETS_AGENT_DIR = _ASSETS_ROOT / "agent-logos"
 
 # 厂商 Logo 匹配规则与官方模型名映射（与 hermes-fry-cards / claw-fry-cards 保持一致）
 VENDOR_LOGO_RULES: tuple[tuple[str, str], ...] = (
@@ -536,6 +538,19 @@ _HOST_LABELS = {
     "agy": "Antigravity",
 }
 
+# 宿主（智能体）Logo 资产名：模型未命中厂商家族时的兜底图标。
+# 文件名与 vendor-logos/ 严格不重名——上传缓存键只用文件名，重名会串图。
+AGENT_LOGO_FILES: dict[str, str] = {
+    "claude-code": "claude-code.png",
+    "claude": "claude-code.png",
+    "codex": "codex.png",
+    "zcode": "zcode.png",
+    "kimi-code": "kimi-code.png",
+    "kimi": "kimi-code.png",
+    "antigravity": "antigravity.png",
+    "agy": "antigravity.png",
+}
+
 
 def _split_host_model(model: str) -> tuple[str, str]:
     """拆分 'claude-code · tencent/hy4-flash:free' → ('claude-code', 'tencent/hy4-flash:free')。"""
@@ -544,6 +559,38 @@ def _split_host_model(model: str) -> tuple[str, str]:
         prefix, rest = s.split(" · ", 1)
         return prefix.strip(), rest.strip()
     return "", s
+
+
+def resolve_agent_logo_asset(model: str, host: str = "") -> str | None:
+    """宿主/智能体 Logo 文件名（agent-logos/）；认不出宿主返回 None。
+
+    宿主判定优先级：显式 `host` 参数 > 模型串 ' · ' 前的宿主前缀
+    （适配器拼的就是「宿主 · 模型」）。与 `resolve_vendor_logo_asset` 分文取齐，
+    调用方按「厂商命中优先、未命中才兜底」的顺序使用。
+    """
+    prefix, _ = _split_host_model(model)
+    for slug in (host, prefix):
+        name = AGENT_LOGO_FILES.get((slug or "").strip().lower())
+        if name:
+            return name
+    return None
+
+
+def resolve_logo_asset(model: str, host: str = "") -> str | None:
+    """面板头 Logo 资产名：命中厂商家族用厂商图，未命中兜底宿主/智能体图。"""
+    return resolve_vendor_logo_asset(model) or resolve_agent_logo_asset(model, host)
+
+
+def logo_asset_path(asset: str) -> Path | None:
+    """资产名 → 本地 PNG 路径（厂商目录优先，其次智能体目录）；都不存在返回 None。"""
+    name = (asset or "").strip()
+    if not name or "/" in name or "\\" in name or name != Path(name).name:
+        return None
+    for base in (_ASSETS_VENDOR_DIR, _ASSETS_AGENT_DIR):
+        p = base / name
+        if p.is_file():
+            return p
+    return None
 
 
 def resolve_vendor_logo_asset(model: str) -> str | None:
@@ -612,7 +659,11 @@ def ws_enabled() -> bool:
 
 
 def vendor_logo_enabled() -> bool:
-    """是否展示厂商家族 Logo（默认开启）。"""
+    """是否展示面板头 Logo（默认开启）。
+
+    管的是「厂商图 + 未命中时的智能体兜底图」整条链路：关掉后两者都不出，
+    面板头回到只有右侧折叠箭头的旧观感。
+    """
     return _bool_setting("FEIGE_VENDOR_LOGO", default=True)
 
 
@@ -1428,18 +1479,33 @@ def upload_image_bytes(data: bytes, filename: str = "logo.png") -> str:
     return key
 
 
-def resolve_vendor_logo_image_key(model: str) -> str:
-    """解析并缓存厂商 Logo 的飞书 image_key（仅 feishu-cardkit 使用，失败静默降级空串）。"""
+def resolve_vendor_logo_image_key(model: str, host: str = "") -> str:
+    """解析并缓存面板头 Logo 的飞书 image_key（仅 feishu-cardkit 使用，失败静默降级空串）。
+
+    口径：命中厂商家族用厂商图；未命中（如代理池 / 自建网关的 `chat-mode-pool`
+    这类认不出的模型名）兜底宿主/智能体图，面板头不再空着左侧。名字沿用厂商版
+    以兼容既有调用与测试打桩。
+    """
     if not vendor_logo_enabled():
         return ""
-    asset = resolve_vendor_logo_asset(model)
+    asset = resolve_logo_asset(model, host)
     if not asset:
         return ""
     app_id = _env("FEISHU_APP_ID", "LARK_APP_ID")
     app_secret = _env("FEISHU_APP_SECRET", "LARK_APP_SECRET")
     if not app_id or not app_secret:
         return ""
-    cache_key = f"{app_base()}|{app_id}|{asset}"
+    img_path = logo_asset_path(asset)
+    if img_path is None:
+        return ""
+    try:
+        data = img_path.read_bytes()
+    except OSError as exc:
+        log(f"vendor logo read failed ({asset}): {redact(exc)}")
+        return ""
+    # 缓存键带内容摘要：资产像素换过（如纯白图改成白底可见版）必须重新上传，
+    # 否则旧 image_key 会一直命中，修复在卡上永远看不见。
+    cache_key = f"{app_base()}|{app_id}|{asset}|{hashlib.sha256(data).hexdigest()[:12]}"
     if cache_key in _LOGO_CACHE:
         return _LOGO_CACHE[cache_key] or ""
     cpath = _logo_cache_path()
@@ -1450,12 +1516,8 @@ def resolve_vendor_logo_image_key(model: str) -> str:
     if isinstance(disk, dict) and isinstance(disk.get(cache_key), str) and disk[cache_key]:
         _LOGO_CACHE[cache_key] = disk[cache_key]
         return disk[cache_key]
-    img_path = _ASSETS_VENDOR_DIR / asset
-    if not img_path.is_file():
-        _LOGO_CACHE[cache_key] = None
-        return ""
     try:
-        key = upload_image_bytes(img_path.read_bytes(), filename=asset)
+        key = upload_image_bytes(data, filename=asset)
         _LOGO_CACHE[cache_key] = key
         try:
             if not isinstance(disk, dict):
@@ -1726,7 +1788,7 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
         # feishu 两渠道（含 "-" 无渠道 dry-run 预览）：Card 2.0 终态卡
         logo_key = ""
         if channel == "feishu-cardkit" and not dry_run and eff_stats:
-            logo_key = resolve_vendor_logo_image_key(str(eff_stats.get("model") or ""))
+            logo_key = resolve_vendor_logo_image_key(str(eff_stats.get("model") or ""), host=host)
 
         use_interactive = (channel == "feishu-cardkit" and status != "running"
                            and interactive_enabled() and bool(host or session_id))

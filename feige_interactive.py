@@ -586,7 +586,8 @@ def _execute_resume_and_update(ctx_id: str, prompt: str, *, runner: Callable[...
             history=hist[-10:],
         ) or record
 
-        logo_key = feige.resolve_vendor_logo_image_key(str(record.get("model") or ""))
+        logo_key = feige.resolve_vendor_logo_image_key(str(record.get("model") or ""),
+                                                       host=str(record.get("host") or ""))
         new_card = _build_resumed_result_card(record, prompt, res, logo_key=logo_key)
 
         card_id = str(record.get("card_id") or "").strip()

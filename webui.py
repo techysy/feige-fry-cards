@@ -1195,8 +1195,8 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
                               inter_on, "完成态卡片附带追问表单与防误触快捷按钮")
             + _checkbox_field("feishu_ws_enabled", "启用飞书长连接监听（WSClient）",
                               ws_on, "接收 card.action.trigger 并随 Studio 保活，无需公网域名")
-            + _checkbox_field("vendor_logo_enabled", "展示厂商家族 Logo 与官方模型名",
-                              feige.vendor_logo_enabled(), "CardKit 自动上传并本地缓存图片 key")
+            + _checkbox_field("vendor_logo_enabled", "展示 Logo（厂商图 + 智能体兜底）与官方模型名",
+                              feige.vendor_logo_enabled(), "CardKit 自动上传并本地缓存图片 key；未识别模型用宿主图标兜底")
             + _checkbox_field("panel_expanded", "底部统一折叠面板默认展开",
                               feige.panel_expanded_default())
             + _checkbox_field("panel_host_prefix", "面板头模型名带宿主前缀",
@@ -1750,6 +1750,7 @@ _SAMPLE_MODELS = [
     ("glm-5.3-flashx", "GLM 5.3 · 智谱"),
     ("qwen4-max", "Qwen4 Max · 阿里云"),
     ("mimo-v2.6-flash-free", "MiMo V2.6 · 小米"),
+    ("chat-mode-pool", "chat-mode-pool · 未识别厂商（兜底智能体图标）"),
 ]
 
 _PREVIEW_PRESETS = [
@@ -1864,6 +1865,14 @@ def _safe_int(val, default: int = 0) -> int:
     except (ValueError, TypeError):
         return default
 
+def _logo_asset_url(asset: str | None) -> str:
+    """Logo 资产名 → Studio 静态路径（按实际所在目录，厂商优先/智能体兜底）。"""
+    path = feige.logo_asset_path(asset or "")
+    if path is None:
+        return ""
+    base = "vendor-logos" if path.parent == feige._ASSETS_VENDOR_DIR else "agent-logos"
+    return f"/assets/{base}/{path.name}"
+
 
 def build_preview_payload(params: dict) -> dict:
     """用真实 feige.send_report(..., dry_run=True) 生成预览载荷与厂商资产元数据。"""
@@ -1914,8 +1923,10 @@ def build_preview_payload(params: dict) -> dict:
                 card_obj = payload_obj.get("card") if isinstance(payload_obj.get("card"), dict) else payload_obj
         except ValueError:
             payload_obj = {"raw": raw_detail}
-    logo_file = feige.resolve_vendor_logo_asset(model) if feige.vendor_logo_enabled() else None
-    logo_url = f"/assets/vendor-logos/{logo_file}" if logo_file else ""
+    logo_file = feige.resolve_logo_asset(model, host) if feige.vendor_logo_enabled() else None
+    logo_url = _logo_asset_url(logo_file)
+    logo_kind = ("agent" if logo_file and feige.resolve_vendor_logo_asset(model) is None
+                 else "vendor" if logo_file else "")
     official_model = feige.resolve_vendor_display_name(model) if model else ""
     return {
         "ok": bool(ok),
@@ -1925,6 +1936,7 @@ def build_preview_payload(params: dict) -> dict:
         "payload": payload_obj,
         "card": card_obj,
         "logo_url": logo_url,
+        "logo_kind": logo_kind,
         "official_model": official_model,
         "host": host,
         "host_label": feige_interactive.host_label(host) if host else "",
@@ -2756,12 +2768,14 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query or "")
         if self.command == "GET":
-            if u.path.startswith("/assets/vendor-logos/"):
+            if u.path.startswith("/assets/vendor-logos/") or u.path.startswith("/assets/agent-logos/"):
                 fname = u.path.rsplit("/", 1)[-1]
+                base = (feige._ASSETS_AGENT_DIR if u.path.startswith("/assets/agent-logos/")
+                        else feige._ASSETS_VENDOR_DIR)
                 if (fname.endswith(".png") and "/" not in fname and "\\" not in fname
                         and ".." not in fname):
-                    asset_path = (feige._ASSETS_VENDOR_DIR / fname).resolve()
-                    if asset_path.parent == feige._ASSETS_VENDOR_DIR.resolve() and asset_path.is_file():
+                    asset_path = (base / fname).resolve()
+                    if asset_path.parent == base.resolve() and asset_path.is_file():
                         self._send(asset_path.read_bytes(), content_type="image/png")
                         return b""
                 self._send(b"not found", status=404, content_type="text/plain; charset=utf-8")
