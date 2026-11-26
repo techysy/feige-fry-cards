@@ -115,12 +115,14 @@ header{display:flex;align-items:center;justify-content:space-between;gap:12px;
 
 main{max-width:var(--col-w);margin:0 auto;padding:12px 22px 30px;display:flex;
   flex-direction:column;gap:14px}
-/* 瀑布流多列：行式 grid 的行高被该行最高的卡撑开，矮卡（钉钉）下面吊一大块空白，
-   整页被顶出超一屏；多列布局每列独立堆叠、卡片按序流入最矮列，总高≈最高列。
-   列数仍随宽度自适应：980px 列 2 列、宽屏 1400px 列 3 列 */
-.grid{columns:420px;column-gap:14px}
-.grid>.card{break-inside:avoid;margin:0 0 14px}
-/* 宽屏：内容列 1400px，420px 列宽放得下 3 列（3×420 + 间距 + 内边距 ≈ 1332px） */
+/* 真·瀑布流多列：CSS 多列是顺序填充——一张高卡放不下就整张断到下一列，
+   前一列底下吊出大片空白，还会横向溢出顶出滚动条。改由 JS 把卡片按「当前最矮列」
+   装进等宽 flex 列（.mcol），列数随宽度自适应（≥380px 一列，1~3 列），每列独立堆叠、
+   列高保持自然（整页高 = 最高列，不给矮列补空白）。无 JS 时退化为单列纵向堆叠。 */
+.grid{display:flex;flex-direction:column;gap:14px}
+.grid.ms-on{flex-direction:row;align-items:flex-start}
+.grid>.mcol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:14px}
+/* 宽屏：内容列 1400px，380px 列宽放得下 3 列 */
 @media (min-width:1420px){:root{--col-w:1400px}}
 
 .card{background:var(--card);border:1px solid var(--border-subtle);
@@ -310,7 +312,7 @@ footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
 .preset-toggle .pt-caret{width:0;height:0;flex-shrink:0;border-left:4px solid transparent;
   border-right:4px solid transparent;border-top:5px solid var(--text-3);transition:transform .15s}
 .preset-toggle.open .pt-caret{transform:rotate(180deg)}
-.preset-menu{position:absolute;z-index:40;top:calc(100% + 4px);left:0;right:0;max-height:340px;
+.preset-menu{position:fixed;z-index:90;top:auto;left:auto;right:auto;max-height:340px;
   overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:10px;
   padding:6px;box-shadow:0 12px 32px rgba(0,0,0,.16);display:flex;flex-direction:column;gap:3px}
 #llm-model-filter{width:100%;box-sizing:border-box;margin-bottom:4px;padding:6px 8px;font-size:12px}
@@ -357,7 +359,7 @@ footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
 .tag .lamp{margin-right:5px}
 
 /* ---------- 菜单式选择器（.preset-picker 风格的通用控件，替代原生 select） ---------- */
-.menu-select{display:inline-flex;flex-direction:column;gap:3px;min-width:0;position:relative}
+.menu-select{display:flex;flex-direction:column;gap:3px;min-width:0;width:100%;position:relative}
 .menu-select .ms-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
   padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);
   color:var(--txt);font-size:13px;cursor:pointer;text-align:left;transition:border-color .15s,background .15s}
@@ -368,7 +370,9 @@ footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
 .menu-select .ms-caret{width:0;height:0;flex-shrink:0;border-left:4px solid transparent;
   border-right:4px solid transparent;border-top:5px solid var(--text-3);transition:transform .15s}
 .menu-select .ms-btn.open .ms-caret{transform:rotate(180deg)}
-.menu-select .ms-menu{position:absolute;z-index:40;top:calc(100% + 4px);left:0;right:0;max-height:300px;
+/* 菜单层用 fixed 锚定到按钮视口坐标（JS 计算）：不受卡片/列宽裁切，
+   靠近视口底缘自动向上翻，窄栏也不再横向溢出 */
+.menu-select .ms-menu{position:fixed;z-index:90;top:auto;left:auto;right:auto;max-height:300px;
   overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:5px;
   box-shadow:0 12px 32px rgba(0,0,0,.16);display:flex;flex-direction:column;gap:2px}
 .menu-select .ms-item{display:flex;align-items:center;gap:7px;width:100%;text-align:left;cursor:pointer;
@@ -508,6 +512,7 @@ _THEME_JS = """
     var open = menu.classList.toggle('hidden') === false;
     toggle.classList.toggle('open', open);
     if(open){
+      positionMenu(menu, picker);
       filter.focus();
       if(!hasFetched) fetchModelsList();
       else renderModels();
@@ -538,6 +543,90 @@ _THEME_JS = """
     if(e.target.closest('#llm-model-picker')) return;
     menu.classList.add('hidden');
     toggle.classList.remove('open');
+  });
+
+  window.addEventListener('scroll', function(){
+    if(menu.classList.contains('hidden')) return;
+    if(!anchorInView(picker)){
+      menu.classList.add('hidden'); toggle.classList.remove('open');
+    } else positionMenu(menu, picker);
+  }, {passive: true, capture: true});
+  window.addEventListener('resize', function(){
+    if(!menu.classList.contains('hidden')) positionMenu(menu, picker);
+  });
+})();
+
+// 配置页瀑布流：把 .grid 里的卡片按「当前最矮列」装进等宽 flex 列，
+// 列数 = 可用宽度 / 380px（1~3 列），缩放或改窗口大小时重排。
+(function(){
+  function collectCards(grid){
+    // 首轮卡片是 .grid 直接子元素；之后装在 .mcol 里——两种都要能收回来重排。
+    // 重排必须按「原始 DOM 顺序」喂给贪心算法：按上一次的列序回收会让平衡逐次劣化
+    // （同样的卡片，resize 几次后一列 1603px 另一列 563px）。
+    var cards = [];
+    Array.prototype.slice.call(grid.children).forEach(function(el){
+      if(el.classList.contains('mcol')){
+        Array.prototype.slice.call(el.children).forEach(function(c){ cards.push(c); });
+      } else {
+        cards.push(el);
+      }
+    });
+    cards.forEach(function(c, i){
+      if(!c.dataset.mIndex) c.dataset.mIndex = String(i);
+    });
+    cards.sort(function(a, b){ return (+a.dataset.mIndex) - (+b.dataset.mIndex); });
+    return cards;
+  }
+
+  function layoutMasonry(){
+    document.querySelectorAll('.grid').forEach(function(grid){
+      var cards = collectCards(grid);
+      if(!cards.length) return;
+      var avail = grid.clientWidth || grid.getBoundingClientRect().width;
+      var cols = Math.max(1, Math.min(3, Math.floor((avail + 14) / (380 + 14))));
+      if(cols <= 1){
+        grid.classList.remove('ms-on');
+        grid.querySelectorAll('.mcol').forEach(function(c){
+          Array.prototype.slice.call(c.children).forEach(function(el){ grid.appendChild(el); });
+          c.remove();
+        });
+        grid.style.minHeight = '';
+        return;
+      }
+      // 先拆掉上一次的列（重排时旧列必须清掉，否则空列会一直堆积占位）
+      grid.querySelectorAll('.mcol').forEach(function(c){ c.remove(); });
+      grid.classList.add('ms-on');
+      var buckets = [];
+      for(var i = 0; i < cols; i++){
+        var col = document.createElement('div');
+        col.className = 'mcol';
+        grid.appendChild(col);
+        buckets.push({el: col, h: 0});
+      }
+      cards.forEach(function(card){
+        buckets.sort(function(a, b){ return a.h - b.h; });
+        buckets[0].el.appendChild(card);
+        buckets[0].h += card.getBoundingClientRect().height + 14;
+      });
+      // 列高保持自然：整页高度 = 最高列。补齐等高反而会在矮列底部造出空档，
+// 那正是「空这么多」的来源。
+      grid.style.minHeight = '';
+    });
+  }
+  var mt = null;
+  function schedule(){
+    clearTimeout(mt);
+    mt = setTimeout(layoutMasonry, 60);
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', layoutMasonry);
+  } else {
+    layoutMasonry();
+  }
+  window.addEventListener('resize', schedule);
+  // 卡片内 <details> 展开/收起会改变高度：重排一次
+  document.querySelectorAll('.grid details').forEach(function(d){
+    d.addEventListener('toggle', schedule);
   });
 })();
 
@@ -647,6 +736,34 @@ _THEME_JS = """
   }
 })();
 
+// 弹出层定位公共件：菜单用 position:fixed 挂到按钮的视口坐标，
+// 不再被卡片/瀑布流列裁切；下方放不下就向上翻，宽度跟随按钮但受视口限制。
+function anchorInView(el){
+  var r = el.getBoundingClientRect();
+  return r.bottom > 0 && r.top < (window.innerHeight || document.documentElement.clientHeight);
+}
+function positionMenu(menu, btn){
+  var r = btn.getBoundingClientRect();
+  var vw = window.innerWidth || document.documentElement.clientWidth;
+  var vh = window.innerHeight || document.documentElement.clientHeight;
+  var gap = 4, pad = 8;
+  var width = Math.min(r.width, vw - pad * 2);
+  var left = Math.max(pad, Math.min(r.left, vw - width - pad));
+  // 先量高度（菜单已去 hidden，但还要按视口可用空间限高）
+  menu.style.width = width + 'px';
+  menu.style.left = left + 'px';
+  var availBelow = vh - r.bottom - gap - pad;
+  var availAbove = r.top - gap - pad;
+  var maxH = Math.max(120, Math.min(340, Math.max(availBelow, availAbove)));
+  menu.style.maxHeight = maxH + 'px';
+  var mh = Math.min(menu.scrollHeight, maxH);
+  if(availBelow >= mh || availBelow >= availAbove){
+    menu.style.top = Math.round(r.bottom + gap) + 'px';
+  } else {
+    menu.style.top = Math.round(Math.max(pad, r.top - gap - mh)) + 'px';
+  }
+}
+
 // 菜单式选择器（.menu-select）：点击展开菜单选项，选中写 hidden input 并派发 change，
 // 替代原生 <select>；表单脏检测与交互卡联动照常触发。
 (function(){
@@ -665,7 +782,16 @@ _THEME_JS = """
       document.querySelectorAll('.menu-select .ms-btn.open').forEach(function(b){
         if(b !== btn){ b.classList.remove('open'); }
       });
+      positionMenu(menu, btn);
     }
+    // 滚动/缩放时菜单跟随按钮；按钮滚出视口则收起（避免菜单飘在半空）
+    window.addEventListener('scroll', function(){
+      if(menu.classList.contains('hidden')) return;
+      if(!anchorInView(btn)) close(); else positionMenu(menu, btn);
+    }, {passive: true, capture: true});
+    window.addEventListener('resize', function(){
+      if(!menu.classList.contains('hidden')) positionMenu(menu, btn);
+    });
     btn.addEventListener('click', function(e){
       e.preventDefault(); e.stopPropagation();
       if(btn.disabled) return;
@@ -1073,6 +1199,9 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
                               feige.vendor_logo_enabled(), "CardKit 自动上传并本地缓存图片 key")
             + _checkbox_field("panel_expanded", "底部统一折叠面板默认展开",
                               feige.panel_expanded_default())
+            + _checkbox_field("panel_host_prefix", "面板头模型名带宿主前缀",
+                              feige.panel_host_prefix_enabled(),
+                              "默认关：卡片标题已含「项目 · 宿主」，面板头只留模型官方名，不再重复")
             + _menu_field("context_style", "面板头上下文样式",
                           [("text_bar", "文本+进度条 165.4k/1.0m [█▓▒░] 17%"),
                            ("text", "纯文本 165.4k/1.0m (17%)"),
@@ -1197,7 +1326,7 @@ def _select_field(skey: str, label: str, options: dict, current: str) -> str:
 
 _INTERACTIVE_KEYS = [
     "feishu_interactive", "feishu_ws_enabled", "vendor_logo_enabled",
-    "panel_expanded", "panel_fields", "footer_enabled", "footer_fields",
+    "panel_expanded", "panel_host_prefix", "panel_fields", "footer_enabled", "footer_fields",
     "interactive_allow_users", "resume_timeout_seconds", "context_style",
 ]
 _CARD_KEYS = {
@@ -1212,7 +1341,7 @@ _CARD_KEYS = {
     "behavior": ["stats_scope", "debounce_seconds", "routes_file"],
 }
 _BOOL_KEYS = {"feishu_interactive", "feishu_ws_enabled", "vendor_logo_enabled",
-              "panel_expanded", "footer_enabled"}
+              "panel_expanded", "panel_host_prefix", "footer_enabled"}
 _FIELD_LIST_KEYS = {"footer_fields", "panel_fields"}
 _CARD_TITLES = {"feishu": "飞书渠道", "interactive": "交互与长连接", "dingtalk": "钉钉渠道",
                 "telegram": "Telegram", "llm": "正文总结", "behavior": "行为开关"}
@@ -1750,6 +1879,9 @@ def build_preview_payload(params: dict) -> dict:
     # 面板头上下文样式：预览可临时覆盖（不写设置文件），非法/缺省回落设置口径
     cstyle = feige.normalize_context_style(p("context_style", ""))
     eff_cstyle = cstyle or feige.context_style()
+    # 面板头宿主前缀：空 = 跟随设置（默认关），"1"/"0" = 预览临时覆盖
+    php_raw = p("panel_host_prefix", "").strip().lower()
+    eff_php = None if not php_raw else php_raw not in ("0", "false", "no", "off")
     ch = p("channel", "").strip()
     if ch and ch not in feige.CHANNELS:
         ch = ""
@@ -1771,7 +1903,7 @@ def build_preview_payload(params: dict) -> dict:
     ok, raw_detail = feige.send_report(
         title, body, stats=stats, status=status, channel=ch, dry_run=True,
         host=host, detail_body=detail_txt, tool_summary=tool_sum,
-        context_style=eff_cstyle,
+        context_style=eff_cstyle, panel_host_prefix=eff_php,
     )
     payload_obj = None
     card_obj = None
@@ -1798,6 +1930,7 @@ def build_preview_payload(params: dict) -> dict:
         "host_label": feige_interactive.host_label(host) if host else "",
         "resumable": bool(host and feige_interactive.is_host_resumable(host)),
         "context_style": eff_cstyle,
+        "panel_host_prefix": eff_php,
     }
 
 
@@ -2134,6 +2267,10 @@ def page_preview(q: dict) -> bytes:
     cur_tool_sum = gv("tool_summary", "")
     cur_cstyle = feige.normalize_context_style(gv("context_style", ""))
     eff_cstyle = cur_cstyle or feige.context_style()
+    # 面板头宿主前缀：空 = 跟随设置（默认关），"1"/"0" = 本次预览临时覆盖
+    php_raw = gv("panel_host_prefix", "").strip().lower()
+    eff_php = None if not php_raw else php_raw not in ("0", "false", "no", "off")
+    cur_php = "" if php_raw not in ("1", "0") else php_raw
 
     ssr_html = ""
     ssr_json = ""
@@ -2144,6 +2281,7 @@ def page_preview(q: dict) -> bytes:
             "tool_summary": cur_tool_sum, "project": cur_project, "model": cur_model,
             "thinking": cur_thinking, "tools": cur_tools, "context": cur_context,
             "elapsed": cur_elapsed, "context_style": cur_cstyle,
+            "panel_host_prefix": php_raw,
         })
         stats = {
             "project": cur_project, "model": cur_model,
@@ -2157,7 +2295,8 @@ def page_preview(q: dict) -> bytes:
         logo_url = pv["logo_url"]
         logo_html = f"<img class='vlogo' src='{esc(logo_url)}' alt=''>" if logo_url else ""
         panel_title = feige._build_panel_header_text(stats, logo_image_key="preview" if logo_url else "",
-                                                     context_style=eff_cstyle)
+                                                     context_style=eff_cstyle,
+                                                     panel_host_prefix=eff_php)
         panel_html = ""
         if status != "running" and (stats.get("model") or stats.get("project") or cur_detail or cur_tool_sum or host):
             det_parts = []
@@ -2224,6 +2363,9 @@ def page_preview(q: dict) -> bytes:
                    ("text_bar", "文本+进度条 165.4k/1.0m [█▓▒░] 17%"),
                    ("text", "纯文本 165.4k/1.0m (17%)"),
                    ("bar", "纯进度条 [█▓▒░] 17%")]
+    php_opts = [("", f"跟随设置（{'带' if feige.panel_host_prefix_enabled() else '不带'}）"),
+                ("0", "不带：只显模型官方名"),
+                ("1", "带：宿主 · 官方模型名")]
 
     left_card = (
         "<div class='card'><h3>🎛️ 卡片参数 & 场景预设</h3>"
@@ -2237,6 +2379,8 @@ def page_preview(q: dict) -> bytes:
         f"<span style='flex:0 1 90px'>状态<br>{_menu_select('status', sopts, cur_status)}</span></p>"
         f"<p>面板头上下文样式（临时预览，不写设置文件）<br>"
         f"{_menu_select('context_style', cstyle_opts, cur_cstyle)}</p>"
+        f"<p>面板头模型带宿主前缀（临时预览，不写设置文件）<br>"
+        f"{_menu_select('panel_host_prefix', php_opts, cur_php)}</p>"
         f"<p>战报摘要正文<br><textarea name='body' rows='3'>{esc(cur_body)}</textarea></p>"
         f"<p>折叠面板详细正文（可选，支持表格/代码块）<br><textarea name='detail' rows='3' placeholder='展开折叠面板可见的完整内容…'>{esc(cur_detail)}</textarea></p>"
         f"<p style='display:flex;gap:8px;flex-wrap:wrap'>"

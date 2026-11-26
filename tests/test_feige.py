@@ -235,6 +235,68 @@ class ContextStyleTest(unittest.TestCase):
         self.assertEqual(feige._format_panel_context("42%"), "42%")
 
 
+class PanelHostPrefixTest(unittest.TestCase):
+    """面板头模型名默认不带宿主前缀（卡片标题已含「项目 · 宿主」，不再重复）。"""
+
+    STATS = {"model": "claude-code · qwen4-max", "context": "44.4k/1.0m (4%)",
+             "thinking": 2, "tools": 45, "tokens": 1700, "elapsed": "5m 34s"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = Path(self.tmp.name) / "s.json"
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("FEIGE_", "FEISHU_", "LARK_"))}
+        env["FEIGE_SETTINGS_FILE"] = str(self.settings)
+        self._patch = mock.patch.dict(os.environ, env, clear=True)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def _header(self, **kw):
+        card = feige.build_card("t", "b", stats=dict(self.STATS), status="ok", **kw)
+        panels = [e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel"]
+        return panels[0]["header"]["title"]["content"]
+
+    def test_default_strips_host_prefix(self):
+        self.assertFalse(feige.panel_host_prefix_enabled())
+        self.assertEqual(feige.format_panel_model("claude-code · qwen4-max"), "Qwen 4-max")
+        header = self._header()
+        self.assertIn("Qwen 4-max", header)
+        self.assertNotIn("claude-code", header)
+        # 其余字段照旧
+        self.assertIn("💭2", header)
+        self.assertIn("🔧45", header)
+        self.assertIn("⏱️ 5m 34s", header)
+
+    def test_settings_or_env_can_restore_prefix(self):
+        self.settings.write_text(json.dumps({"panel_host_prefix": "1"}), encoding="utf-8")
+        self.assertTrue(feige.panel_host_prefix_enabled())
+        self.assertEqual(feige.format_panel_model("claude-code · qwen4-max"),
+                         "claude-code · Qwen 4-max")
+        self.assertIn("claude-code · Qwen 4-max", self._header())
+        os.environ["FEIGE_PANEL_HOST_PREFIX"] = "0"   # 环境变量优先
+        self.assertFalse(feige.panel_host_prefix_enabled())
+        self.assertNotIn("claude-code", self._header())
+
+    def test_explicit_argument_overrides_settings(self):
+        header = self._header(panel_host_prefix=True)
+        self.assertIn("claude-code · Qwen 4-max", header)
+        self.settings.write_text(json.dumps({"panel_host_prefix": "1"}), encoding="utf-8")
+        self.assertNotIn("claude-code", self._header(panel_host_prefix=False))
+
+    def test_unprefixed_and_unknown_models(self):
+        self.assertEqual(feige.format_panel_model("tencent/hy4-flash:free"), "Hy4 flash")
+        self.assertEqual(feige.format_panel_model("deepseek-v4.1-flash"), "DeepSeek v4.1-flash")
+        self.assertEqual(feige.format_panel_model("unknown/custom-model"), "custom-model")
+        self.assertEqual(feige.format_panel_model(""), "")
+
+    def test_footer_and_static_channels_keep_raw_model(self):
+        """脚注与钉钉/Telegram 是另一条渲染路径，不受此开关影响。"""
+        self.assertIn("claude-code · qwen4-max", feige.stats_footer(self.STATS))
+        ding = feige.render_dingtalk("t", "b", stats=dict(self.STATS), allow_summarize=False)
+        self.assertIn("claude-code · qwen4-max", ding["markdown"]["text"])
+
+
 class RedactTest(unittest.TestCase):
     def test_patterns(self):
         s = feige.redact('tenant_access_token":"t-abcdef123456 bot123456789:AAAAAAAAAAAAAAAA')

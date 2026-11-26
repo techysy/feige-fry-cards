@@ -5,6 +5,29 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.2.0] - 2026-11-26 — 🕊️ 配置页真瀑布流 + 下拉不被裁 + 面板头去重复宿主前缀
+
+### Changed
+
+- **Studio 配置页改按宽度自适应的真瀑布流**：原来的 CSS 多列（`columns:420px`）是
+  顺序填充——一张高卡放不下就整张断到下一列，前一列底下吊出大片空白，窄栏还会横向
+  溢出顶出滚动条。现改为等宽 flex 列 + 脚本按「当前最矮列」装载卡片，列数随宽度自适应
+  （≥380px 一列，1~3 列），列高保持自然、整页高度取最高列；脚本不执行时退化为单列
+  纵向堆叠，同样不留空洞。宽窄两档、深浅主题实测无横向滚动条。
+- **下拉菜单不再被父容器裁切**：菜单选择器与模型拉取列表改 `position:fixed` 锚定到
+  按钮的视口坐标（脚本实时计算），靠近视口底缘自动向上翻，宽度跟随按钮但受视口限制；
+  滚动时菜单跟随按钮、按钮滚出视口自动收起。隐藏 input + `change` 冒泡的契约不变，
+  脏值检测 / 即时预览 / 保存链路照常。
+- **面板头模型名默认不带宿主前缀**：卡片标题已含「项目 · 宿主」，面板头再写一遍
+  `claude-code · ` 属同一张卡重复三遍。现在面板头只留模型官方名（`Qwen 4-max`），
+  设置键 `panel_host_prefix` / 环境变量 `FEIGE_PANEL_HOST_PREFIX` 显式开启才还原旧口径；
+  默认关让旧配置（不写键）自然落入新行为。统计脚注与钉钉 / Telegram 静态版式不受影响。
+
+### Added
+
+- **Studio 两处新入口**：配置页「交互与长连接」卡新增「面板头模型名带宿主前缀」开关；
+  预览页新增同名「临时预览」三态切换（跟随设置 / 不带 / 带），不写设置文件即可对比。
+
 ## [2.1.0] - 2026-11-26 — 🕊️ Studio 三档上下文样式 + 渠道菜单收拢 + 具体设置弹窗 + 状态灯
 
 ### Added
@@ -238,7 +261,8 @@
 - 联调排错指南：230002 与 `setx` 陈旧环境变量坑（`de97166`）
 - 快速开始、使用指南目录锚链、家族表格绝对链接（`7b4945a` `a6878d4` `f3b6bff`）
 
-[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/techysy/feige-fry-cards/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/techysy/feige-fry-cards/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/techysy/feige-fry-cards/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/techysy/feige-fry-cards/compare/v1.1.1...v1.2.0

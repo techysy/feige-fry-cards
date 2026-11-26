@@ -58,13 +58,23 @@ class WebuiPagesTest(unittest.TestCase):
         self.assertIn("飞书渠道", rendered)
         self.assertNotIn(marker, rendered)  # webhook 值绝不回显，只显已配置徽章
 
-    def test_studio_grid_is_masonry_columns_not_row_grid(self):
-        # 行式 grid 行高被该行最高卡撑开，矮卡下吊空白、整页超一屏；
-        # 配置页必须是多列瀑布流：每列独立堆叠，卡片不跨列断开
+    def test_studio_grid_is_width_adaptive_masonry(self):
+        # CSS 多列是顺序填充：高卡断到下一列、前一列吊大空洞、窄屏横向溢出顶出滚动条。
+        # 配置页必须是按宽度自适应的真瀑布流：等宽 flex 列 + JS 装最矮列。
         rendered = webui.page_studio().decode("utf-8")
-        self.assertIn(".grid{columns:420px", rendered)
-        self.assertIn(".grid>.card{break-inside:avoid", rendered)
-        self.assertNotIn(".grid{display:grid", rendered)
+        self.assertIn(".grid{display:flex;flex-direction:column", rendered)
+        self.assertIn(".grid>.mcol{flex:1 1 0", rendered)
+        self.assertIn("function layoutMasonry", rendered)
+        self.assertNotIn("columns:420px", rendered)   # 不得退回多列
+        self.assertNotIn(".grid{display:grid", rendered)  # 也不得退回行式 grid
+
+    def test_studio_menus_anchor_to_viewport(self):
+        # 下拉菜单必须 fixed 锚定按钮视口坐标：不被卡片/列宽裁切、贴底自动上翻
+        rendered = webui.page_studio().decode("utf-8")
+        self.assertIn("function positionMenu", rendered)
+        self.assertIn(".menu-select .ms-menu{position:fixed", rendered)
+        self.assertIn(".preset-menu{position:fixed", rendered)
+        self.assertIn("positionMenu(menu, btn)", rendered)
 
     def test_nav_aligns_with_card_left_edge(self):
         # 导航左缘 = 居中列外缘 + 22px 内边距，与卡片左缘齐平（此前凸出 22px）
@@ -508,6 +518,49 @@ class ContextStyleStudioTest(unittest.TestCase):
                 "go=1&context=150.0k/1.0m (15%)")).decode("utf-8")
         self.assertEqual(send.call_args.kwargs["context_style"], "text_bar")
         self.assertIn("150.0k/1.0m [█▓░░░░░░] 15%", follow_page)
+
+    def test_panel_host_prefix_checkbox_saves_and_previews(self):
+        page = webui.page_studio().decode("utf-8")
+        self.assertIn("面板头模型名带宿主前缀", page)
+        self.assertIn("name='panel_host_prefix'", page)
+        self.assertIn("卡片标题已含「项目 · 宿主」", page)
+        # 默认关 → 复选框不带 checked
+        self.assertNotIn("name='panel_host_prefix' value='1' checked", page)
+        # 勾上保存为 "1"，取消保存为 "0"（整卡布尔口径与其余开关一致）
+        webui.handle_settings_post(b"form=interactive&panel_host_prefix=1")
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["panel_host_prefix"],
+                         "1")
+        self.assertTrue(feige.panel_host_prefix_enabled())
+        webui.handle_settings_post(b"form=interactive")
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["panel_host_prefix"],
+                         "0")
+        self.assertFalse(feige.panel_host_prefix_enabled())
+        # 预览页三态菜单（跟随设置 / 不带 / 带），且不写设置文件
+        pv_page = webui.page_preview({}).decode("utf-8")
+        self.assertIn("data-key='panel_host_prefix'", pv_page)
+        self.assertIn("跟随设置（不带）", pv_page)
+
+    def test_preview_panel_host_prefix_passthrough(self):
+        base = {"go": "1", "channel": "feishu-cardkit",
+                "model": "claude-code · qwen4-max"}
+        with mock.patch.object(webui.feige, "send_report",
+                               return_value=(True, '{"ok":true}')) as send:
+            webui.page_preview(urllib.parse.parse_qs(urllib.parse.urlencode(base)))
+        self.assertIsNone(send.call_args.kwargs["panel_host_prefix"])  # 跟随设置
+        q_on = urllib.parse.parse_qs(urllib.parse.urlencode(
+            dict(base, panel_host_prefix="1")))
+        with mock.patch.object(webui.feige, "send_report",
+                               return_value=(True, '{"ok":true}')):
+            page_on = webui.page_preview(q_on).decode("utf-8")
+        self.assertIn("claude-code · Qwen 4-max", page_on)
+        q_off = urllib.parse.parse_qs(urllib.parse.urlencode(
+            dict(base, panel_host_prefix="0")))
+        with mock.patch.object(webui.feige, "send_report",
+                               return_value=(True, '{"ok":true}')):
+            page_off = webui.page_preview(q_off).decode("utf-8")
+        self.assertIn("Qwen 4-max", page_off)
+        self.assertNotIn("claude-code · Qwen 4-max", page_off)
+        self.assertFalse(self.settings.exists())  # 临时覆盖绝不落盘
 
     def test_preview_channel_host_status_use_menu_selectors(self):
         page = webui.page_preview({}).decode("utf-8")

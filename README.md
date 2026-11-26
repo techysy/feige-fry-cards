@@ -42,7 +42,7 @@
 
 ### 核心设计原则
 - 🎯 **摘要是战报，不是镜像**：卡片正文控制在 300 字级核心提炼，完整交互留在终端，杜绝冗长刷屏。
-- 📊 **统计只出一遍**：遵循家族统一口径，终态卡的统一折叠面板头承载紧凑统计：`模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 · ⏱️耗时`（标题已含项目与宿主，面板头不重复；底部脚注行默认关，`FEIGE_FOOTER_ENABLED=1` 可恢复；面板/脚注字段各自独立配置）。
+- 📊 **统计只出一遍**：遵循家族统一口径，终态卡的统一折叠面板头承载紧凑统计：`模型 · 💭思考 · 🔧工具 · 上下文 · 🎫输出 · ⏱️耗时`（标题已含项目与宿主，面板头不重复——模型名默认只显官方名，`FEIGE_PANEL_HOST_PREFIX=1` 才带宿主前缀；底部脚注行默认关，`FEIGE_FOOTER_ENABLED=1` 可恢复；面板/脚注字段各自独立配置）。
 - 🛡️ **Fail-Open 稳态容错**：卡片生成或网络发信异常仅记录本地日志，**绝不反向阻断或拖垮 Agent 本身的执行进程**。
 - 🔒 **密钥零泄露保障**：凭据走环境变量、插件设置或本地设置文件 `~/.feige-settings.json`（仅存本机），日志与 WebUI 严格脱敏，绝不入库；会话路径与 `session_id` 仅映射在 `~/.feige-sessions.json`，不上卡片公开字段。
 - 📦 **核心零依赖 + 可选长连接增强**：发卡引擎（Webhook / CardKit / 钉钉 / Telegram）与 Studio 设置页仍基于纯 Python 标准库零依赖运行；仅开启飞书长连接交互回调（`WSClient`）时按需使用可选依赖 `lark-oapi>=1.4.0`，未安装时自动优雅降级。
@@ -328,6 +328,7 @@ export FEIGE_LLM_MAX_CHARS="400"                      # 摘要目标字数
 | `FEIGE_PANEL_EXPANDED` | 底部统一折叠面板默认展开开关（默认 `0` 折叠） |
 | `FEIGE_PANEL_FIELDS` | 统一面板头字段与顺序（逗号分隔；默认 `model,thinking,tools,context,tokens,elapsed`，不含项目名） |
 | `FEIGE_CONTEXT_STYLE` | 面板头上下文水位样式：`text_bar`（默认，文本+进度条 `165.4k/1.0m [█▓▒░] 17%`）/ `text`（纯文本 `165.4k/1.0m (17%)`）/ `bar`（纯进度条 `[█▓▒░] 17%`），口径对齐 claw / hermes-fry-cards；旧值 `plain` 等价 `text` |
+| `FEIGE_PANEL_HOST_PREFIX` | 面板头模型名是否带宿主前缀（默认 `0` 关——卡片标题已含「项目 · 宿主」，面板头只留模型官方名不再重复；`1` 还原 `claude-code · Qwen 4-max` 旧口径；脚注与钉钉/Telegram 不受影响） |
 | `FEIGE_FOOTER_FIELDS` | 底部脚注字段与顺序（逗号分隔；默认全字段含 `project`；仅脚注开启时可见） |
 | `FEIGE_FOOTER_ENABLED` | 完成卡底部 hr+统计脚注行开关（默认 `0` 关——面板头已承载统计；钉钉/Telegram 静态版式不受影响） |
 | `FEIGE_RESUME_TIMEOUT` | 无头续跑子进程超时秒数（`30~1800`，默认 `300`） |

@@ -76,7 +76,7 @@ from pathlib import Path
 # 主插件版本号单一来源：面板（webui.VERSION）从这里读，两份插件清单
 # （.claude-plugin / .zcode-plugin 的 plugin.json + marketplace.json）同步一致，
 # 由测试锁住防漂移。
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 DEFAULT_BASE_URL = "https://open.feishu.cn"
 STREAMING_ELEMENT_ID = "streaming_content"  # 流式正文元素 id（家族固定口径）
@@ -121,6 +121,7 @@ _SETTINGS_ENV = {
     "FEIGE_PANEL_FIELDS": "panel_fields",
     "FEIGE_FOOTER_ENABLED": "footer_enabled",
     "FEIGE_CONTEXT_STYLE": "context_style",
+    "FEIGE_PANEL_HOST_PREFIX": "panel_host_prefix",
     "FEIGE_INTERACTIVE": "feishu_interactive",
     "FEIGE_WS_ENABLED": "feishu_ws_enabled",
     "FEIGE_ALLOW_USERS": "interactive_allow_users",
@@ -576,14 +577,21 @@ def resolve_vendor_display_name(model: str) -> str | None:
     return f"{official} {tail}".strip() or official
 
 
-def format_panel_model(model: str) -> str:
-    """面板标题里的模型展示名：保留宿主前缀（若有），模型名优先取官方名。"""
-    host_prefix, raw_model = _split_host_model(model)
+def format_panel_model(model: str, host_prefix: bool | None = None) -> str:
+    """面板标题里的模型展示名：默认不重复宿主前缀，只留模型官方名。
+
+    卡片标题已含「项目 · 宿主」，面板头再带一遍宿主就是同一张卡说三遍；
+    host_prefix 为真（FEIGE_PANEL_HOST_PREFIX / 设置 panel_host_prefix）时才还原
+    「claude-code · Qwen 4-max」旧口径。显式传参优先于配置。
+    """
+    prefix_allowed = panel_host_prefix_enabled() if host_prefix is None else bool(host_prefix)
+    host_prefix_text, raw_model = _split_host_model(model)
     if not raw_model:
-        return host_prefix
+        # 只有宿主没有模型（'claude-code'）：关前缀时留空让调用方回落标题兜底
+        return host_prefix_text if prefix_allowed else ""
     official = resolve_vendor_display_name(raw_model)
     shown = official or raw_model.split("/")[-1]
-    return f"{host_prefix} · {shown}" if host_prefix else shown
+    return f"{host_prefix_text} · {shown}" if (host_prefix_text and prefix_allowed) else shown
 
 
 def _bool_setting(env_name: str, default: bool = False) -> bool:
@@ -611,6 +619,11 @@ def vendor_logo_enabled() -> bool:
 def panel_expanded_default() -> bool:
     """底部统一折叠面板是否默认展开（默认折叠）。"""
     return _bool_setting("FEIGE_PANEL_EXPANDED", default=False)
+
+
+def panel_host_prefix_enabled() -> bool:
+    """面板头模型名是否带宿主前缀（默认关：标题已含宿主，不再重复）。"""
+    return _bool_setting("FEIGE_PANEL_HOST_PREFIX", default=False)
 
 
 def allow_users_list() -> list[str]:
@@ -835,7 +848,8 @@ def compact_count(value: int) -> str:
 
 def _build_panel_header_text(stats: dict | None, logo_image_key: str = "",
                              fields: list[str] | tuple[str, ...] | None = None,
-                             context_style: str = "") -> str:
+                             context_style: str = "",
+                             panel_host_prefix: bool | None = None) -> str:
     """统一面板标题文本（对齐 fry-cards）：不添加多余 emoji，保持图标干净（未传 custom_icon 时仅展示统计标题）。
 
     字段与顺序走独立的面板配置（panel_fields / FEIGE_PANEL_FIELDS），默认不含
@@ -850,7 +864,7 @@ def _build_panel_header_text(stats: dict | None, logo_image_key: str = "",
             fmap["project"] = f"📦 {project}"
         model = str(stats.get("model") or "").strip()
         if model:
-            fmap["model"] = format_panel_model(model)
+            fmap["model"] = format_panel_model(model, host_prefix=panel_host_prefix)
         thinking = stats.get("thinking")
         if thinking is not None and str(thinking).strip():
             try:
@@ -897,6 +911,7 @@ def _build_unified_panel(
     logo_image_key: str = "",
     expanded: bool = False,
     context_style: str = "",
+    panel_host_prefix: bool | None = None,
 ) -> dict | None:
     """构建家族底部统一折叠面板（collapsible_panel），承载详细正文、工具摘要与指标。"""
     panel_children: list[dict] = []
@@ -945,7 +960,8 @@ def _build_unified_panel(
         })
 
     header_title = _build_panel_header_text(stats, logo_image_key=logo_image_key,
-                                            context_style=context_style)
+                                            context_style=context_style,
+                                            panel_host_prefix=panel_host_prefix)
     header_obj: dict = {
         "title": {
             "tag": "plain_text",
@@ -1106,7 +1122,8 @@ def build_card(title: str, body: str, stats: dict | None = None,
                logo_image_key: str = "",
                panel_expanded: bool | None = None,
                safe_bytes: int | None = None,
-               context_style: str = "") -> dict:
+               context_style: str = "",
+               panel_host_prefix: bool | None = None) -> dict:
     """统一卡片模型 → 飞书 Card 2.0 JSON（对齐 fry-cards 家族规范）。
 
     - 标题按状态加前缀（🛠️/✅/❌），header 按状态着色（蓝/绿/红）；
@@ -1167,6 +1184,7 @@ def build_card(title: str, body: str, stats: dict | None = None,
             logo_image_key=logo_image_key if vendor_logo_enabled() else "",
             expanded=eff_expanded,
             context_style=context_style,
+            panel_host_prefix=panel_host_prefix,
         )
         if panel is not None:
             elements.append(panel)
@@ -1661,13 +1679,15 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
                 *,
                 host: str = "", session_id: str = "", cwd: str = "",
                 detail_body: str = "", tool_summary: str = "",
-                context_style: str = "") -> tuple[bool, str]:
+                context_style: str = "",
+                panel_host_prefix: bool | None = None) -> tuple[bool, str]:
     """统一发送入口，fail-open：任何异常只落日志，返回 (是否成功, 打码后的说明)。
 
     dry_run=True 只返回将发送的载荷 JSON 字符串，不发网络请求。
     webhook/token/chat_id/secret 为路由目标级别的显式覆盖，缺省读各渠道环境变量
     （secret 是 webhook 的签名密钥，只对 feishu-webhook / dingtalk-webhook 有效）。
     context_style 显式覆盖面板头上下文样式（text / bar / text_bar，Studio 预览用），空 = 读设置。
+    panel_host_prefix 显式覆盖面板头是否带宿主前缀（None = 读设置，默认关）。
     """
     channel = channel or pick_channel()
     if channel and channel not in CHANNELS:
@@ -1751,6 +1771,7 @@ def send_report(title: str, body: str, stats: dict | None = None, status: str = 
             resumable=resumable,
             logo_image_key=logo_key,
             context_style=context_style,
+            panel_host_prefix=panel_host_prefix,
         )
         if dry_run:
             if channel == "feishu-webhook":

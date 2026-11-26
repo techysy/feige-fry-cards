@@ -27,6 +27,18 @@ import webui  # noqa: E402
 
 
 class VendorLogoAndFamilyCardTest(unittest.TestCase):
+    def setUp(self):
+        # 与本机状态隔离：渲染断言（进度条字形、宿主前缀默认档）不能跟着
+        # 用户真实 ~/.feige-settings.json 或进程环境变量漂移
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("FEIGE_", "FEISHU_", "LARK_", "DINGTALK_", "TELEGRAM_"))}
+        env["FEIGE_SETTINGS_FILE"] = str(Path(self.tmp.name) / "s.json")
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_vendor_logo_and_official_name_mapping(self):
         cases = [
             ("tencent/hy4-flash:free", "hunyuan.png", "Hy4 flash"),
@@ -468,9 +480,9 @@ class WSDegradationAndStudioIntegrationTest(unittest.TestCase):
         self.assertIn("collapsible_panel", html_out)
 
     def test_studio_fold_cards_and_status_badges_and_version_2_0(self):
-        self.assertEqual(feige.__version__, "2.1.0")
+        self.assertEqual(feige.__version__, "2.2.0")
         pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "2.1.0"', pyproject)
+        self.assertIn('version = "2.2.0"', pyproject)
 
         studio_html = webui.page_studio().decode("utf-8")
         self.assertIn("fold-card", studio_html)
