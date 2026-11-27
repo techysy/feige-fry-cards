@@ -260,17 +260,36 @@ def llm_config() -> dict:
 
 
 _SUMMARY_TAG_RE = re.compile(r"<summary>(.*?)</summary>", re.S)
-# 复述系统要求的行（「用户要求把…压缩成…只输出摘要本身」）的指纹词
-_ECHO_MARKERS = ("用户要求", "压缩成", "只输出", "摘要本身", "寒暄", "过程性叙述")
-# 过程独白行：「我需要把上面的汇报精简」「让我组织一下」「检查字数，应该在400字以内」
+# 复述系统要求或思考约束的行指纹词
+_ECHO_MARKERS = (
+    "用户要求", "压缩成", "只输出", "摘要本身", "寒暄", "过程性叙述",
+    "标签之外", "不得输出", "分析过程", "字数检查", "放进 <summary>",
+    "标签之间", "战报摘要器", "不复述", "不写分析", "字数估算", "需保留",
+)
+# 过程独白行：「我需要把上面的汇报精简」「让我组织一下」「检查字数，应该在400字以内」「标签内。考虑是否...」「摘要草稿：」
 _META_LINE_RE = re.compile(
-    r"^(?:让我们?|我(?:需要|来|会|将|先|准备|数一下)|好的[，,！!。.]|明白了[，,！!]|"
-    r"当然[，,！!]|收到[，,！!]|(?:检查|数一下|核对).{0,2}字数"
-    r"|字数.{0,4}(?:以内|左右|符合)|这个内容)")
+    r"^(?:"
+    r"让我们?|我们|"
+    r"我(?:需要|来|会|将|先|准备|数一下|也?要|应该|想|得|看|整理|提炼|总结|保留|把|认为|估计)|"
+    r"好的[，,！!。.\s]|明白了[，,！!]|收到[，,！!]|当然[，,！!]|好滴[，,！!]|OK[，,！!:\s]|Ok[，,！!:\s]|"
+    r"标签内[。：:.\s]?|在标签内|标签中|标签之外|"
+    r"注意(?:到|事项)?|需要注意|需注意|也要注意|"
+    r"考虑(?:到|是否)?|"
+    r"不要(?:写|输出|包含|有)|不能(?:写|输出|包含|有)|严禁|"
+    r"要保证|确保|尽量|需保留|需要保留|"
+    r"字数.{0,6}(?:估算|预估|统计|要求|控制|约|大约|以内|左右|符合)|"
+    r"(?:检查|数一下|核对).{0,2}字数|"
+    r"这个内容|这篇|本篇|助手汇报|收尾汇报|战报摘要|战报内容|"
+    r"根据(?:要求|提示|上下文|汇报)|按照(?:要求|指示|规范)|"
+    r"以下是|下面是|输出如下|结果如下|整理如下|总结如下|摘要如下|"
+    r"(?:摘要|战报|内容)?(?:草稿|初稿|底稿|正文|总结)[：:]?$|"
+    r"(?:思考过程|思考|分析过程|分析|推理过程|思路)[：:]?$"
+    r")"
+)
 
 
 def _strip_monologue(text: str) -> str:
-    """标签没配合时的兜底：逐行剔掉复述要求的行与独白行。
+    """逐行剔掉复述要求的行与独白行。
 
     剔完为空返回空串——调用方 fit_body 会退化到硬截断原文，好过发一卡片独白。
     """
@@ -290,25 +309,53 @@ def _strip_monologue(text: str) -> str:
 def _extract_summary(text: str) -> str:
     """从总结模型的返回里剥出摘要本体。
 
-    碎碎念模型会复述系统要求、在摘要前后写分析过程和字数检查，直接镜像进
-    卡片就是灾难现场；约定摘要放在 <summary> 标签里，标签外的话全部丢弃。
-    模型不配合（没标签/只剩开标签被截断）时退化为逐行去独白。
+    推理模型（hy4/GLM 等）会输出 <think> 思考块、碎碎念独白、草稿、复述系统要求、
+    在摘要前后写分析过程和字数检查，直接镜像进卡片就是灾难现场（流口水）。
+    处理机制：
+    1. 彻底清除推理模型的显式思考标签（<think>...</think>, <thought>...</thought> 等）；
+    2. 定位摘要标签：若存在 </summary>，取闭标签前最后一个开标签的内容（封堵多重 <summary> 嵌套泄露草稿）；
+       若截断未闭合，取最后一个开标签之后的内容；
+    3. 剥除代码块包裹（```...```）；
+    4. 对提取后的摘要内容做二次独白与草稿前言清洗；
+    5. 标签未配合或清洗后为空时兜底逐行去独白，依然为空时由 fit_body 硬截断原文兜底。
     """
     text = (text or "").strip()
     if not text:
         return ""
-    pairs = list(_SUMMARY_TAG_RE.finditer(text))
+    # 1. 彻底清除推理模型的显式思考标签（CoT / 流口水）
+    text = re.sub(r"<(?:think|thought|reasoning)>.*?</(?:think|thought|reasoning)>", "", text, flags=re.S | re.IGNORECASE)
+    if re.search(r"</(?:think|thought|reasoning)>", text, flags=re.IGNORECASE):
+        text = re.split(r"</(?:think|thought|reasoning)>", text, flags=re.IGNORECASE)[-1]
+    if re.search(r"<(?:think|thought|reasoning)>", text, flags=re.IGNORECASE) and "<summary>" not in text:
+        text = re.split(r"<(?:think|thought|reasoning)>", text, flags=re.IGNORECASE)[0]
+    text = text.strip()
+    if not text:
+        return ""
+
     body = ""
-    if pairs:
-        body = pairs[-1].group(1).strip()  # 复述要求的标签对在前，真摘要取最后一个
+    # 2. 定位摘要标签：若存在闭标签，取闭标签前最后一个开标签的内容；若未闭合，取最后一个开标签之后
+    if "</summary>" in text:
+        end_pos = text.rfind("</summary>")
+        start_pos = text.rfind("<summary>", 0, end_pos)
+        if start_pos != -1:
+            body = text[start_pos + len("<summary>"):end_pos].strip()
+        else:
+            body = text[:end_pos].strip()
     elif "<summary>" in text:
-        body = text.rsplit("<summary>", 1)[1].strip()  # 只剩开标签：截断在摘要中途
+        body = text.rsplit("<summary>", 1)[-1].strip()
+
     if body.startswith("```"):
         fence = re.fullmatch(r"```[^\n]*\n(.*?)(?:\n```)?\s*", body, re.S)
         if fence:
             body = fence.group(1).strip()
-    if len(body) >= 8:
-        return body
+
+    # 3. 对提取出的 body 二次清洗独白与草稿前言
+    if body:
+        cleaned_body = _strip_monologue(body)
+        if len(cleaned_body) >= 8:
+            return cleaned_body
+
+    # 4. 没标签或标签内剥完不足 8 字时的兜底：全文去独白（为空时由 fit_body 硬截断原文）
     return _strip_monologue(text)
 
 
@@ -323,17 +370,17 @@ def llm_summarize(text: str, cfg: dict | None = None) -> str:
         return ""
     payload = {
         "model": cfg["model"],
-        # 中文 1 字 ≈ 1-2 token；碎碎念模型先烧掉一段预算才轮到摘要，多留余量
-        "max_tokens": max(cfg["max_chars"] * 3, 600),
+        # 中文 1 字 ≈ 1-2 token；推理/碎碎念模型先烧掉一段预算才轮到摘要，放宽至 6 倍且保底 2048 防截断
+        "max_tokens": max(cfg["max_chars"] * 6, 2048),
         "temperature": 0.2,
         "messages": [
             {"role": "system",
              "content": "你是任务战报摘要器。把助手冗长的收尾汇报浓缩成不超过"
                         f"{cfg['max_chars']}字的中文摘要：保留结论、关键改动、"
                         "文件/命令名与数字，删去寒暄、过程性叙述与重复内容，"
-                        "用 markdown 列表或短句。最终摘要放进 <summary> 与"
-                        " </summary> 标签之间，标签之外不得输出任何文字——"
-                        "不复述本要求、不写分析过程、不做字数检查。"},
+                        "用 markdown 列表或短句。直接输出最终结果，严禁输出任何思考过程、"
+                        "字数统计、分析说明或草稿。最终摘要必须严格用 <summary> 与 </summary> "
+                        "标签包裹，标签内部只允许包含摘要正文本身，不要包含任何独白或草稿。"},
             {"role": "user", "content": text[:LLM_INPUT_MAX_CHARS]},
         ],
     }

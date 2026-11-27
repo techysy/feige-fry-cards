@@ -894,6 +894,95 @@ class SummarizeTest(unittest.TestCase):
             out = feige.fit_body(self.LONG)
         self.assertIn("内容过长已截断", out)
 
+    def test_llm_summarize_request_max_tokens_and_direct_prompt(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return self._fake_llm("<summary>• 结论：成功</summary>")
+
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x", FEIGE_LLM_MAX_CHARS="400")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            feige.llm_summarize("原文")
+        self.assertEqual(captured["body"]["max_tokens"], 2400)
+        sys_prompt = captured["body"]["messages"][0]["content"]
+        self.assertIn("严禁输出任何思考过程", sys_prompt)
+        self.assertIn("直接输出最终结果", sys_prompt)
+
+    def test_llm_summarize_strips_think_tags_and_reasoning_cot(self):
+        # 推理模型（DeepSeek-R1 / GLM / hy4）输出显式 <think> 标签或未闭合思考
+        raw = (
+            "<think>\n"
+            "正在思考如何总结...\n"
+            "字数控制在400字以内，提取要点。\n"
+            "</think>\n"
+            "<summary>\n"
+            "• 结论：已完成替换\n"
+            "• 验证：测试全部通过\n"
+            "</summary>"
+        )
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen", return_value=self._fake_llm(raw)):
+            out = feige.llm_summarize("原文")
+        self.assertEqual(out, "• 结论：已完成替换\n• 验证：测试全部通过")
+
+    def test_llm_summarize_user_bug_reproduction_nested_summary_and_monologue(self):
+        # 用户现场真实翻车 case：模型在开头加 <summary>，随后进行独白与字数估算，再开第二个 <summary>
+        raw = (
+            "<summary>\n"
+            "标签内。考虑是否可以用markdown列表，在标签内可以有“-”。不要写“标签之外不得输出”。最终不要有分析。字数估算：约三百多中文字符。需保留文件/命令名和数字，尽量完整。\n\n"
+            "我也要注意“推 main”可能写成“已提交并推 main”。“CI 当前运行中 run 45973926776”。“回归门36个已知失败项无新增恶化”。“发版须用户确认”。“本地与 origin/main 对齐、无未提交改动”。“可选事项”压缩为一行。\n\n"
+            "摘要草稿：\n"
+            "<summary>\n"
+            "• 结论：AutoClaw 双线官方图标替换已完成并提交推 main；本地与 origin/main 对齐，无未提交改动。\n"
+            "• 关键改动：国际版 `autoclaw.png` 换为官方白底黑 a 128x128 栅格（3524B，SHA1 `98cd8d00864f`）；国内版新增 `autoclaw-cn.png` 官方橙底米白 a 128x128（8622B，SHA1 `1dfc1d5184be`）。\n"
+            "• 验证：图标测试 5/5 绿；CI 运行中（run `45973926776`）。\n"
+            "</summary>"
+        )
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen", return_value=self._fake_llm(raw)):
+            out = feige.llm_summarize("原文")
+        self.assertTrue(out.startswith("• 结论：AutoClaw"))
+        self.assertNotIn("标签内", out)
+        self.assertNotIn("摘要草稿", out)
+        self.assertNotIn("<summary>", out)
+        self.assertNotIn("我也要注意", out)
+
+    def test_llm_summarize_strips_monologue_inside_single_summary_tag(self):
+        # 标签内包裹独白时二次清洗
+        raw = (
+            "<summary>\n"
+            "标签内。考虑是否可以用markdown列表。\n"
+            "我也要注意保留文件路径与验证信息。\n"
+            "摘要草稿：\n"
+            "• 结论：接口重构已合入 main\n"
+            "• 验证：12/12 通过\n"
+            "</summary>\n"
+            "检查字数，符合不超过400字的要求。"
+        )
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen", return_value=self._fake_llm(raw)):
+            out = feige.llm_summarize("原文")
+        self.assertEqual(out, "• 结论：接口重构已合入 main\n• 验证：12/12 通过")
+        self.assertNotIn("标签内", out)
+        self.assertNotIn("检查字数", out)
+
+    def test_llm_summarize_pure_thinking_falls_back_to_clip(self):
+        # 思考模型在输出摘要前截断（仅产生 <think> 思考块）→ 兜底截断原文，绝不发思考内容
+        raw = "<think>\n我正在仔细阅读并精简汇报...\n用户要求压缩在400字内...\n"
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen",
+                           return_value=self._fake_llm(raw, finish_reason="length")):
+            self.assertEqual(feige.llm_summarize("原文"), "")
+            out = feige.fit_body(self.LONG)
+        self.assertIn("内容过长已截断", out)
+        self.assertNotIn("我正在仔细阅读", out)
+
     def test_redact_covers_llm_key(self):
         env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-supersecret01")
         with mock.patch.dict(os.environ, env, clear=True):
