@@ -76,8 +76,8 @@ HOST_CAPABILITIES: dict[str, dict[str, Any]] = {
     "antigravity": {
         "label": "Antigravity",
         "cli": "agy",
-        "resumable": False,
-        "note": "Antigravity 暂不支持远程无头续跑，请在本地终端 / IDE 中继续",
+        "resumable": True,
+        "note": "支持 agy -p --conversation 无头续跑",
     },
 }
 
@@ -144,6 +144,16 @@ def resolve_cli_executable(cli_name: str) -> str | None:
             hit = shutil.which(cli_name + ext)
             if hit:
                 return hit
+        # 兜底常见用户级路径（如 agy 在 ~/.gemini/bin 或 ~/.gemini/antigravity-cli/bin）
+        home = Path.home()
+        candidates = [
+            home / ".gemini" / "antigravity-cli" / "bin" / f"{cli_name}.exe",
+            home / ".gemini" / "bin" / f"{cli_name}.exe",
+            home / "AppData" / "Local" / "agy" / "bin" / f"{cli_name}.exe",
+        ]
+        for c in candidates:
+            if c.is_file():
+                return str(c)
     return None
 
 
@@ -360,6 +370,15 @@ def build_resume_command(host: str, session_id: str, prompt: str, *,
         args = ["-p", prompt, "-S", session_id]
         return _wrap_windows_ps1(exe, args), None
 
+    if nh == "antigravity":
+        args = [
+            "-p", prompt,
+            "--conversation", session_id,
+            "--dangerously-skip-permissions",
+            "--output-format", "json",
+        ]
+        return _wrap_windows_ps1(exe, args), None
+
     return [], f"未知宿主 {nh}"
 
 
@@ -379,6 +398,28 @@ def _parse_claude_json(stdout: str) -> dict[str, Any] | None:
             try:
                 data = json.loads(line)
                 if isinstance(data, dict) and ("result" in data or "is_error" in data):
+                    return data
+            except ValueError:
+                continue
+    return None
+
+
+def _parse_agy_json(stdout: str) -> dict[str, Any] | None:
+    s = (stdout or "").strip()
+    if not s:
+        return None
+    try:
+        data = json.loads(s)
+        if isinstance(data, dict):
+            return data
+    except ValueError:
+        pass
+    for line in reversed(s.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and ("response" in data or "status" in data or "conversation_id" in data):
                     return data
             except ValueError:
                 continue
@@ -474,6 +515,21 @@ def run_headless_resume(
             file_msg = Path(codex_out).read_text(encoding="utf-8", errors="replace").strip()
             if file_msg:
                 text = file_msg
+        elif host == "antigravity":
+            parsed = _parse_agy_json(stdout)
+            if parsed:
+                text = str(parsed.get("response") or "").strip() or text
+                new_sid = str(parsed.get("conversation_id") or session_id)
+                if parsed.get("duration_seconds"):
+                    elapsed_str = _fmt_ms(float(parsed["duration_seconds"]) * 1000.0)
+                usage = parsed.get("usage") or {}
+                if isinstance(usage, dict) and usage.get("output_tokens"):
+                    try:
+                        tokens = int(usage["output_tokens"])
+                    except (TypeError, ValueError):
+                        pass
+                if parsed.get("status") and parsed.get("status") != "SUCCESS" and rc == 0:
+                    rc = 1
 
         if rc != 0:
             err_detail = feige.redact((stderr or text or f"exit code {rc}")[:800])

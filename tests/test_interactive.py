@@ -587,9 +587,9 @@ class InteractiveCallbackAndResumeTest(unittest.TestCase):
         self.assertEqual(feige_interactive.get_session(ctx_id)["status"], "idle")
 
     def test_unsupported_host_and_concurrent_lock(self):
-        agy_ctx = self._make_ctx(host="antigravity", session_id="conv_1")
+        unsupported_ctx = self._make_ctx(host="custom-cli", session_id="conv_1")
         res = feige_interactive.handle_card_action(
-            self._event(agy_ctx, action="unsupported"),
+            self._event(unsupported_ctx, action="unsupported"),
             spawn_bg=False,
         )
         self.assertIn("暂不支持", res["toast"]["content"])
@@ -663,6 +663,58 @@ class InteractiveCallbackAndResumeTest(unittest.TestCase):
             cmd_k, err_k = feige_interactive.build_resume_command("kimi-code", "sess_k", "check")
             self.assertIsNone(err_k)
             self.assertEqual(cmd_k, ["/bin/kimi", "-p", "check", "-S", "sess_k"])
+
+            cmd_a, err_a = feige_interactive.build_resume_command("antigravity", "conv_a", "run tests")
+            self.assertIsNone(err_a)
+            self.assertEqual(cmd_a, ["/bin/agy", "-p", "run tests", "--conversation", "conv_a",
+                                     "--dangerously-skip-permissions", "--output-format", "json"])
+
+    def test_antigravity_headless_resume_success_and_failure(self):
+        ctx_id = self._make_ctx(host="antigravity", session_id="conv_orig")
+
+        def fake_runner_ok(argv, **kwargs):
+            self.assertEqual(kwargs["env"]["FEIGE_RESUME_CHILD"], "1")
+            self.assertEqual(kwargs["env"]["FEIGE_HOOK_NOTIFY"], "0")
+            self.assertIn("--conversation", argv)
+            self.assertIn("--dangerously-skip-permissions", argv)
+            return subprocess.CompletedProcess(
+                argv, 0,
+                stdout="warning: init\n" + json.dumps({
+                    "conversation_id": "conv_new",
+                    "status": "SUCCESS",
+                    "response": "Antigravity 续跑成功已产出结果",
+                    "duration_seconds": 2.5,
+                    "usage": {"output_tokens": 128},
+                }),
+                stderr="",
+            )
+
+        with mock.patch.object(feige_interactive, "resolve_cli_executable", return_value="agy"), \
+                mock.patch.object(feige, "update_card", return_value=2) as upd, \
+                mock.patch.object(feige, "resolve_vendor_logo_image_key", return_value="img_agy"):
+            feige_interactive._execute_resume_and_update(ctx_id, "继续跑", runner=fake_runner_ok)
+
+        upd.assert_called_once()
+        card_dump = json.dumps(upd.call_args[0][1], ensure_ascii=False)
+        self.assertIn("Antigravity 续跑成功已产出结果", card_dump)
+        rec = feige_interactive.get_session(ctx_id)
+        self.assertEqual(rec["status"], "idle")
+        self.assertEqual(rec["session_id"], "conv_new")
+
+        # 失败与非零退出码场景
+        def fake_runner_err(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv, 1,
+                stdout=json.dumps({"status": "FAILED", "response": "quota limit exceeded"}),
+                stderr="Rate limit",
+            )
+
+        with mock.patch.object(feige_interactive, "resolve_cli_executable", return_value="agy"):
+            res = feige_interactive.run_headless_resume(
+                feige_interactive.get_session(ctx_id), "再次重试", runner=fake_runner_err
+            )
+            self.assertFalse(res["ok"])
+            self.assertIn("续跑失败", res["error"])
 
     def test_resume_child_suppresses_stop_hooks(self):
         stop = importlib.util.spec_from_file_location("feige_stop_t", REPO / "hooks" / "stop.py")

@@ -294,7 +294,7 @@ class StatsScopeTest(unittest.TestCase):
         """密钥：保存后页面不回显值；留空不修改；勾选清除才删。"""
         body = urllib.parse.urlencode({"form": "llm", "llm_api_key": "sk-studio-1"}).encode()
         resp = webui.handle_settings_post(body).decode("utf-8")
-        self.assertIn("正文总结已保存", resp)
+        self.assertIn("总结凭据已保存", resp)
         self.assertNotIn("sk-studio-1", resp)
         doc = json.loads(self.settings.read_text(encoding="utf-8"))
         self.assertEqual(doc["llm_api_key"], "sk-studio-1")
@@ -327,27 +327,32 @@ class StatsScopeTest(unittest.TestCase):
     def test_unknown_card_and_validation_errors(self):
         resp = webui.handle_settings_post(b"form=nope").decode("utf-8")
         self.assertIn("未知设置卡片", resp)
-        resp = webui.handle_settings_post(b"form=llm&llm_max_chars=abc").decode("utf-8")
+        resp = webui.handle_settings_post(b"form=llm_policy&llm_max_chars=abc").decode("utf-8")
         self.assertIn("非法摘要目标字数", resp)
-        resp = webui.handle_settings_post(b"form=llm&llm_min_chars=abc").decode("utf-8")
+        resp = webui.handle_settings_post(b"form=llm_policy&llm_min_chars=abc").decode("utf-8")
         self.assertIn("非法总结触发字数", resp)
         resp = webui.handle_settings_post(b"form=behavior&debounce_seconds=x").decode("utf-8")
         self.assertIn("非法去抖秒数", resp)
 
     def test_llm_min_chars_save_and_page(self):
         """总结触发字数：保存校验（≥0）、留空回默认、页面渲染提示文案。"""
-        webui.handle_settings_post(b"form=llm&llm_min_chars=500")
+        webui.handle_settings_post(b"form=llm_policy&llm_min_chars=500")
         self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["llm_min_chars"], "500")
-        webui.handle_settings_post(b"form=llm&llm_min_chars=0")  # 0 合法：只在超上限才总结
+        webui.handle_settings_post(b"form=llm_policy&llm_min_chars=0")  # 0 合法：只在超上限才总结
         self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["llm_min_chars"], "0")
-        webui.handle_settings_post(b"form=llm")  # 留空 = 删键回默认 300
+        webui.handle_settings_post(b"form=llm_policy")  # 留空 = 删键回默认 300
         self.assertNotIn("llm_min_chars", json.loads(self.settings.read_text(encoding="utf-8")))
         page = webui.page_studio().decode("utf-8")
         self.assertIn("总结触发字数", page)
         self.assertIn("llm_min_chars", page)
 
     def test_panel_and_footer_chips_save_independently(self):
-        """面板头/脚注两套 chips + 脚注显隐开关：交互卡白名单内独立保存。"""
+        """面板头/脚注两套 chips + 脚注显隐开关：面板卡白名单内独立保存。
+
+        「面板设置」已从交互卡里拆成独立弹窗，保存作用域也跟着独立——
+        拆的时候最容易出的事故是存交互卡把面板那组键刷成默认（_BOOL_KEYS
+        不勾就写 "0"），所以这里两条都锁住。
+        """
         page = webui.page_studio().decode("utf-8")
         self.assertIn("统一面板头字段（panel）", page)
         self.assertIn("底部脚注字段（footer）", page)
@@ -357,15 +362,17 @@ class StatsScopeTest(unittest.TestCase):
         # 面板默认不含项目 chip 激活；脚注默认全字段激活
         self.assertIn("name='panel_fields' id='panel_fields_val' value='model,thinking,tools,context,tokens,elapsed'", page)
         self.assertIn("name='footer_fields' id='footer_fields_val' value='project,model,thinking,tools,context,tokens,elapsed'", page)
+        # 这组字段现在活在弹窗里，不再摊在长卡正文上
+        self.assertIn("modal-panel", page)
 
         body = urllib.parse.urlencode({
-            "form": "interactive",
+            "form": "panel",
             "panel_fields": "model,tools",
             "footer_enabled": "1",
             "footer_fields": "project,elapsed",
         }).encode("utf-8")
         resp = webui.handle_settings_post(body).decode("utf-8")
-        self.assertIn("交互与长连接已保存", resp)
+        self.assertIn("面板设置已保存", resp)
         saved = json.loads(self.settings.read_text(encoding="utf-8"))
         self.assertEqual(saved["panel_fields"], ["model", "tools"])
         self.assertEqual(saved["footer_fields"], ["project", "elapsed"])
@@ -373,17 +380,47 @@ class StatsScopeTest(unittest.TestCase):
         self.assertEqual(feige._panel_field_order(), ("model", "tools"))
         self.assertTrue(feige.footer_enabled())
         # 不勾开关再存：显式写 0（关），字段配置保留
-        webui.handle_settings_post(b"form=interactive&panel_fields=model&footer_fields=")
+        webui.handle_settings_post(b"form=panel&panel_fields=model&footer_fields=")
         saved = json.loads(self.settings.read_text(encoding="utf-8"))
         self.assertEqual(saved["footer_enabled"], "0")
         self.assertEqual(saved["panel_fields"], ["model"])
         self.assertEqual(saved["footer_fields"], [])  # 空 = 全隐藏（合法）
         self.assertFalse(feige.footer_enabled())
 
+    def test_saving_interactive_card_keeps_panel_settings(self):
+        """拆卡后最该防的回归：存交互卡不得把面板那组键刷成默认。
+
+        两组共用 _BOOL_KEYS 里的布尔口径（表单没带该键 = 没勾 = 显式写 "0"），
+        所以白名单必须各自收窄；沿用并集的话，只勾一下 CardKit 开关就会顺手
+        关掉厂商 Logo、折叠面板默认展开、宿主前缀，用户看不出发生了什么。
+        """
+        webui.handle_settings_post(urllib.parse.urlencode({
+            "form": "panel",
+            "vendor_logo_enabled": "1",
+            "panel_expanded": "1",
+            "panel_host_prefix": "1",
+            "context_style": "bar",
+            "panel_fields": "model,tools",
+        }).encode("utf-8"))
+        before = json.loads(self.settings.read_text(encoding="utf-8"))
+        self.assertEqual(before["vendor_logo_enabled"], "1")
+
+        webui.handle_settings_post(urllib.parse.urlencode({
+            "form": "interactive",
+            "feishu_interactive": "1",
+            "feishu_ws_enabled": "0",
+        }).encode("utf-8"))
+        saved = json.loads(self.settings.read_text(encoding="utf-8"))
+        self.assertEqual(saved["feishu_interactive"], "1")
+        for key in ("vendor_logo_enabled", "panel_expanded", "panel_host_prefix",
+                    "context_style", "panel_fields"):
+            self.assertEqual(saved[key], before[key], f"存交互卡把 {key} 刷掉了")
+
     def test_llm_off_toggle_writes_and_clears_summarize(self):
-        webui.handle_settings_post(b"form=llm&llm_api_key=sk-1&llm_off=1")
+        webui.handle_settings_post(b"form=llm&llm_api_key=sk-1")
+        webui.handle_settings_post(b"form=llm_policy&llm_off=1")
         self.assertIs(json.loads(self.settings.read_text(encoding="utf-8"))["summarize"], False)
-        webui.handle_settings_post(b"form=llm")  # 不勾 = 回到跟随 key
+        webui.handle_settings_post(b"form=llm_policy")  # 不勾 = 回到跟随 key
         self.assertNotIn("summarize", json.loads(self.settings.read_text(encoding="utf-8")))
 
     def test_fetch_models_api_endpoint(self):
@@ -448,14 +485,16 @@ class ContextStyleStudioTest(unittest.TestCase):
         page = webui.page_studio().decode("utf-8")
         self.assertIn("ch-menu", page)
         self.assertIn("具体设置", page)
-        # 三个渠道各一行菜单 + 各自弹窗，主页不再内联铺开钉钉/Telegram 表单
-        self.assertEqual(page.count("class='ch-row'"), 3)
-        for did in ("modal-feishu", "modal-dingtalk", "modal-telegram"):
+        # 三个渠道各一行菜单 + 各自弹窗，主页不再内联铺开钉钉/Telegram 表单；
+        # 「面板设置」收进弹窗后也占一行，长连接实况再占一行，所以是 5 行。
+        self.assertEqual(page.count("class='ch-row'"), 5)
+        for did in ("modal-feishu", "modal-dingtalk", "modal-telegram", "modal-panel"):
             self.assertIn(f"id='{did}'", page)
         self.assertIn("<dialog class='feige-modal'", page)
         # 弹窗内表单仍能独立保存（白名单卡片键没丢）
         self.assertIn("name='form' value='dingtalk'", page)
         self.assertIn("name='form' value='telegram'", page)
+        self.assertIn("name='form' value='panel'", page)
 
     def test_modal_css_seals_both_open_paths(self):
         """弹层样式必须自己定死几何，且收起态显式不显示。
@@ -483,6 +522,22 @@ class ContextStyleStudioTest(unittest.TestCase):
         self.assertNotIn("closest(box)", page)
         self.assertIn("box.contains(t)", page)
 
+    def test_position_menu_honors_dialog_bounds(self):
+        """弹窗里的下拉必须按弹窗正文边界定位，不能只按整页视口。
+
+        实测（1200×760，把「面板头上下文样式」滚到正文最下缘点开）：旧实现算出菜单
+        [641, 738]，弹窗底 703 / 保存条顶 649 —— 第三个选项整个掉到圆角框外压在遮罩上；
+        认边界后向上翻成 [508, 605]，全在框内。这条只锁静态形状，行为由浏览器实测保证。
+        """
+        page = webui.page_studio().decode("utf-8")
+        body = page.split("function positionMenu(menu, btn){")[1].split("\n}")[0]
+        self.assertIn("closest('dialog.feige-modal')", body)
+        self.assertIn(".fm-body", body)
+        # 下缘要让开 sticky 保存条，否则菜单压在按钮上
+        self.assertIn("form>p:last-child", body)
+        # 兜底：可用空间太窄就退回按视口算，别把菜单压成一条
+        self.assertIn("if(hi - lo >= 90)", body)
+
     def test_status_lamps_render_with_badges(self):
         page = webui.page_studio().decode("utf-8")
         self.assertIn("class='lamp'", page)          # 未配置 = 灰灯
@@ -503,19 +558,19 @@ class ContextStyleStudioTest(unittest.TestCase):
         # 三档齐备，默认 text_bar（菜单按钮显示组合档标签）
         for v in ("text", "bar", "text_bar"):
             self.assertIn(f"data-value='{v}'", page)
-        webui.handle_settings_post(b"form=interactive&context_style=text")
+        webui.handle_settings_post(b"form=panel&context_style=text")
         self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["context_style"],
                          "text")
         self.assertEqual(feige.context_style(), "text")
         # 旧口径 plain 归一存成 text（不再写回旧值）
-        webui.handle_settings_post(b"form=interactive&context_style=plain")
+        webui.handle_settings_post(b"form=panel&context_style=plain")
         self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["context_style"],
                          "text")
         # 非法值原样拒绝
-        resp = webui.handle_settings_post(b"form=interactive&context_style=sparkline").decode("utf-8")
+        resp = webui.handle_settings_post(b"form=panel&context_style=sparkline").decode("utf-8")
         self.assertIn("非法上下文样式", resp)
         # 留空（手搓请求不带键）保持现状
-        webui.handle_settings_post(b"form=interactive")
+        webui.handle_settings_post(b"form=panel")
         self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["context_style"],
                          "text")
 
@@ -553,11 +608,12 @@ class ContextStyleStudioTest(unittest.TestCase):
         # 默认关 → 复选框不带 checked
         self.assertNotIn("name='panel_host_prefix' value='1' checked", page)
         # 勾上保存为 "1"，取消保存为 "0"（整卡布尔口径与其余开关一致）
-        webui.handle_settings_post(b"form=interactive&panel_host_prefix=1")
+        # 作用域走「面板设置」弹窗：不带该键只影响这张卡，不再连带刷别的组
+        webui.handle_settings_post(b"form=panel&panel_host_prefix=1")
         self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["panel_host_prefix"],
                          "1")
         self.assertTrue(feige.panel_host_prefix_enabled())
-        webui.handle_settings_post(b"form=interactive")
+        webui.handle_settings_post(b"form=panel")
         self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["panel_host_prefix"],
                          "0")
         self.assertFalse(feige.panel_host_prefix_enabled())
@@ -737,6 +793,89 @@ class StudioKeepAliveTest(unittest.TestCase):
             self.assertEqual(webui.main(), 0)
         stop.assert_called_once()
         start.assert_called_once_with(8787)
+
+
+class AdaptersInspectionAndPruneTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_page_adapters_includes_antigravity_cli_configured_and_unconfigured(self):
+        html_unconfigured = webui.page_adapters(self.home).decode("utf-8")
+        self.assertIn("Antigravity CLI", html_unconfigured)
+        self.assertIn("未接入", html_unconfigured)
+
+        gemini_dir = self.home / ".gemini" / "config"
+        gemini_dir.mkdir(parents=True)
+        hooks_json = gemini_dir / "hooks.json"
+        hooks_json.write_text(json.dumps({
+            "feige": {
+                "Stop": [{"type": "command", "command": 'python "F:/repo/adapters/antigravity/stop_notify.py"'}]
+            }
+        }), encoding="utf-8")
+
+        html_configured = webui.page_adapters(self.home).decode("utf-8")
+        self.assertIn("Antigravity CLI", html_configured)
+        self.assertIn("已配置全局 Stop hook", html_configured)
+
+    def test_inspect_adapter_caches_detects_antigravity_hook_fresh_and_stale(self):
+        gemini_dir = self.home / ".gemini" / "config"
+        gemini_dir.mkdir(parents=True)
+        hooks_json = gemini_dir / "hooks.json"
+
+        stale_cmd = 'python "C:/old/plugins/cache/feige-fry-cards/2.1.0/adapters/antigravity/stop_notify.py"'
+        hooks_json.write_text(json.dumps({
+            "feige": {
+                "Stop": [{"type": "command", "command": stale_cmd}]
+            }
+        }), encoding="utf-8")
+
+        findings = webui.inspect_adapter_caches(self.home)
+        agy_findings = [f for f in findings if "Antigravity" in f["host"]]
+        self.assertEqual(len(agy_findings), 1)
+        self.assertTrue(agy_findings[0]["stale"])
+        self.assertEqual(agy_findings[0]["version"], "2.1.0")
+
+        updated, errors = webui.sync_adapters_to_latest(self.home)
+        self.assertEqual(errors, [])
+        self.assertTrue(any("Antigravity" in u for u in updated))
+
+        findings_after = webui.inspect_adapter_caches(self.home)
+        agy_findings_after = [f for f in findings_after if "Antigravity" in f["host"]]
+        self.assertEqual(len(agy_findings_after), 1)
+        self.assertFalse(agy_findings_after[0]["stale"])
+        self.assertEqual(agy_findings_after[0]["version"], feige.__version__)
+
+    def test_cleanable_caches_and_prune(self):
+        cache_dir = self.home / ".codex" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"
+        ver_100 = cache_dir / "1.0.0"
+        ver_200 = cache_dir / "2.0.0"
+        ver_cur = cache_dir / feige.__version__
+        for v in (ver_100, ver_200, ver_cur):
+            v.mkdir(parents=True)
+            (v / "feige.py").write_text(f'__version__ = "{v.name}"\n', encoding="utf-8")
+
+        cleanables = webui.cleanable_caches(self.home)
+        cleanable_vers = {c["version"] for c in cleanables}
+        self.assertIn("1.0.0", cleanable_vers)
+        self.assertIn("2.0.0", cleanable_vers)
+        self.assertNotIn(feige.__version__, cleanable_vers)
+
+        removed, errors = webui.prune_adapter_caches(self.home, paths=[str(ver_100)])
+        self.assertEqual(errors, [])
+        self.assertEqual(len(removed), 1)
+        self.assertFalse(ver_100.exists())
+        self.assertTrue(ver_200.exists())
+        self.assertTrue(ver_cur.exists())
+
+        removed_all, errors_all = webui.prune_adapter_caches(self.home)
+        self.assertEqual(errors_all, [])
+        self.assertEqual(len(removed_all), 1)
+        self.assertFalse(ver_200.exists())
+        self.assertTrue(ver_cur.exists())
 
 
 if __name__ == "__main__":

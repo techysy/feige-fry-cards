@@ -7,6 +7,35 @@
 
 ## [Unreleased]
 
+### Added
+
+- **feige Studio 自检页补齐 Antigravity 接入概览与 Hook 路径排查**：
+  在 `/adapters` 中将 Antigravity CLI（agy）纳入宿主接入概览（只读检测 `~/.gemini/config/hooks.json` 与 `.agents/hooks.json`）与本机 Hook 路径排查表，打通 `sync_adapters_to_latest()` 自动更新回当前仓库 `adapters/antigravity/stop_notify.py`；并提供未引用历史旧插件缓存目录的安全两步清理机制。
+
+- **Antigravity CLI（agy）交互式卡片无头续跑与 Stop Hook 协同**：
+  打通对 Antigravity（agy）的交互式无头续跑：在 `feige_interactive.py` 中将 `antigravity` 续跑状态设为 `True`，支持通过 `agy -p "<prompt>" --conversation <id> --dangerously-skip-permissions --output-format json` 执行无头会话恢复，解析结构化 JSON 响应并异步回写卡片；在 `resolve_cli_executable` 中加入 Windows 用户级可执行路径兜底探测；在 `adapters/common.py` 中增强 `hook_enabled()` 对 `~/.feige-settings.json` 中 `hook_notify` 开关的回退读取；配置 Antigravity 全局原生 Stop hook 自动发送收尾战报卡。
+
+### Changed
+
+- **配置页「面板设置」收进弹窗，主页不再撑出两屏**：厂商 Logo / 折叠面板 / 宿主前缀 /
+  上下文样式 / 面板头与脚注字段这组，原先和交互开关摊在同一张长卡里，实测 1074px 高、
+  独占一列把整页顶到 1342px（1440×900 下折线以下 375px，1200×760 下 496px）——滚到一半
+  时剩下的字段像被「收」进看不见的位置。现在按渠道那组同款口径改成「面板与展示」菜单行 +
+  「具体设置」弹窗：主页整页 968px、最高卡 563px，三列 550/700/464，1440×900 一屏看全。
+  保存作用域随之独立（`form=panel`）：交互卡白名单收窄成它实际渲染的那四个键，否则按
+  `_BOOL_KEYS`「表单没带 = 没勾 = 显式写 0」的口径，只勾一下 CardKit 开关就会顺手把
+  厂商 Logo、折叠面板默认展开、宿主前缀全刷成关闭。
+
+- **菜单定位件跟着认弹窗边界**（上一条拆分必须配套的一条）：`positionMenu()` 原来只按
+  整页 `innerHeight` 判「下方放得下」，那是给页面里的下拉用的；菜单一旦开进 `<dialog>`，
+  弹窗限高后正文自己滚、保存条 sticky 在底，按视口算就会把菜单放到框外。同一页面 A/B
+  实测（1200×760，把「面板头上下文样式」滚到正文最下缘点开）：旧实现算出菜单 `[641, 738]`，
+  而弹窗底 703、保存条顶 649——第三个选项整个掉到圆角框外压在遮罩上；认边界后自动向上翻成
+  `[508, 605]`，全在框内且不压保存条。现在把上下边界收到弹窗正文内缘（下缘再让开 sticky
+  保存条）后照常算方向，窄到放不下 90px 时退回按视口算，不把菜单压成一条。1200×470 /
+  ×380 / ×760 三档、模态与非模态兜底两条路径复测，菜单 `insideDialog` / `clearOfSaveBar`
+  / `inViewport` 三条全真、选项可点。
+
 ## [2.3.2] - 2026-11-26 — 🕊️ 图标源图统一降到 256×256，上传体积近乎减半
 
 ### Changed

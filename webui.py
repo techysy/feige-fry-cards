@@ -33,6 +33,7 @@ webhook key / FEIGE_LLM_API_KEY 的值——密钥与 webhook 输入框永远是
 from __future__ import annotations
 
 import argparse
+import contextvars
 import html
 import json
 import os
@@ -40,6 +41,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -126,21 +128,30 @@ main{max-width:var(--col-w);margin:0 auto;padding:12px 22px 30px;display:flex;
 @media (min-width:1420px){:root{--col-w:1400px}}
 
 .card{background:var(--card);border:1px solid var(--border-subtle);
-  border-radius:var(--radius);padding:14px 16px}
+  border-radius:var(--radius);padding:15px 17px}
 .card h2,.card h3{margin:0 0 12px;font-size:13px;font-weight:700}
 .card h3 small{color:var(--text-3);font-weight:normal;font-size:12px;margin-left:6px}
+/* 卡片标题行：图标 + 标题在左，状态徽章在右。原先「交互与长连接」这张卡用内联
+   style 拼这一行，别的卡没有——同类项必须同一个 class，否则改一处漏两处。 */
+.card-h{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px}
+.card-h .ch-t{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.card-h .ch-r{display:inline-flex;align-items:center;gap:8px;flex-shrink:0}
 
 table{border-collapse:collapse;width:100%}
 td,th{border:1px solid var(--border-subtle);padding:6px 8px;text-align:left;font-size:12px}
 th{background:var(--surface-2);color:var(--muted);font-weight:600}
 
 input[type=text],input[type=password],input[type=number],select,textarea{
-  padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:13px;
+  padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;
   background:var(--surface-2);color:var(--txt)}
 input[type=text],input[type=password],textarea{width:100%}
 textarea{resize:vertical;font-family:inherit}
 input[type=checkbox]{accent-color:var(--pri)}
 select{cursor:pointer}
+/* 控件同高：输入框 / 原生 select / 菜单选择器按钮 / 预设下拉此前各自 28~32px，
+   同一张卡里并排就看得出高低不齐。统一 min-height。 */
+input[type=text],input[type=password],input[type=number],select,textarea,
+.menu-select .ms-btn,.preset-toggle{min-height:32px}
 
 /* 按钮：元素级基础样式（CreditDaddy .btn 观感），.primary 为深色主按钮。
    .icon-btn 是 class 选择器，优先级高于 button，主题切换钮不受影响。 */
@@ -165,12 +176,26 @@ button.tiny{padding:3px 10px;font-size:12px}
 .msg{background:color-mix(in srgb,var(--ok) 10%,var(--card));
   border:1px solid color-mix(in srgb,var(--ok) 35%,transparent);
   border-radius:12px;padding:10px 12px;font-size:13px}
+/* 顶部说明：原先两条各占一行小字（合计 63px 高、12px 字），信息密度低却压在
+   卡片流上方抢首屏。收成一行摘要 + 可展开细节：默认只占一行，要看再点。
+   宽屏（≥1420px）整页有余量，直接摊开不折叠。 */
 .warn{background:color-mix(in srgb,var(--warn-c) 9%,var(--card));
   border:1px solid color-mix(in srgb,var(--warn-c) 30%,transparent);
-  border-radius:12px;padding:10px 12px;font-size:12px;line-height:1.7}
-/* 提示文案非宽屏单行截断（两行提示挤四排太占高度），宽屏恢复完整换行 */
+  border-radius:12px;padding:9px 12px;font-size:12px;line-height:1.6}
 .warn-line{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.warn-sum{cursor:pointer;list-style:none;display:flex;align-items:center;gap:7px;
+  font-size:12px;font-weight:600;color:var(--warn-c)}
+.warn-sum::-webkit-details-marker{display:none}
+.warn-sum .fold-caret{border-top-color:var(--warn-c)}
+details.warn-fold[open]>summary .fold-caret{transform:rotate(180deg)}
+details.warn-fold .warn-body{margin-top:8px;padding-top:8px;
+  border-top:1px solid color-mix(in srgb,var(--warn-c) 22%,transparent)}
 @media (min-width:1420px){.warn-line{white-space:normal;overflow:visible}}
+/* 宽屏有整页余量，说明不再折叠，直接摊开 */
+@media (min-width:1420px){
+  details.warn-fold>summary{display:none}
+  details.warn-fold .warn-body{margin-top:0;padding-top:0;border-top:none}
+  details.warn-fold:not([open]) .warn-body{display:block}}
 
 pre{background:var(--surface-2);border:1px solid var(--border-subtle);border-radius:10px;
   padding:10px;overflow:auto;font:12px/1.6 Consolas,"Cascadia Mono",monospace}
@@ -273,22 +298,27 @@ details.pv-panel[open] .fc-sum-arrow{transform:rotate(90deg)}
   padding:10px 14px;border-radius:10px;font-size:12px;box-shadow:0 10px 28px rgba(0,0,0,.25);display:none}
 .pv-toast.show{display:block}
 
-/* 表单行：12px 灰标签 + 徽章 + 全宽控件 + 环境变量锁定 + 复选框对齐 */
+/* 表单行：12px 灰标签 + 徽章 + 全宽控件 + 环境变量锁定 + 复选框对齐。
+   说明文字只允许一档（.hint = 12px / --text-3）：原先 .small 12、.check-sub 11.5、
+   .field-tip 12、.env-note 11、.mode-banner 12 五档混排，同一页里「说明」看起来像
+   三种东西，还和字段标签抢层级。统一收口到 .hint，其余三个类名保留为别名。 */
 .frow{margin:0 0 12px}
-.frow .lab{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+.frow .lab{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
 .frow .lab .sub{color:var(--text-3)}
+.frow .lab .hint{margin-left:0}
+.hint{display:block;font-size:12px;color:var(--text-3);line-height:1.55;margin-top:3px}
 .frow input[type=text],.frow input[type=password]{margin-top:0}
 input.env-locked,textarea.env-locked,select.env-locked{opacity:.74;background:var(--tertiary);
   border-style:dashed;cursor:not-allowed}
-.env-note{font-size:11px;color:var(--warn-c);margin-top:3px;line-height:1.4}
-.clearline{font-size:11px;color:var(--text-3);margin-top:3px}
+.env-note{font-size:12px;color:var(--warn-c);margin-top:3px;line-height:1.5}
+.clearline{font-size:12px;color:var(--text-3);margin-top:4px}
 .clearline label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
-.checkrow{margin:0 0 11px;font-size:13px}
+.checkrow{margin:0 0 12px;font-size:13px}
 .check-top{display:flex;align-items:flex-start;gap:7px;line-height:1.45;cursor:pointer}
 .check-top input[type=checkbox]{margin:3px 0 0;flex-shrink:0}
 .check-main{flex:1;min-width:0}
 .check-main .tag{margin-left:5px;vertical-align:1px}
-.check-sub{display:block;font-size:11.5px;color:var(--text-3);margin:2px 0 0 21px;line-height:1.45}
+.check-sub{display:block;font-size:12px;color:var(--text-3);margin:3px 0 0 21px;line-height:1.55}
 .mode-banner{border:1px solid color-mix(in srgb,var(--warn-c) 35%,transparent);
   background:color-mix(in srgb,var(--warn-c) 9%,var(--card));border-radius:10px;
   padding:8px 10px;font-size:12px;margin-bottom:12px;line-height:1.55}
@@ -300,8 +330,11 @@ form.dirty button[type=submit].primary{box-shadow:0 0 0 2px color-mix(in srgb,va
 .cond-wrap{transition:opacity .16s}
 .cond-wrap.dimmed{opacity:.52}
 .card form{display:flex;flex-direction:column}
-.card form p{margin:0 0 10px}
+.card form p{margin:0 0 12px}
 .card form p:last-child{margin-bottom:0}
+/* 保存条：原先每条按钮行现挂内联 style，五个卡片各写一遍；收成一个类，
+   按钮行与字段行同宽同距，弹窗里再靠 sticky 贴底。 */
+.save-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px}
 footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
 
 .hidden{display:none !important}
@@ -375,7 +408,9 @@ footer{text-align:center;color:var(--text-3);font-size:12px;padding:0 18px 18px}
   border-right:4px solid transparent;border-top:5px solid var(--text-3);transition:transform .15s}
 .menu-select .ms-btn.open .ms-caret{transform:rotate(180deg)}
 /* 菜单层用 fixed 锚定到按钮视口坐标（JS 计算）：不受卡片/列宽裁切，
-   靠近视口底缘自动向上翻，窄栏也不再横向溢出 */
+   靠近视口底缘自动向上翻，窄栏也不再横向溢出。层级只要高于同层的 sticky 保存条
+   （z-index:2）就够——菜单是 dialog 的后代，跟着弹窗一起画，不靠比弹窗更高的
+   z-index 取胜（实测弹窗内 z-index:90 的菜单可点、不被保存条压）。 */
 .menu-select .ms-menu{position:fixed;z-index:90;top:auto;left:auto;right:auto;max-height:300px;
   overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:5px;
   box-shadow:0 12px 32px rgba(0,0,0,.16);display:flex;flex-direction:column;gap:2px}
@@ -646,6 +681,14 @@ _THEME_JS = """
   } else {
     layoutMasonry();
   }
+  // 首帧量高不可信：DOMContentLoaded 时网页字体还没落地、图片还没解码，卡片按「还没
+  // 撑开」的高度喂给贪心装填，结果整列堆在一边（实测同一组卡片，首帧分出 886/479/435，
+  // 稳定后重排是 554/657/589）。所以 load 与字体就绪后各补排一次——不是给布局打补丁，
+  // 是补上「量高必须量在最终排版」这个前提。
+  window.addEventListener('load', schedule);
+  if(document.fonts && document.fonts.ready && document.fonts.ready.then){
+    document.fonts.ready.then(layoutMasonry);
+  }
   window.addEventListener('resize', schedule);
   // 卡片内 <details> 展开/收起会改变高度：重排一次
   document.querySelectorAll('.grid details').forEach(function(d){
@@ -770,6 +813,22 @@ function positionMenu(menu, btn){
   var vw = window.innerWidth || document.documentElement.clientWidth;
   var vh = window.innerHeight || document.documentElement.clientHeight;
   var gap = 4, pad = 8;
+  // 向上翻时的上边界（默认视口内缘）
+  var lo = pad;
+  // 菜单开在弹窗（dialog.feige-modal）里时，可用范围不是整个视口，而是弹窗正文那一格：
+  // 弹窗限高后正文自己滚、保存条 sticky 在底部。按钮贴在正文下缘时按视口算会判成
+  // 「下方放得下」，实际菜单压到保存条上甚至画到框外。这里把下边界收到保存条上缘
+  // （没有保存条就收正文下缘）、上边界收到正文上缘，再照常算方向。
+  var host = btn.closest('dialog.feige-modal');
+  if(host){
+    var body = host.querySelector('.fm-body');
+    var bar = body ? body.querySelector('form>p:last-child') : null;
+    var hr = host.getBoundingClientRect();
+    var br = (body || host).getBoundingClientRect();
+    var hi = (bar ? bar.getBoundingClientRect().top : br.bottom) - pad;
+    lo = Math.max(hr.top, br.top) + pad;
+    if(hi - lo >= 90) vh = hi;   // 空间太窄就退回按视口算，别把菜单压成一条
+  }
   var width = Math.min(r.width, vw - pad * 2);
   var left = Math.max(pad, Math.min(r.left, vw - width - pad));
   // 先量高度（菜单已去 hidden，但还要按视口可用空间限高）
@@ -783,7 +842,7 @@ function positionMenu(menu, btn){
   if(availBelow >= mh || availBelow >= availAbove){
     menu.style.top = Math.round(r.bottom + gap) + 'px';
   } else {
-    menu.style.top = Math.round(Math.max(pad, r.top - gap - mh)) + 'px';
+    menu.style.top = Math.round(Math.max(lo, r.top - gap - mh)) + 'px';
   }
 }
 
@@ -909,6 +968,8 @@ ICONS = {
     "check": _svg_icon('<path d="M20 6 9 17l-5-5"/>'),
     "alert": _svg_icon('<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>'),
     "lock": _svg_icon('<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
+    # 面板与展示：面板分栏 + 字段行（与「渠道」菜单行同款图标位）
+    "panel": _svg_icon('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M13 8h4"/><path d="M13 12h4"/><path d="M13 16h4"/>'),
 }
 
 # 设置文件键 → 对应环境变量（来源展示与回显用；feige._SETTINGS_ENV 的反向表）
@@ -921,6 +982,90 @@ _SECRET_KEYS = {"feishu_webhook", "feishu_webhook_secret", "feishu_app_secret",
 
 def esc(s) -> str:
     return html.escape(str(s), quote=True)
+
+
+# ── i18n：中文是唯一的源，英文只是渲染层 ─────────────────────────────────────
+#
+# 口径：中文文案不改一个字——所有页面照常写中文，出口处过一遍 T()。英文表 _EN 是
+# 「中文原文 → 英文」的映射，只在这一次查表里生效，不参与任何逻辑判断（判断、表单
+# 键名、设置值、feige.py 的发卡文案全部保持中文口径）。
+#
+# 为什么不做「整页 HTML 替换」：那会把用户数据一起翻掉——项目名、群路由里的 webhook
+# 文案、服务端返回的模型名、日志里的中文，一旦替换成英文再保存就写坏了用户的真实数据。
+# 所以翻译只发生在字面量层（T("…") 包住的是代码里写死的中文），用户数据永远原样输出。
+#
+# 覆盖是否完整由机器证明：tests/test_webui.py 把五个页面 + 全部弹窗按 en 渲染一遍，
+# 断言可见文本里不残留 CJK（用户数据用纯 ASCII 注入，避免假阳性）。漏一条就红。
+#
+# 语言来源优先级：?lang= > Cookie(feige_lang) > 浏览器语言(Accept-Language) > 中文。
+# 默认中文；选择记在 Cookie（一年），跟随浏览器语言只在第一次访问时生效。
+
+_LANG_VAR = contextvars.ContextVar("feige_lang", default="zh")
+LANGS = ("zh", "en")
+LANG_COOKIE = "feige_lang"
+
+_EN: dict[str, str] = {}
+
+
+def set_lang(lang: str) -> str:
+    lang = (lang or "").strip().lower()
+    _LANG_VAR.set(lang if lang in LANGS else "zh")
+    return _LANG_VAR.get()
+
+
+def get_lang() -> str:
+    return _LANG_VAR.get()
+
+
+def T(zh: str) -> str:
+    """中文原文 → 当前语言的显示文本。未命中英文表时原样返回中文（不抛、不留空）。"""
+    if _LANG_VAR.get() == "zh":
+        return zh
+    return _EN.get(zh, zh)
+
+
+def lang_from_request(query: dict, cookie: str, accept_language: str) -> str:
+    """请求语言判定：显式 ?lang= 优先，其次 Cookie，再次 Accept-Language，兜底中文。"""
+    q = (query.get("lang") or [""])[0].strip().lower()
+    if q in LANGS:
+        return q
+    m = re.search(rf"{LANG_COOKIE}=([a-z-]+)", cookie or "")
+    if m:
+        v = m.group(1).split("-")[0]
+        if v in LANGS:
+            return v
+    # Accept-Language 取第一个能认的语言（"en-US,en;q=0.9,zh-CN;q=0.8" → en）
+    for part in (accept_language or "").split(","):
+        v = part.strip().split(";")[0].split("-")[0].lower()
+        if v in LANGS:
+            return v
+    return "zh"
+
+
+_JS_STRINGS: tuple = (
+    # 页面脚本里写死的中文：JS 侧统一走 t("中文")，字典由服务端按当前语言注入。
+    # 这份元组必须与 _THEME_JS / _PREVIEW_JS 里实际用到的串一致，多写无害、少写漏翻。
+    "其他", "没有匹配的模型", "暂无模型，点击「拉取」获取", "正在拉取模型列表…",
+    "拉取失败: ", "个", "输入指令…", "按钮", "带原生二次确认", "预览生成失败",
+    "钉钉 Markdown 消息", "文本消息", "渠道 ", "官方模型名 ", "宿主 ",
+    "（支持无头续跑）", "（不可续跑降级）", "预览请求失败：", "已切换预设：",
+    "已模拟触发防误触回调：「", "追问", "已模拟提交追问：「",
+    "请先在卡片输入框中填写追问内容", "已模拟点击：「",
+    "✅ 设置已保存，预览已按最新配置渲染", "切换亮色 / 暗色", "暗色", "亮色",
+)
+
+
+def _js_i18n_block() -> str:
+    """给前端 JS 用的字典：只导出页面脚本里真会出现的那些串（值取自同一张表）。
+
+    字典在服务端按当前语言生成，JS 里因此只需要 t("中文") 一种写法：中文态下 t()
+    原样返回，英文态下查表替换。这样 JS 源码本身仍是中文可读的，不必维护两份脚本。
+    """
+    pairs = {k: _EN.get(k, k) for k in _JS_STRINGS}
+    return ("<script>window._FEIGE_LANG=" + json.dumps(get_lang()) +
+            ";window._FEIGE_T=" + json.dumps(pairs, ensure_ascii=False) +
+            ";window.t=function(s){return window._FEIGE_LANG==='zh'?s:"
+            "(window._FEIGE_T[s]||s);};</script>")
 
 
 def page(title: str, body: str, tab: str = "") -> bytes:
@@ -946,19 +1091,32 @@ def page(title: str, body: str, tab: str = "") -> bytes:
             f'{_THEME_JS}</body></html>').encode("utf-8")
 
 
+# 来源令牌：ASCII，参与逻辑比较（`src == SRC_ENV` 决定输入框是否只读、灯是否橙色），
+# 因此绝不进翻译表。展示时一律经 _src_label() 换成中文，再由 T() 决定是否译成英文。
+# 此前这两个值直接写成中文并被到处 == 比较：一旦按字面量包 T()，英文态下比较就恒假，
+# 环境变量锁定的输入框会变成可编辑——那是把「优先于本页」的凭据改坏，属于真事故。
+SRC_ENV = "env"
+SRC_FILE = "file"
+
+
 def key_source(skey: str) -> str:
-    """键的生效来源：环境变量（优先）/ 设置文件 / 空（未配置）。"""
+    """键的生效来源令牌：SRC_ENV（优先）/ SRC_FILE / 空（未配置）。"""
     env = _ENV_FOR_KEY.get(skey)
     if env and os.environ.get(env, "").strip():
-        return "环境变量"
+        return SRC_ENV
     if str(feige.load_settings().get(skey) or "").strip():
-        return "设置文件"
+        return SRC_FILE
     return ""
+
+
+def _src_label(src: str) -> str:
+    """来源令牌 → 展示文字（中文口径；英文由 T() 在渲染时决定）。"""
+    return {SRC_ENV: "环境变量", SRC_FILE: "设置文件"}.get(src, "")
 
 
 def _lamp_html(src: str) -> str:
     """配置状态灯：橙=环境变量接管、绿=设置文件已配、灰=未配置/默认。"""
-    if src == "环境变量":
+    if src == SRC_ENV:
         return "<i class='lamp env'></i>"
     return "<i class='lamp on'></i>" if src else "<i class='lamp'></i>"
 
@@ -967,7 +1125,7 @@ def _config_badge(src: str, *, configured: str = "已配置", empty: str = "未�
     """状态灯 + 文字徽章（文字口径不变：「已配置 · 来源」/「未配置」/「默认」）。"""
     if src:
         return (f"<span class='tag on'>{_lamp_html(src)}"
-                f"{esc(configured)} · {esc(src)}</span>")
+                f"{esc(configured)} · {esc(_src_label(src))}</span>")
     return f"<span class='tag'>{_lamp_html('')}{esc(empty)}</span>"
 
 
@@ -976,7 +1134,7 @@ def _config_badge(src: str, *, configured: str = "已配置", empty: str = "未�
 def _field(skey: str, label: str, placeholder: str = "", hint: str = "") -> str:
     src = key_source(skey)
     env_name = _ENV_FOR_KEY.get(skey, "")
-    locked = src == "环境变量"
+    locked = src == SRC_ENV
     badge = _config_badge(src)
     if skey in _SECRET_KEYS:
         if locked:
@@ -1043,11 +1201,11 @@ def _field_chips_html(skey: str, label: str, defaults: tuple, tip: str = "") -> 
                           f'{grip_svg}<span>{esc(name)}</span></button>')
 
     active_val = ",".join(k for k, _, is_on in chips if is_on)
-    tip_html = f"<span class='field-tip'>{esc(tip)}</span>" if tip else ""
+    tip_html = _hint(tip)
     return (
         "<div class='frow'>"
         f"<div class='lab'>{esc(label)} <span class='tag on'>可拖动排序</span></div>"
-        "<span class='field-tip'>点按切换显隐（置灰 = 隐藏）；按住拖动调整展示顺序。</span>"
+        + _hint("点按切换显隐（置灰 = 隐藏）；按住拖动调整展示顺序。")
         + tip_html +
         f"<div class='field-chips' id='{esc(skey)}-chips-box' data-target='{esc(skey)}_val'>{''.join(chips_html)}</div>"
         f"<input type='hidden' name='{esc(skey)}' id='{esc(skey)}_val' value='{esc(active_val)}'>"
@@ -1069,16 +1227,34 @@ def _footer_chips_html() -> str:
 def _save_btn(card_id: str, preview_btn: bool = False) -> str:
     extra = (f" <button type='submit' name='_next' value='preview'>{ICONS['preview']} 保存并预览</button>"
              if preview_btn else "")
-    return (f"<p style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+    return (f"<p class='save-row'>"
             f"<input type='hidden' name='form' value='{card_id}'>"
             f"<button class='primary' type='submit'>{ICONS['save']} 保存本卡片</button>{extra}"
             f"<span class='dirty-dot'>● 未保存</span></p>")
 
 
+def _card_h(icon_html: str, title: str, right: str = "") -> str:
+    """卡片标题行：图标 + 标题在左，徽章在右（五张卡同一个结构，不再各写内联 style）。"""
+    r = f"<span class='ch-r'>{right}</span>" if right else ""
+    return f"<h3 class='card-h'><span class='ch-t'>{icon_html} {esc(title)}</span>{r}</h3>"
+
+
+def _hint(text: str, raw: bool = False) -> str:
+    """字段/卡片下方的说明文字（全站唯一一档：12px / --text-3）。
+
+    raw=True 只给「文案里要保留 <code> 这类我们自己写的标记」用——默认走 esc，
+    传用户数据进来时不会被当 HTML 执行。
+    """
+    if not text:
+        return ""
+    body = text if raw else esc(text)
+    return f"<span class='hint'>{body}</span>"
+
+
 def _ch_row(icon_html: str, title: str, configured: bool, dialog_id: str,
             note: str = "") -> str:
     """渠道菜单的一行：状态灯 + 已配置/未配置 + 「具体设置」弹窗触发钮。"""
-    lamp = _lamp_html("设置文件" if configured else "")
+    lamp = _lamp_html(SRC_FILE if configured else "")
     badge = (f"<span class='fold-badge on'>{lamp}已配置</span>" if configured
              else f"<span class='fold-badge empty'>{lamp}未配置</span>")
     tip = f"<span class='small'>{esc(note)}</span>" if note else ""
@@ -1113,11 +1289,20 @@ def _banner(msg: str, err: str) -> str:
 # ── 页面：配置（Studio 主页）──────────────────────────────────────────────────
 
 def _warn_html() -> str:
-    return (f'<div class="warn"><span class="warn-line">{ICONS["save"]} 保存只写本页白名单键进 <code>~/.feige-settings.json</code>'
-            '（写前自动备份 <code>.bak</code>），其余内容原样保留；保存即生效——后台发送'
-            f'进程每次发卡重新读取，无需重启宿主。</span><span class="warn-line">{ICONS["lock"]} 密钥与 webhook 只显「已配置」徽章，'
-            '输入框永不回显：留空 = 不修改，勾选「清除」才删除。已配环境变量时环境变量优先'
-            '（徽章标注来源），此处改动对被遮蔽的键不生效。</span></div>')
+    """顶部说明横幅：一行摘要 + 可展开细节（宽屏自动摊开，见 .warn-fold 的 media 规则）。"""
+    return (
+        "<details class='warn-fold warn'>"
+        "<summary class='warn-sum'>" + ICONS["save"]
+        + " 保存只写本页白名单键，写前自动备份，保存即生效（无需重启宿主）"
+        "<span class='fold-caret'></span></summary>"
+        "<div class='warn-body'>"
+        '<span class="warn-line">' + ICONS["save"] + " 保存只写本页白名单键进 <code>~/.feige-settings.json</code>"
+        "（写前自动备份 <code>.bak</code>），其余内容原样保留；保存即生效——后台发送"
+        "进程每次发卡重新读取，无需重启宿主。</span>"
+        '<span class="warn-line">' + ICONS["lock"] + " 密钥与 webhook 只显「已配置」徽章，"
+        "输入框永不回显：留空 = 不修改，勾选「清除」才删除。已配环境变量时环境变量优先"
+        "（徽章标注来源），此处改动对被遮蔽的键不生效。</span>"
+        "</div></details>")
 
 
 def _checkbox_field(skey: str, label: str, checked: bool, hint: str = "") -> str:
@@ -1126,7 +1311,7 @@ def _checkbox_field(skey: str, label: str, checked: bool, hint: str = "") -> str
     badge = _config_badge(src, empty="默认")
     sub = f"<span class='check-sub'>{esc(hint)}</span>" if hint else ""
     env_note = (f"<span class='check-sub' style='color:var(--warn-c)'>🔒 环境变量 <code>{esc(env_name)}</code> 优先</span>"
-                if src == "环境变量" and env_name else "")
+                if src == SRC_ENV and env_name else "")
     chk = "checked" if checked else ""
     return (f"<div class='checkrow'><label class='check-top'>"
             f"<input type='checkbox' name='{esc(skey)}' value='1' {chk}>"
@@ -1142,6 +1327,13 @@ def _ws_badge_html(ws: dict) -> str:
         "error": "<span class='badge bad'>🔴 连接异常</span>",
     }
     return ws_badge_map.get(ws.get("state", ""), f"<span class='badge mute'>{esc(ws.get('state', ''))}</span>")
+
+
+def _ws_row(title: str, state: str, error: str) -> str:
+    """长连接实况行：状态 + 出错原因（有则显），与渠道菜单行同款排布。"""
+    err = f"<span class='hint'>{esc(error)}</span>" if error else ""
+    return (f"<div class='ch-row'><span class='ch-name'>{ICONS['status']} {esc(title)}</span>"
+            f"<span class='ch-spacer'><code>{esc(state or 'unknown')}</code>{err}</span></div>")
 
 
 def page_studio(msg: str = "", err: str = "") -> bytes:
@@ -1213,15 +1405,14 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
         "<form method='post' action='/settings'>"
         + _field("dingtalk_webhook", "机器人 webhook")
         + _field("dingtalk_secret", "加签密钥", hint="SEC 开头，安全设置选「加签」才需要")
-        + "<p class='small'>钉钉无交互卡，发 markdown 消息；需显式 <code>--channel</code> "
-          "或群路由指定。</p>"
+        + _hint("钉钉无交互卡，发 markdown 消息；需显式 <code>--channel</code> 或群路由指定。", raw=True)
         + _save_btn("dingtalk") + "</form>"
     )
     telegram_detail = (
         "<form method='post' action='/settings'>"
         + _field("telegram_bot_token", "Bot token", hint="BotFather 发放，形如 123456:ABC-…")
         + _field("telegram_chat_id", "目标 chat", "-100…（群）或个人 id")
-        + "<p class='small'>纯文本版式（≤4096 UTF-16 单元）；需显式渠道或路由指定。</p>"
+        + _hint("纯文本版式（≤4096 UTF-16 单元）；需显式渠道或路由指定。")
         + _save_btn("telegram") + "</form>"
     )
     ch_menu = (
@@ -1239,34 +1430,60 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
         + _modal("modal-telegram", "Telegram 渠道", ICONS["telegram"], telegram_detail)
         + "</div>"
     )
+    # 「面板与展示」这组（图标/折叠/宿主前缀/上下文样式/面板头与脚注字段）原先和交互
+    # 开关一起摊在同一张卡里，实测 1074px 高、独占一列把整页撑出两屏（1440×900 下
+    # 折线以下 375px，1200×760 下 496px）——滚到一半时剩下的字段像被「收」进看不见的
+    # 位置。渠道那组上一轮已经改成菜单行 + 弹窗，这组照同一口径收进弹窗，主页每张卡
+    # 都回到一屏内。
+    panel_detail = (
+        "<form method='post' action='/settings'>"
+        + _checkbox_field("vendor_logo_enabled", "展示 Logo（厂商图 + 智能体图）与官方模型名",
+                          feige.vendor_logo_enabled(),
+                          "CardKit 自动上传并本地缓存图片 key；路由别名按宿主显示智能体图，未识别模型用宿主图标兜底")
+        + _checkbox_field("panel_expanded", "底部统一折叠面板默认展开",
+                          feige.panel_expanded_default())
+        + _checkbox_field("panel_host_prefix", "面板头模型名带宿主前缀",
+                          feige.panel_host_prefix_enabled(),
+                          "默认关：卡片标题已含「项目 · 宿主」，面板头只留模型官方名，不再重复")
+        + _menu_field("context_style", "面板头上下文样式",
+                      [("text_bar", "文本+进度条 165.4k/1.0m [█▓▒░] 17%"),
+                       ("text", "纯文本 165.4k/1.0m (17%)"),
+                       ("bar", "纯进度条 [█▓▒░] 17%")],
+                      feige.context_style(),
+                      hint="三档口径对齐 claw / hermes-fry-cards；只切统一面板头的水位呈现，脚注与钉钉/Telegram 保持原样")
+        + _panel_chips_html()
+        + _checkbox_field("footer_enabled", "显示底部统计脚注行",
+                          feige.footer_enabled(),
+                          "默认关：面板头已承载同一套统计，不再重复一行；钉钉/Telegram 静态版式不受影响")
+        + _footer_chips_html()
+        + _save_btn("panel", preview_btn=True) + "</form>"
+    )
+    panel_menu = (
+        f"<div class='card'><h3>{ICONS['panel']} 面板与展示</h3>"
+        "<div class='ch-menu'>"
+        # 状态灯按「这组键里有没有一个真被写过」判：全默认时显灰=未配置，
+        # 免得永远绿着，看不出「这页没动过」。
+        + _ch_row(ICONS["panel"], "面板设置",
+                  # 值为 "0"（显式关）也算「配过」，不能按真值判，否则关掉的开关
+                  # 会让这行退回灰灯，看起来像没配过。
+                  any(str(feige.load_settings().get(k) or "").strip() for k in _PANEL_KEYS),
+                  "modal-panel",
+                  "图标 / 上下文样式 / 面板头与脚注字段")
+        + "</div>"
+        # 标题口径与渠道弹窗一致（「飞书渠道 · 凭据」）：行上写动作，弹窗里写范围
+        + _modal("modal-panel", "面板设置 · 呈现与字段", ICONS["panel"], panel_detail)
+        + "</div>"
+    )
     cards = {
+        # 「交互与长连接」原先把长连接状态徽章塞在标题行内联 style 里，现在标题行统一
+        # 走 _card_h；长连接本身另出一张状态卡（见 ws_card），主页六张卡列高才拉得平。
         "interactive": (
-            f"<div class='card'><h3 style='display:flex;align-items:center;justify-content:space-between;gap:8px'>"
-            f"<span>{ICONS['behavior']} 交互与长连接</span>{ws_badge}</h3>"
-            "<form method='post' action='/settings'>"
+            "<div class='card'>" + _card_h(ICONS["behavior"], "交互与长连接")
+            + "<form method='post' action='/settings'>"
             + _checkbox_field("feishu_interactive", "启用 CardKit 交互式卡片",
                               inter_on, "完成态卡片附带追问表单与防误触快捷按钮")
             + _checkbox_field("feishu_ws_enabled", "启用飞书长连接监听（WSClient）",
                               ws_on, "接收 card.action.trigger 并随 Studio 保活，无需公网域名")
-            + _checkbox_field("vendor_logo_enabled", "展示 Logo（厂商图 + 智能体图）与官方模型名",
-                              feige.vendor_logo_enabled(),
-                              "CardKit 自动上传并本地缓存图片 key；路由别名按宿主显示智能体图，未识别模型用宿主图标兜底")
-            + _checkbox_field("panel_expanded", "底部统一折叠面板默认展开",
-                              feige.panel_expanded_default())
-            + _checkbox_field("panel_host_prefix", "面板头模型名带宿主前缀",
-                              feige.panel_host_prefix_enabled(),
-                              "默认关：卡片标题已含「项目 · 宿主」，面板头只留模型官方名，不再重复")
-            + _menu_field("context_style", "面板头上下文样式",
-                          [("text_bar", "文本+进度条 165.4k/1.0m [█▓▒░] 17%"),
-                           ("text", "纯文本 165.4k/1.0m (17%)"),
-                           ("bar", "纯进度条 [█▓▒░] 17%")],
-                          feige.context_style(),
-                          hint="三档口径对齐 claw / hermes-fry-cards；只切统一面板头的水位呈现，脚注与钉钉/Telegram 保持原样")
-            + _panel_chips_html()
-            + _checkbox_field("footer_enabled", "显示底部统计脚注行",
-                              feige.footer_enabled(),
-                              "默认关：面板头已承载同一套统计，不再重复一行；钉钉/Telegram 静态版式不受影响")
-            + _footer_chips_html()
             + f"<div id='interactive-advanced-wrap' class='cond-wrap{adv_dim}'>"
               f"<details class='fold-card' id='interactive-advanced-fold' style='margin:6px 0 12px'{adv_open}>"
               "<summary class='fold-summary'>"
@@ -1280,15 +1497,19 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
             + feishu_guide
             + "</div></details></div>"
             + _save_btn("interactive", preview_btn=True) + "</form></div>"),
+        # 正文总结此前是一张 563px 的长卡：三列布局下它一己把所在列顶到 775px，
+        # 另两列 475 / 229，视觉上就是「左长右空」。按「凭据」与「策略」两类拆开：
+        # 凭据是连接信息（key / base / 模型），策略是行为参数（字数 / 开关），
+        # 各自一卡、各自一个保存作用域，两卡都回到 300px 上下，列高自然拉平。
         "llm": (
-            f"<div class='card'><h3>{ICONS['llm']} 正文总结（LLM）{llm_state}</h3>"
-            "<form method='post' action='/settings'>"
+            "<div class='card'>" + _card_h(ICONS["llm"], "总结凭据（LLM）", llm_state)
+            + "<form method='post' action='/settings'>"
             + _field("llm_api_key", "API key", "OpenAI 兼容 chat/completions；配了才启用")
             + _field("llm_base_url", "Base URL", feige.DEFAULT_LLM_BASE_URL)
             + ("<div class='frow'><div class='lab'>模型 <span class='tag"
                + (" on' id='llm-model-badge'>" if key_source("llm_model") else "' id='llm-model-badge'>")
                + _lamp_html(key_source("llm_model"))
-               + (f"已配置 · {esc(key_source('llm_model'))}" if key_source("llm_model") else "默认")
+               + (f"已配置 · {esc(_src_label(key_source('llm_model')))}" if key_source("llm_model") else "默认")
                + "</span> <span class='sub'>输入或点击下拉拉取模型</span></div>"
                "<div class='preset-picker' id='llm-model-picker'>"
                f"<input type='text' id='llm_model' name='llm_model' value='{esc(cur_model)}' "
@@ -1301,31 +1522,50 @@ def page_studio(msg: str = "", err: str = "") -> bytes:
                "</div>"
                "<div id='llm-model-list'><div class='pt-empty'>点击「拉取」或展开菜单从服务端获取模型</div></div>"
                "</div></div></div>")
+            + _save_btn("llm") + "</form></div>"),
+        "llm_policy": (
+            "<div class='card'>" + _card_h(ICONS["llm"], "总结策略")
+            + "<form method='post' action='/settings'>"
             + _field("llm_max_chars", "摘要目标字数", str(feige.LLM_MAX_CHARS), "≥50")
             + _field("llm_min_chars", "总结触发字数", str(feige.LLM_MIN_CHARS),
                      "正文超过这个字数就先浓缩成摘要（0 = 只在超渠道上限才总结）")
             + "<div class='frow'><label><input type='checkbox' name='llm_off' value='1' "
               + ("checked" if feige.load_settings().get("summarize") is False else "")
               + "> 显式关闭总结（即使配了 key 也只截断）</label></div>"
-            + "<p class='small'>启用后正文超过「总结触发字数」（默认 300 字）就先由后台"
-              "发送进程调 LLM 浓缩成战报摘要，不再原样镜像；未配置/失败退化为硬截断；"
-              "宿主 hook 前台零网络阻塞。</p>"
-            + _save_btn("llm") + "</form></div>"),
+            + _hint("启用后正文超过「总结触发字数」（默认 300 字）就先由后台发送进程调 LLM "
+                    "浓缩成战报摘要，不再原样镜像；未配置/失败退化为硬截断；宿主 hook 前台零网络阻塞。")
+            + _save_btn("llm_policy") + "</form></div>"),
         "behavior": (
-            f"<div class='card'><h3>{ICONS['behavior']} 行为开关</h3><form method='post' action='/settings'>"
+            "<div class='card'>" + _card_h(ICONS["behavior"], "行为开关")
+            + "<form method='post' action='/settings'>"
             + _select_field("stats_scope", "统计口径",
                             {"turn": "单轮（只算最后一轮）",
                              "session": "全程（整个会话累计）"},
                             feige.stats_scope())
             + _field("debounce_seconds", "收尾去抖秒数", "0", "同会话 N 秒内又收尾只发最后一张；0=每轮都发")
             + _field("routes_file", "群路由文件路径", "~/.feige-routes.json", "留空用默认")
-            + "<p class='small'>宿主 hook 的启用开关（hook_notify）与凭据在各自插件设置里"
-              "也有入口——插件设置注入为环境变量，优先于本页。</p>"
+            + _hint("宿主 hook 的启用开关（hook_notify）与凭据在各自插件设置里也有入口"
+                    "——插件设置注入为环境变量，优先于本页。")
             + _save_btn("behavior") + "</form></div>"),
     }
+    # 长连接状态此前是「交互与长连接」标题行右侧的一枚徽章：徽章写的是运行时状态
+    # （监听中 / 未启动 / 缺依赖），和同排的「已启用」徽章看起来同类、其实一个是配置
+    # 一个是实况。单独成卡后实况归实况、配置归配置，右列也补上一张有内容的卡，
+    # 不再像原先那样底部整块留白。
+    ws_card = (
+        "<div class='card'>" + _card_h(ICONS["status"], "长连接实况", ws_badge)
+        + f"<div class='ch-menu'>"
+        + _ws_row("WSClient 监听", ws.get("state", ""), ws.get("error", ""))
+        + "</div>"
+        + "<form method='post' action='/ws/sync' style='margin:10px 0 0'>"
+        + "<input type='hidden' name='_back' value='config'>"
+        + "<button type='submit'>" + ICONS["refresh"] + " 同步长连接状态</button></form>"
+        + _hint("监听跑在 Studio 守护进程里：改过凭据或开关后点这里重连一次即可，"
+                "不必重启宿主。")
+        + "</div>")
     body = (_banner(msg, err) + _warn_html()
-            + "<div class='grid'>" + ch_menu + cards["interactive"]
-            + cards["llm"] + cards["behavior"] + "</div>")
+            + "<div class='grid'>" + ch_menu + panel_menu + cards["interactive"]
+            + cards["llm"] + cards["llm_policy"] + cards["behavior"] + ws_card + "</div>")
     # 群路由不在主页重复挂卡——独立页签已有入口
     return page("配置", body, tab="config")
 
@@ -1353,7 +1593,7 @@ def _menu_field(skey: str, label: str, options: list, current: str, hint: str = 
     """设置键的菜单选择器：状态灯徽章 + 菜单控件 + 环境变量锁定提示。"""
     src = key_source(skey)
     env_name = _ENV_FOR_KEY.get(skey, "")
-    locked = src == "环境变量"
+    locked = src == SRC_ENV
     badge = _config_badge(src, empty="默认")
     sub = f" <span class='sub'>{esc(hint)}</span>" if hint else ""
     env_note = (f"<div class='env-note'>🔒 环境变量 <code>{esc(env_name)}</code> 生效中，此处改动不会覆盖它</div>"
@@ -1365,7 +1605,7 @@ def _menu_field(skey: str, label: str, options: list, current: str, hint: str = 
 def _select_field(skey: str, label: str, options: dict, current: str) -> str:
     src = key_source(skey)
     env_name = _ENV_FOR_KEY.get(skey, "")
-    locked = src == "环境变量"
+    locked = src == SRC_ENV
     badge = _config_badge(src, empty="默认")
     opts = "".join(f"<option value='{esc(k)}' {'selected' if current == k else ''}>{esc(v)}</option>"
                    for k, v in options.items())
@@ -1383,22 +1623,39 @@ _INTERACTIVE_KEYS = [
     "panel_expanded", "panel_host_prefix", "panel_fields", "footer_enabled", "footer_fields",
     "interactive_allow_users", "resume_timeout_seconds", "context_style",
 ]
+# 「面板与展示」弹窗的保存作用域：卡片里实际有哪几个字段，白名单就只列哪几个。
+# 少列 = 存这张卡时该键被写成默认值（_BOOL_KEYS 不勾就写 "0"），多列 = 表单没带的键
+# 被当成「清空」。所以这两组必须和上面的表单构造一一对应，不能图省事共用并集。
+_PANEL_KEYS = [
+    "vendor_logo_enabled", "panel_expanded", "panel_host_prefix", "context_style",
+    "panel_fields", "footer_enabled", "footer_fields",
+]
 _CARD_KEYS = {
     "feishu": ["feishu_webhook", "feishu_webhook_secret", "feishu_app_id",
                "feishu_app_secret", "feishu_base_url", "feishu_chat_id",
                # 按项目覆盖接收群：键名 feishu_chat_id__<项目名>（与路由标签逐字一致）
                "feishu_chat_id__10router"],
-    "interactive": list(_INTERACTIVE_KEYS),
+    # 交互卡现在只剩这两个开关 + 白名单/超时；面板那组另走 "panel"。
+    # 白名单收窄是必须的：_BOOL_KEYS 里「表单没带 = 不勾 = 写 0」，若继续用并集，
+    # 存交互卡会把 vendor_logo_enabled / panel_expanded 等一并刷成关闭。
+    "interactive": ["feishu_interactive", "feishu_ws_enabled",
+                    "interactive_allow_users", "resume_timeout_seconds"],
+    "panel": list(_PANEL_KEYS),
     "dingtalk": ["dingtalk_webhook", "dingtalk_secret"],
     "telegram": ["telegram_bot_token", "telegram_chat_id"],
-    "llm": ["llm_api_key", "llm_base_url", "llm_model", "llm_max_chars", "llm_min_chars"],
+    # 正文总结拆成两卡两作用域：凭据（key / base / 模型）与策略（字数 / 显式关）。
+    # 拆开必须同时拆白名单——沿用同一组键的话，只改 key 点保存会把两个字数一起
+    # 按「表单没带 = 清空」刷掉（_BOOL_KEYS 与 _set_text 的既有口径）。
+    "llm": ["llm_api_key", "llm_base_url", "llm_model"],
+    "llm_policy": ["llm_max_chars", "llm_min_chars"],
     "behavior": ["stats_scope", "debounce_seconds", "routes_file"],
 }
 _BOOL_KEYS = {"feishu_interactive", "feishu_ws_enabled", "vendor_logo_enabled",
               "panel_expanded", "panel_host_prefix", "footer_enabled"}
 _FIELD_LIST_KEYS = {"footer_fields", "panel_fields"}
 _CARD_TITLES = {"feishu": "飞书渠道", "interactive": "交互与长连接", "dingtalk": "钉钉渠道",
-                "telegram": "Telegram", "llm": "正文总结", "behavior": "行为开关"}
+                "telegram": "Telegram", "llm": "总结凭据", "llm_policy": "总结策略",
+                "behavior": "行为开关", "panel": "面板设置"}
 
 
 def _set_text(form: dict, settings: dict, key: str) -> None:
@@ -1507,7 +1764,9 @@ def apply_settings_card(form: dict, settings: dict) -> str:
                 settings.pop(key, None)
             continue
         _set_text(form, settings, key)
-    if card == "llm":
+    if card == "llm_policy":
+        # 「显式关闭总结」这个复选框现在归策略卡；作用域拆开后这里必须跟着改，
+        # 否则存凭据卡会顺手把 summarize 开关重置掉。
         if (form.get("llm_off") or [""])[0]:
             settings["summarize"] = False
         else:
@@ -1570,7 +1829,7 @@ def page_status(msg: str = "") -> bytes:
     llm_info = (f"{llm_badge} · 模型 "
                 f"<code>{esc(llm['model'])}</code> · base <code>{esc(llm['base_url'])}</code> · "
                 f"超 {llm['min_chars']} 字触发 · 目标 ≤{llm['max_chars']} 字 · key 来源："
-                f"{esc(key_source('llm_api_key') or '未配置')}")
+                f"{esc(_src_label(key_source('llm_api_key')) or '未配置')}")
     ws = feige_interactive.get_ws_manager().status()
     ws_badge_map = {
         "running": "<span class='badge ok'>🟢 监听中</span>",
@@ -2533,11 +2792,77 @@ def _read_feige_version(root: Path) -> str:
     return m.group(1) if m else "?"
 
 
+def _cache_roots(home: Path) -> list:
+    """插件缓存根目录（版本目录的父目录）。排查、对齐、清理三处共用同一张表，
+    否则「查出来的」和「动手的」范围会慢慢走偏。"""
+    return [
+        ("Codex 插件缓存", home / ".codex" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
+        ("Mirasim Codex Relay 缓存", home / ".mirasim" / "agent-homes" / "codex-relay" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
+        ("ZCode 插件缓存", home / ".zcode" / "cli" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
+    ]
+
+
+# 版本号段的分隔符用 [/\\]+：JSON 里的路径是 \\\\ 转义，替换后会出现连续分隔符
+# （`feige-fry-cards//2.3.2`），要求单个分隔符会整条漏判——漏判的后果是把「用户其实
+# 钉在旧版本」的目录当成残留列进可清理，那是删用户正在用的东西，绝不能发生。
+_VER_SEG = re.compile(r"[/\\]+feige-fry-cards[/\\]+(\d+\.\d+\.\d+)(?![\d.])")
+
+
+def _referenced_versions(home: Path) -> set[str]:
+    """被宿主配置显式引用的版本号。
+
+    判「这个版本目录有没有人用」不能靠猜（比如「目录名等于当前版本就算在用」——
+    当前版本目录可能根本没被任何配置指向，反过来旧版本可能被硬编码引用）。
+    所以这里真去读配置：凡配置文件文本里出现 `.../feige-fry-cards/<ver>/` 这种
+    路径片段的，那个 <ver> 就是在用的。当前版本另算（对齐动作的落点）。
+    """
+    refs: set[str] = set()
+    files = [
+        home / ".claude" / "settings.json",
+        home / ".claude" / "plugins" / "installed_plugins.json",
+        home / ".codex" / "config.toml",
+        home / ".zcode" / "cli" / "plugins" / "installed_plugins.json",
+        home / ".kimi-code" / "config.toml",
+        home / ".kimi-code" / "hooks" / "feige_kimi_stop.py",
+        home / ".mirasim" / "setting.json",
+        home / ".gemini" / "config" / "hooks.json",
+    ]
+    for f in files:
+        if not f.is_file():
+            continue
+        for m in _VER_SEG.finditer(_read(f).replace("\\", "/")):
+            refs.add(m.group(1))
+    return refs
+
+
+def _dir_size_mb(path: Path) -> float:
+    tot = 0
+    for dp, _dn, fn in os.walk(path):
+        for f in fn:
+            try:
+                tot += os.path.getsize(os.path.join(dp, f))
+            except OSError:
+                pass
+    return round(tot / 1e6, 2)
+
+
+def _is_version_dir(name: str) -> bool:
+    return bool(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", name))
+
+
 def inspect_adapter_caches(home: Path | None = None) -> list[dict]:
-    """检测本机各宿主与代理缓存中 feige 插件的实际路径与版本（只读）。"""
+    """检测本机各宿主与代理缓存中 feige 插件的实际路径与版本（只读）。
+
+    缓存目录额外带三个字段：`in_use`（被宿主配置引用，或就是当前版本）、
+    `cleanable`（既不被引用、又不是当前版本 → 历史残留）、`size_mb`。
+    有了 in_use 才能把「一键对齐」的范围收在实际在用的目录上：原先它把当前代码
+    复制进每一个历史版本目录，于是 19 行全显「已对齐」，看着绿、其实 16 行是没人
+    指向的噪音，还把 17MB 的旧目录越刷越新。
+    """
     home = home or Path.home()
     cur_ver = feige.__version__
     repo_norm = str(REPO).replace("\\", "/")
+    refs = _referenced_versions(home)
     findings: list[dict] = []
 
     # 1. Claude Code ~/.claude/settings.json Stop hook
@@ -2567,26 +2892,30 @@ def inspect_adapter_caches(home: Path | None = None) -> list[dict]:
                 "path": cmds[0],
                 "version": ver,
                 "stale": not points_repo,
+                "kind": "hook",
                 "note": "直接指向当前源码仓库 hooks/stop.py" if points_repo else "硬编码指向旧插件缓存（需切回当前仓库 hooks/stop.py）",
             })
 
     # 2. 常见插件缓存 & 市场副本目录
-    cache_roots = [
-        ("Codex 插件缓存", home / ".codex" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
-        ("Mirasim Codex Relay 缓存", home / ".mirasim" / "agent-homes" / "codex-relay" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
-        ("ZCode 插件缓存", home / ".zcode" / "cli" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
-    ]
-    for label, base in cache_roots:
+    for label, base in _cache_roots(home):
         if base.is_dir():
             for child in sorted(base.iterdir()):
                 if child.is_dir() and (child / "feige.py").is_file():
                     ver = _read_feige_version(child)
+                    in_use = child.name == cur_ver or child.name in refs
                     findings.append({
                         "host": f"{label} ({child.name})",
                         "path": str(child),
                         "version": ver,
-                        "stale": ver != cur_ver,
-                        "note": f"已对齐 v{cur_ver}" if ver == cur_ver else f"缓存文件仍为 v{ver}（当前仓库 v{cur_ver}）",
+                        "dir_ver": child.name,
+                        "stale": in_use and ver != cur_ver,
+                        "kind": "cache",
+                        "in_use": in_use,
+                        "cleanable": not in_use,
+                        "size_mb": _dir_size_mb(child),
+                        "note": (f"已对齐 v{cur_ver}" if ver == cur_ver
+                                 else f"缓存文件仍为 v{ver}（当前仓库 v{cur_ver}）") if in_use
+                                else f"未被任何宿主配置引用（目录名 {child.name}）",
                     })
 
     z_mkt = home / ".zcode" / "cli" / "plugins" / "marketplaces" / "feige-fry-cards"
@@ -2597,6 +2926,8 @@ def inspect_adapter_caches(home: Path | None = None) -> list[dict]:
             "path": str(z_mkt),
             "version": ver,
             "stale": ver != cur_ver,
+            "kind": "marketplace",
+            "in_use": True,
             "note": f"已对齐 v{cur_ver}" if ver == cur_ver else f"市场副本仍为 v{ver}（当前仓库 v{cur_ver}）",
         })
 
@@ -2610,9 +2941,58 @@ def inspect_adapter_caches(home: Path | None = None) -> list[dict]:
             "path": str(k_shim),
             "version": cur_ver if ok_k else "未知",
             "stale": not ok_k,
+            "kind": "hook",
             "note": "直接透传至当前源码仓库 hooks/stop.py" if ok_k else "未指向当前仓库路径",
         })
+
+    # 4. Antigravity CLI Stop Hook (~/.gemini/config/hooks.json 与 .agents/hooks.json)
+    agy_global = home / ".gemini" / "config" / "hooks.json"
+    agy_local = REPO / ".agents" / "hooks.json"
+    target_agy_files = [("Antigravity 全局 Stop Hook", agy_global)]
+    if agy_local.is_file():
+        target_agy_files.append(("Antigravity 项目 Stop Hook", agy_local))
+
+    repo_agy_stop = str((REPO / "adapters" / "antigravity" / "stop_notify.py")).replace("\\", "/").lower()
+    for agy_label, agy_f in target_agy_files:
+        if agy_f.is_file():
+            raw = _read(agy_f)
+            cmds: list[str] = []
+            try:
+                doc = json.loads(raw)
+                hook_groups = []
+                if isinstance(doc, dict):
+                    if "Stop" in doc and isinstance(doc["Stop"], list):
+                        hook_groups.append(doc["Stop"])
+                    for v in doc.values():
+                        if isinstance(v, dict) and "Stop" in v and isinstance(v["Stop"], list):
+                            hook_groups.append(v["Stop"])
+                for grp in hook_groups:
+                    for hk in grp:
+                        if isinstance(hk, dict):
+                            cmd = str(hk.get("command") or "")
+                            if "feige" in cmd.lower() or "stop_notify.py" in cmd.lower() or "antigravity" in cmd.lower():
+                                cmds.append(cmd)
+            except Exception:
+                pass
+            if cmds:
+                for c in cmds:
+                    norm_c = c.replace("\\", "/").lower()
+                    points_repo = repo_agy_stop in norm_c
+                    ver = cur_ver if points_repo else "旧路径"
+                    m = re.search(r'/feige-fry-cards/([0-9]+\.[0-9]+\.[0-9]+)/', norm_c)
+                    if m and not points_repo:
+                        ver = m.group(1)
+                    findings.append({
+                        "host": agy_label,
+                        "path": c,
+                        "version": ver,
+                        "stale": not points_repo,
+                        "kind": "hook",
+                        "note": "直接指向当前源码仓库 adapters/antigravity/stop_notify.py" if points_repo
+                                else "未指向当前仓库路径（需切回当前仓库 adapters/antigravity/stop_notify.py）",
+                    })
     return findings
+
 
 
 def _copy_repo_to_dir(dest: Path) -> None:
@@ -2664,20 +3044,20 @@ def sync_adapters_to_latest(home: Path | None = None) -> tuple[list[str], list[s
         except Exception as exc:
             errors.append(f"Claude Code settings.json 失败：{exc}")
 
-    # 2. 同步各插件缓存与市场副本（同时更新已有旧版目录并生成当前版本目录）
-    cache_roots = [
-        ("Codex 插件缓存", home / ".codex" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
-        ("Mirasim Codex Relay 缓存", home / ".mirasim" / "agent-homes" / "codex-relay" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
-        ("ZCode 插件缓存", home / ".zcode" / "cli" / "plugins" / "cache" / "feige-fry-cards" / "feige-fry-cards"),
-    ]
-    for label, base in cache_roots:
+    # 2. 同步插件缓存与市场副本 —— 只碰「在用」的目录。
+    #    原先这里是 base.iterdir() 全量复制，于是每个历史版本目录都被刷成当前代码：
+    #    表里 19 行齐刷刷「已对齐 v2.3.2」，其中 16 行是没人指向的旧目录（约 17MB），
+    #    绿得毫无意义，还让「可清理」永远看不出来。现在按引用关系收窄，并把当前版本
+    #    目录补上（它可能还不存在，首次对齐要建）。
+    refs = _referenced_versions(home)
+    for label, base in _cache_roots(home):
         if not base.is_dir():
             continue
         try:
-            targets = [c for c in base.iterdir() if c.is_dir()]
-            ver_dir = base / cur_ver
-            if ver_dir not in targets:
-                targets.append(ver_dir)
+            targets = [base / cur_ver]
+            for c in base.iterdir():
+                if c.is_dir() and c != targets[0] and _is_version_dir(c.name) and c.name in refs:
+                    targets.append(c)
             for t in targets:
                 _copy_repo_to_dir(t)
             updated.append(f"{label} → 已同步 v{cur_ver}")
@@ -2713,7 +3093,124 @@ def sync_adapters_to_latest(home: Path | None = None) -> tuple[list[str], list[s
         except Exception as exc:
             errors.append(f"ZCode installed_plugins.json 失败：{exc}")
 
+    # 4. 更新 Antigravity ~/.gemini/config/hooks.json 的 Stop hook 指向当前仓库 adapters/antigravity/stop_notify.py
+    agy_f = home / ".gemini" / "config" / "hooks.json"
+    if agy_f.is_file():
+        try:
+            raw = agy_f.read_text(encoding="utf-8")
+            doc = json.loads(raw)
+            repo_agy_stop = str((REPO / "adapters" / "antigravity" / "stop_notify.py")).replace("\\", "/")
+            changed = False
+            hook_groups = []
+            if isinstance(doc, dict):
+                if "Stop" in doc and isinstance(doc["Stop"], list):
+                    hook_groups.append(doc["Stop"])
+                for v in doc.values():
+                    if isinstance(v, dict) and "Stop" in v and isinstance(v["Stop"], list):
+                        hook_groups.append(v["Stop"])
+            for grp in hook_groups:
+                for hk in grp:
+                    if isinstance(hk, dict):
+                        cmd = str(hk.get("command") or "")
+                        if "feige" in cmd.lower() and ("stop_notify.py" in cmd or "stop.py" in cmd or "antigravity" in cmd):
+                            new_cmd = f'python "{repo_agy_stop}"'
+                            if cmd != new_cmd:
+                                hk["command"] = new_cmd
+                                changed = True
+            if changed:
+                shutil.copy2(agy_f, str(agy_f) + ".bak-feige-sync")
+                tmp = str(agy_f) + ".tmp"
+                Path(tmp).write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                os.replace(tmp, agy_f)
+                updated.append("Antigravity hooks.json → 已切换至仓库 adapters/antigravity/stop_notify.py")
+        except Exception as exc:
+            errors.append(f"Antigravity hooks.json 失败：{exc}")
+
     return updated, errors
+
+
+def cleanable_caches(home: Path | None = None) -> list[dict]:
+    """可清理的历史缓存目录：既不被任何宿主配置引用、也不是当前版本。
+
+    只列版本目录（名字形如 x.y.z）且下面真有 feige.py 的——那才是本插件留下的缓存；
+    别的名字一律不认，避免把宿主自己放的目录认进来。
+    """
+    home = home or Path.home()
+    cur_ver = feige.__version__
+    refs = _referenced_versions(home)
+    out: list[dict] = []
+    for label, base in _cache_roots(home):
+        base_r = base.resolve() if base.is_dir() else None
+        if not base_r:
+            continue
+        for child in sorted(base.iterdir()):
+            try:
+                if not child.is_dir() or not _is_version_dir(child.name):
+                    continue
+                if child.resolve().parent != base_r:
+                    continue  # 软链/联接指向别处的，不动
+            except OSError:
+                continue
+            if child.name == cur_ver or child.name in refs:
+                continue
+            out.append({"label": label, "version": child.name, "path": str(child),
+                        "size_mb": _dir_size_mb(child),
+                        "has_core": (child / "feige.py").is_file()})
+    return out
+
+
+def _rmtree_robust(p: Path) -> None:
+    """递归删除目录，对 Windows 下只读文件（如 .git/objects/）自动去除只读标记后重试。"""
+    def _onexc(func, path, _exc):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except OSError:
+            pass
+
+    def _onerror(func, path, _exc_info):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except OSError:
+            pass
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(p, onexc=_onexc)
+    else:
+        shutil.rmtree(p, onerror=_onerror)
+
+
+def prune_adapter_caches(home: Path | None = None,
+                         paths: list[str] | None = None) -> tuple[list[str], list[str]]:
+    """删除指定的可清理缓存目录（两步确认后才会走到这里）。
+
+    硬规则：
+      · 只删 cleanable_caches() 当场列出来的路径——不在名单里的一律拒绝，
+        所以「引用关系刚变、这目录其实在用了」这种情况会自己挡住；
+      · 路径必须落在已知缓存根目录下、名字必须是版本号、且里面真有 feige.py；
+      · 删除失败就报错，不做静默跳过，也不重试到别的路径。
+    """
+    home = home or Path.home()
+    allowed = {c["path"]: c for c in cleanable_caches(home) if c["has_core"]}
+    target_paths = list(allowed.keys()) if paths is None else paths
+    removed: list[str] = []
+    errors: list[str] = []
+    for raw in target_paths:
+        info = allowed.get(raw)
+        if not info:
+            errors.append(f"已跳过（不在可清理名单里）：{raw}")
+            continue
+        p = Path(raw)
+        if not p.exists():
+            removed.append(f"{info['label']} {info['version']}（已释放）")
+            continue
+        try:
+            _rmtree_robust(p)
+            removed.append(f"{info['label']} {info['version']}（{info['size_mb']} MB）")
+        except OSError as exc:
+            errors.append(f"删除失败：{p} —— {exc}")
+    return removed, errors
 
 
 def page_adapters(home: Path | None = None, msg: str = "", err: str = "") -> bytes:
@@ -2762,6 +3259,16 @@ def page_adapters(home: Path | None = None, msg: str = "", err: str = "") -> byt
                  else "未接入（~/.kimi-code/config.toml 手挂，见 README「插件安装 → kimi-code」）",
                  k_ok, "README「插件安装 → kimi-code」"))
 
+    agy_global = home / ".gemini" / "config" / "hooks.json"
+    agy_local = REPO / ".agents" / "hooks.json"
+    agy_cfg = _read(agy_global) or _read(agy_local)
+    agy_norm = agy_cfg.replace(chr(92), "/")
+    agy_ok = any(x in agy_norm for x in ("stop_notify.py", "adapters/antigravity", "feige"))
+    agy_note = ("已配置全局 Stop hook（~/.gemini/config/hooks.json）" if any(x in (_read(agy_global).replace(chr(92), "/")) for x in ("stop_notify.py", "adapters/antigravity", "feige"))
+                else "已配置项目 Stop hook（.agents/hooks.json）" if agy_ok
+                else "未接入（~/.gemini/config/hooks.json 全局挂载，见 README「插件安装 → Antigravity」）")
+    rows.append(("Antigravity CLI", agy_note, agy_ok, "README「插件安装 → Antigravity」"))
+
     body = _banner(msg, err)
     body += "<div class='card'><h3>🔌 宿主接入概览</h3><table><tr><th>agent</th><th>状态</th><th>说明 / 指引</th></tr>"
     for name, note, ok, guide in rows:
@@ -2778,7 +3285,7 @@ def page_adapters(home: Path | None = None, msg: str = "", err: str = "") -> byt
             f"<div class='mode-banner'>⚠️ 检测到 <b>{stale_cnt}</b> 处旧缓存或过期路径，发卡可能仍在跑老代码！"
             f"点击下方按钮即可自动备份并对齐至当前仓库 <code>v{esc(VERSION)}</code>。</div>"
             if stale_cnt else
-            f"<div class='mode-banner ok-mode'>🟢 全部 {len(findings)} 处插件路径与缓存均已同步至 <code>v{esc(VERSION)}</code>。</div>"
+            f"<div class='mode-banner ok-mode'>🟢 在用的 {len(findings)} 处插件路径与缓存均已同步至 <code>v{esc(VERSION)}</code>。</div>"
         )
         crows = "".join(
             f"<tr><td>{esc(f['host'])}</td>"
@@ -2792,8 +3299,60 @@ def page_adapters(home: Path | None = None, msg: str = "", err: str = "") -> byt
             f"<form method='post' action='/adapters/sync' style='margin:0 0 10px'>"
             f"<button class='primary' type='submit'>{ICONS['refresh']} 一键对齐所有宿主与缓存至 v{esc(VERSION)}</button>"
             f"</form>"
-            f"<table><tr><th>目标位置</th><th>版本</th><th>路径与详情</th></tr>{crows}</table></div>"
+            f"<table><tr><th>目标位置</th><th>版本</th><th>路径与详情</th></tr>{crows}</table>"
+            + _hint("对齐只写「被宿主配置引用」与当前版本这些目录；未被引用的历史目录"
+                    "列在下面单独处理，不再被反复刷成新代码。", raw=False)
+            + "</div>"
         )
+
+    # 可清理的历史缓存目录：不被任何配置引用、也不是当前版本。
+    # 这一组此前根本不存在——旧目录被「一键对齐」刷成当前版本后全显绿，用户看不出
+    # 16 个目录 ≈17MB 是纯残留。现在单列，并给显式清理入口（两步确认，见 handle）。
+    cleanables = cleanable_caches(home)
+    if cleanables:
+        total_mb = round(sum(c["size_mb"] for c in cleanables), 2)
+        crows2 = "".join(
+            f"<tr><td>{esc(c['label'])} ({esc(c['version'])})</td>"
+            f"<td><span class='badge mute'>{c['size_mb']} MB</span></td>"
+            f"<td><code>{esc(c['path'])}</code></td></tr>"
+            for c in cleanables
+        )
+        body += (
+            "<div class='card'>" + _card_h(ICONS["alert"], "可清理的历史缓存目录",
+                                           f"<span class='badge warn'>{len(cleanables)} 个 · 约 {total_mb} MB</span>")
+            + _hint("这些版本目录还在磁盘上，但没有任何宿主配置指向它们——发卡不会走到这里。"
+                    "删除前会再列一次清单让你确认；在用目录与当前版本永不列入。")
+            + f"<form method='post' action='/adapters/clean' style='margin:10px 0 0'>"
+            + f"<button type='submit'>{ICONS['alert']} 清理这 {len(cleanables)} 个目录</button></form>"
+            + f"<table><tr><th>目标位置</th><th>体积</th><th>路径</th></tr>{crows2}</table></div>"
+        )
+    return page("接入自检", body, tab="adapters")
+
+
+def page_clean_confirm(items: list, home: Path | None = None) -> bytes:
+    """清理第一步：把「将要删除的目录」原样列出来，等一次显式确认。
+
+    确认走服务端两步（而不是浏览器的 confirm() 弹窗）：弹窗可以被静默屏蔽，
+    而删用户文件这件事必须让人真的看过清单——清单本身就在页面上，按钮只负责执行。
+    """
+    total_mb = round(sum(i["size_mb"] for i in items), 2)
+    rows = "".join(
+        f"<tr><td>{esc(i['label'])} ({esc(i['version'])})</td>"
+        f"<td><span class='badge mute'>{i['size_mb']} MB</span></td>"
+        f"<td><code>{esc(i['path'])}</code></td></tr>"
+        for i in items)
+    hidden = "".join(f"<input type='hidden' name='paths' value='{esc(i['path'])}'>" for i in items)
+    body = (
+        "<div class='card'>"
+        + _card_h(ICONS["alert"], "确认删除以下缓存目录",
+                  f"<span class='badge warn'>{len(items)} 个 · 约 {total_mb} MB</span>")
+        + "<div class='mode-banner'>删除不可撤销。这些目录都不被任何宿主配置引用，"
+          "删掉不影响发卡；若你之后重新安装旧版本插件，宿主会自己再拉一份缓存。</div>"
+        + f"<table><tr><th>目标位置</th><th>体积</th><th>路径</th></tr>{rows}</table>"
+        + "<form method='post' action='/adapters/clean' style='margin:12px 0 0'>"
+        + hidden + "<input type='hidden' name='confirm' value='1'>"
+        + f"<p class='save-row'><button class='primary' type='submit'>{ICONS['alert']} 确认删除这 {len(items)} 个目录</button>"
+        + "<a href='/adapters'>取消并返回</a></p></form></div>")
     return page("接入自检", body, tab="adapters")
 
 
@@ -2906,11 +3465,32 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/ws/sync":
             st = feige_interactive.get_ws_manager().sync_with_config()
             note = f"长连接状态已同步：{st['state']}" + (f"（{st['error']}）" if st.get("error") else "")
+            # 配置页的「长连接实况」卡也挂这个动作：带 _back=config 就回配置页，
+            # 否则按原样回状态页。同步这件事不该把人从当前页带走。
+            f_sync = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+            if (f_sync.get("_back") or [""])[0] == "config":
+                return page_studio(msg=note)
             return page_status(msg=note)
         if u.path == "/adapters/sync":
             updated, errors = sync_adapters_to_latest()
             msg_txt = "；".join(updated) if updated else "所有检测到的宿主与缓存已是最新版本"
             err_txt = "；".join(errors) if errors else ""
+            return page_adapters(msg=msg_txt, err=err_txt)
+        if u.path == "/adapters/clean":
+            # 两步：第一次只列清单（page_clean_confirm），第二次带 confirm 才真删。
+            # 名单每次都由 cleanable_caches() 当场重算，不信任表单里的历史快照。
+            f_clean = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+            paths = f_clean.get("paths") or []
+            if not (f_clean.get("confirm") or [""])[0]:
+                items = [c for c in cleanable_caches() if c["path"] in set(paths)] or cleanable_caches()
+                if not items:
+                    return page_adapters(err="没有可清理的历史缓存目录（可能已被宿主配置重新引用）")
+                return page_clean_confirm(items)
+            removed, errors = prune_adapter_caches(paths=paths)
+            msg_txt = (f"已清理 {len(removed)} 个旧缓存目录：" + "；".join(removed)) if removed else ""
+            err_txt = "；".join(errors) if errors else ""
+            if not removed and not errors:
+                err_txt = "没有可清理的目录被删除（名单已变化）"
             return page_adapters(msg=msg_txt, err=err_txt)
         if u.path == "/settings":
             resp = handle_settings_post(body)

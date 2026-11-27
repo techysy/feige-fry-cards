@@ -1200,9 +1200,14 @@ class AdaptersPageTest(unittest.TestCase):
             (home / ".kimi-code" / "config.toml").write_text(
                 '[[hooks]]\nevent = "Stop"\ncommand = \'python "C:/repo/adapters/kimi-code/stop_notify.py"\'\n',
                 encoding="utf-8")
+            (home / ".gemini" / "config").mkdir(parents=True)
+            (home / ".gemini" / "config" / "hooks.json").write_text(
+                '{"feige": {"Stop": [{"type": "command", "command": \'python "C:/repo/adapters/antigravity/stop_notify.py"\'}]}}',
+                encoding="utf-8")
             html_ = webui.page_adapters(home).decode("utf-8")
         self.assertEqual(html_.count("已安装 feige-fry-cards 插件"), 3)
         self.assertIn("已手挂 Stop hook", html_)
+        self.assertIn("已配置全局 Stop hook", html_)
         self.assertNotIn("未接入", html_)
 
 
