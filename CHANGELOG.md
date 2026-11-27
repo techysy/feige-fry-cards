@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-27 — 🕊️ Antigravity 六宿主统驭 + 无头续跑 + Studio 自检与旧缓存清理
+
 ### Added
 
 - **feige Studio 自检页补齐 Antigravity 接入概览与 Hook 路径排查**：
@@ -367,7 +369,9 @@
 - 联调排错指南：230002 与 `setx` 陈旧环境变量坑（`de97166`）
 - 快速开始、使用指南目录锚链、家族表格绝对链接（`7b4945a` `a6878d4` `f3b6bff`）
 
-[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.3.1...HEAD
+[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/techysy/feige-fry-cards/compare/v2.3.2...v2.4.0
+[2.3.2]: https://github.com/techysy/feige-fry-cards/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/techysy/feige-fry-cards/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/techysy/feige-fry-cards/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/techysy/feige-fry-cards/compare/v2.1.0...v2.2.0

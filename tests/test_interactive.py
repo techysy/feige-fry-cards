@@ -877,16 +877,16 @@ class WSDegradationAndStudioIntegrationTest(unittest.TestCase):
 
     def test_studio_fold_cards_and_status_badges_and_version_2_0(self):
         # 版本号必须六处齐更：漏一处就是「Studio 显示 2.3.1、插件清单还是 2.3.0」
-        self.assertEqual(feige.__version__, "2.3.2")
+        self.assertEqual(feige.__version__, "2.4.0")
         pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "2.3.2"', pyproject)
+        self.assertIn('version = "2.4.0"', pyproject)
         for rel in (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
                     ".zcode-plugin/plugin.json", ".zcode-plugin/marketplace.json"):
             with self.subTest(manifest=rel):
                 doc = json.loads((REPO / rel).read_text(encoding="utf-8"))
                 blob = json.dumps(doc)
-                self.assertIn("2.3.2", blob, f"{rel} 版本号未同步")
-                self.assertNotIn('"2.3.1"', blob, f"{rel} 仍留着旧版本号")
+                self.assertIn("2.4.0", blob, f"{rel} 版本号未同步")
+                self.assertNotIn('"2.3.2"', blob, f"{rel} 仍留着旧版本号")
 
         studio_html = webui.page_studio().decode("utf-8")
         self.assertIn("fold-card", studio_html)
