@@ -291,18 +291,23 @@ _META_LINE_RE = re.compile(
 def _strip_monologue(text: str) -> str:
     """逐行剔掉复述要求的行与独白行。
 
-    剔完为空返回空串——调用方 fit_body 会退化到硬截断原文，好过发一卡片独白。
+    保留章节段落间的单空行，剔完为空返回空串——调用方 fit_body
+    会退化到硬截断原文，好过发一卡片独白。
     """
     kept = []
     for line in text.splitlines():
         s = line.replace("</summary>", "").replace("<summary>", "").strip()
         if not s:
+            if kept and kept[-1] != "":
+                kept.append("")
             continue
         if sum(m in s for m in _ECHO_MARKERS) >= 2:
             continue  # 复述要求
         if _META_LINE_RE.match(s):
             continue  # 过程独白
         kept.append(s)
+    while kept and kept[-1] == "":
+        kept.pop()
     return "\n".join(kept).strip()
 
 
@@ -375,12 +380,19 @@ def llm_summarize(text: str, cfg: dict | None = None) -> str:
         "temperature": 0.2,
         "messages": [
             {"role": "system",
-             "content": "你是任务战报摘要器。把助手冗长的收尾汇报浓缩成不超过"
-                        f"{cfg['max_chars']}字的中文摘要：保留结论、关键改动、"
-                        "文件/命令名与数字，删去寒暄、过程性叙述与重复内容，"
-                        "用 markdown 列表或短句。直接输出最终结果，严禁输出任何思考过程、"
-                        "字数统计、分析说明或草稿。最终摘要必须严格用 <summary> 与 </summary> "
-                        "标签包裹，标签内部只允许包含摘要正文本身，不要包含任何独白或草稿。"},
+             "content": "你是任务战报摘要器。将助手冗长的收尾汇报浓缩成不超过"
+                        f"{cfg['max_chars']}字的中文结构化战报摘要。\n\n"
+                        "【排版与层次规范】\n"
+                        "严禁扁平平铺、缺少轻重缓急或所有内容混作一团，必须按层次鲜明的章节与上下级结构输出：\n"
+                        "1. 一句话结论置顶：首行直接输出核心结论，加粗突出（例：**结论**：已完成...）；\n"
+                        "2. 结构化章节与上下级：主体内容按章节分类呈现，章节标题独立成行加粗，下属条目使用二级列表（- ），形成清晰的上下级层次：\n"
+                        "   - **核心改动**：归纳核心代码/配置变更，二级列表列出关键改动，重点文件、函数、模块与命令名必须加粗；\n"
+                        "   - **验证结果**：归纳测试、构建、CI 等验证情况，二级列表列出结果，关键验证指标、数字与通过状态必须加粗；\n"
+                        "   - **后续待办**（若有时）：列出需用户确认、后续部署或待办跟进事项；\n"
+                        "3. 重点加粗突出：核心结论、关键实体与数字指标必须加粗（**...**），确保轻重缓急一目了然；\n"
+                        "4. 精简去噪：彻底删去寒暄客套、中间探索过程、流水账叙述与重复内容。\n\n"
+                        "【输出约束】直接输出最终结果，严禁输出任何思考过程、字数统计、分析说明或草稿。"
+                        "最终摘要必须严格用 <summary> 与 </summary> 标签包裹，标签内部只允许包含摘要正文本身，不要包含任何独白或草稿。"},
             {"role": "user", "content": text[:LLM_INPUT_MAX_CHARS]},
         ],
     }

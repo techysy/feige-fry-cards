@@ -909,6 +909,69 @@ class SummarizeTest(unittest.TestCase):
         sys_prompt = captured["body"]["messages"][0]["content"]
         self.assertIn("严禁输出任何思考过程", sys_prompt)
         self.assertIn("直接输出最终结果", sys_prompt)
+        self.assertIn("一句话结论置顶", sys_prompt)
+        self.assertIn("核心改动", sys_prompt)
+        self.assertIn("验证结果", sys_prompt)
+        self.assertIn("后续待办", sys_prompt)
+        self.assertIn("上下级", sys_prompt)
+        self.assertIn("加粗", sys_prompt)
+
+    def test_llm_summarize_hierarchical_structure_and_chapters(self):
+        # 章节与上下级层次排版结构提取（一句话结论置顶 + 核心改动 + 验证结果 + 后续待办）
+        raw = (
+            "<think>正在提炼章节与上下级结构...</think>\n"
+            "<summary>\n"
+            "**结论**：**feige-fry-cards** 总结提示词已优化并引入章节层次。\n\n"
+            "**核心改动**：\n"
+            "- **提示词重构**：修改 `feige.py` 系统提示词，规范章节与上下级输出。\n"
+            "- **排版增强**：强调核心指标加粗与单空行段落分隔。\n\n"
+            "**验证结果**：\n"
+            "- **单元测试**：`pytest` 241/241 全部通过。\n\n"
+            "**后续待办**：\n"
+            "- 观察真实群卡片渲染样式。\n"
+            "</summary>\n"
+            "检查字数，约 180 字。"
+        )
+        env, _ = self._clean_env(FEIGE_LLM_API_KEY="sk-x")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("urllib.request.urlopen", return_value=self._fake_llm(raw)):
+            out = feige.llm_summarize("原文")
+        self.assertIn("**结论**：**feige-fry-cards**", out)
+        self.assertIn("**核心改动**：", out)
+        self.assertIn("- **提示词重构**：", out)
+        self.assertIn("**验证结果**：", out)
+        self.assertIn("- **单元测试**：`pytest` 241/241", out)
+        self.assertIn("**后续待办**：", out)
+        self.assertNotIn("检查字数", out)
+        self.assertNotIn("正在提炼", out)
+        # 验证章节之间保留了段落空行，避免粘连挤在一起
+        self.assertIn("**核心改动**：\n- **提示词重构**", out)
+        self.assertIn("\n\n**验证结果**：", out)
+
+    def test_strip_monologue_preserves_single_blank_lines_between_sections(self):
+        text = (
+            "我先总结一下：\n"
+            "\n\n"
+            "**结论**：已完成全部任务。\n"
+            "\n\n\n"
+            "**核心改动**：\n"
+            "- 修改了配置。\n"
+            "\n"
+            "检查字数，没有超标。\n"
+            "\n"
+            "**验证结果**：\n"
+            "- 测试全部通过。\n"
+            "\n\n"
+        )
+        cleaned = feige._strip_monologue(text)
+        expected = (
+            "**结论**：已完成全部任务。\n\n"
+            "**核心改动**：\n"
+            "- 修改了配置。\n\n"
+            "**验证结果**：\n"
+            "- 测试全部通过。"
+        )
+        self.assertEqual(cleaned, expected)
 
     def test_llm_summarize_strips_think_tags_and_reasoning_cot(self):
         # 推理模型（DeepSeek-R1 / GLM / hy4）输出显式 <think> 标签或未闭合思考
