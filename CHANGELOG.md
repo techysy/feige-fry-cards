@@ -7,6 +7,22 @@
 
 ## [Unreleased]
 
+（空）
+
+## [2.4.1] - 2026-11-28 — 🕊️ Dots Studio 图标改用小红书官方横线标识
+
+### Changed
+
+- **`vendor-logos/dotsstudio.png` 重绘为官方横线标识薄荷绿版**：Dots Studio 实为小红书
+  dots.ai 团队产品（studio.dots.ai 的 meta description 写「小红书」、favicon 指向
+  xiaohongshu.com），其官方标识是薄荷绿底 + 12 条水平黑线堆出的帆形剪影；原 `dotsstudio.png`
+  取的是 lobehub 的实心帆形演绎。新图为家族口径瓦片（256×256 / 8 位调色板 / 圆角 50 /
+  tRNS 透明角），底色取官方 `#a4e7da` 加深一档至 `(110,208,188)`（官方原色亮度 215.8
+  高于守卫深色阈值 200，底色不计入深色占比、细线需加粗 10 倍才过 >0.2 守卫且 16px 特征
+  尽失），横线保持接近官方的细度。守卫 dark_ratio 1.000，全量 244 测试通过。
+  上传缓存键含 `sha256[:12]`（`ee6ce04f3eb5` → `2a213c022ea1`），已发过卡的机器会自动
+  重传新图。
+
 ### Fixed
 
 - **正文 LLM 总结彻底封堵推理模型思考过程与草稿独白（流口水）**：
@@ -379,7 +395,8 @@
 - 联调排错指南：230002 与 `setx` 陈旧环境变量坑（`de97166`）
 - 快速开始、使用指南目录锚链、家族表格绝对链接（`7b4945a` `a6878d4` `f3b6bff`）
 
-[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/techysy/feige-fry-cards/compare/v2.4.1...HEAD
+[2.4.1]: https://github.com/techysy/feige-fry-cards/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/techysy/feige-fry-cards/compare/v2.3.2...v2.4.0
 [2.3.2]: https://github.com/techysy/feige-fry-cards/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/techysy/feige-fry-cards/compare/v2.3.0...v2.3.1

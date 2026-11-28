@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "feige-fry-cards"
-version = "2.4.0"
+version = "2.4.1"
 description = "🕊️ feige-fry-cards — 飞鸽卡片：跨 Agent 会话战报与交互式飞书卡片"
 readme = "README.md"
 requires-python = ">=3.9"
